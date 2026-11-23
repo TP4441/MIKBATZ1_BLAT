@@ -8,6 +8,7 @@ questions_data.json
 
 # התקדמות אישית של המשתמש המקומי וקבצי מערכת
 user_progress.json
+community_notes.json
 __pycache__/
 *.pyc
 .DS_Store

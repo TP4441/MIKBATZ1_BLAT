@@ -30,6 +30,10 @@
       </nav>
     </div>
     <div class="topbar-left">
+      <button class="identity-pill-btn" id="btnUserIdentity" title="הכינוי שלך להערות משותפות — לחץ לשינוי או הגרלה">
+        <span id="userIdentityBadge">🍎 תפוח</span>
+        <span class="identity-caret">▾</span>
+      </button>
       <span class="sync-pill offline" id="syncPill" title="מצב שמירת התקדמות">
         <span class="dot"></span>
         <span id="syncText">שמירה אוטומטית בדפדפן</span>
@@ -99,6 +103,7 @@
             <button class="chip" data-status="problematic">בעייתיות ⚠️</button>
             <button class="chip" data-status="with_image">עם תמונה 🖼️</button>
             <button class="chip" data-status="with_note">עם הערה שלי 📝</button>
+            <button class="chip" data-status="with_any_note">עם הערות משותפות 💬</button>
           </div>
         </div>
       </div>
@@ -160,9 +165,29 @@
           </div>
         </div>
 
-        <div class="q-note-section">
-          <label for="qNoteInput">📝 הפנינה שלי (נשמר אוטומטית):</label>
-          <textarea id="qNoteInput" rows="2" placeholder="כתוב לעצמך הסבר קצר, אבחנה מבדלת או כלל אצבע לשאלה זו..."></textarea>
+        <div class="q-notes-container" id="qNotesContainer">
+          <button type="button" class="notes-toggle-btn" id="btnToggleNotes" aria-expanded="false">
+            <div class="notes-toggle-right">
+              <span class="notes-toggle-icon">💬</span>
+              <span id="notesToggleTitle">הערות ופנינים לשאלה זו</span>
+              <div class="notes-authors-preview" id="notesAuthorsPreview"></div>
+            </div>
+            <span class="notes-toggle-arrow" id="notesToggleArrow">הצג הערות 🔽</span>
+          </button>
+
+          <div class="notes-drawer hidden" id="qNotesDrawer">
+            <div class="community-notes-list" id="communityNotesList"></div>
+            <div class="my-note-editor">
+              <div class="my-note-header">
+                <label for="qNoteInput" id="myNoteLabel">📝 ההערה שלי:</label>
+                <div class="my-note-actions">
+                  <span class="note-sync-status" id="noteSyncStatus">מסונכרן ☁️</span>
+                  <button type="button" class="link-btn" id="btnRefreshNotes" title="רענן הערות מהענן">🔄 רענן</button>
+                </div>
+              </div>
+              <textarea id="qNoteInput" rows="2" placeholder="כתוב הסבר, אבחנה מבדלת או כלל אצבע שישותף תחת השם שלך..."></textarea>
+            </div>
+          </div>
         </div>
 
         <div class="q-nav-footer">
@@ -325,9 +350,36 @@
         <li><kbd>←</kbd> / <kbd>→</kbd> — שאלה הבאה / קודמת</li>
         <li><kbd>Space</kbd> / <kbd>Enter</kbd> — חשיפת כרטיסייה / מעבר לשאלה הבאה</li>
         <li><kbd>S</kbd> או <kbd>F</kbd> — סימון/ביטול מועדפים ⭐</li>
+        <li><kbd>N</kbd> — פתיחה/סגירה ידנית של מגירת ההערות 💬</li>
         <li><kbd>R</kbd> — ערבוב סדר השאלות 🔀</li>
         <li><kbd>Esc</kbd> — סגירת זום תמונה / חלון</li>
       </ul>
+    </div>
+  </div>
+
+  <!-- Identity Picker Modal -->
+  <div class="modal-overlay hidden" id="identityModal">
+    <div class="modal-box card identity-modal-box">
+      <div class="modal-header">
+        <h3>🎭 בחירת כינוי להערות משותפות</h3>
+        <button class="icon-btn" id="btnCloseIdentity">✕</button>
+      </div>
+      <p class="muted">בחר שם מתוך מאגר 100 הכינויים (פירות, ירקות, כלי מטבח ודמויות מהתנ״ך). ההערות שתכתוב יוצגו לכולם תחת הכינוי הזה.</p>
+      <div class="identity-current-banner">
+        <div>
+          <span class="muted">הכינוי הנוכחי שלך:</span>
+          <strong id="identityModalCurrent" class="identity-current-name">🍎 תפוח</strong>
+        </div>
+        <button type="button" class="btn-primary btn-sm" id="btnRandomIdentity">🎲 הגרל שם פנוי</button>
+      </div>
+      <div class="identity-category-tabs" id="identityCategoryTabs">
+        <button type="button" class="chip active" data-cat="הכל">הכל (100)</button>
+        <button type="button" class="chip" data-cat="פירות">🍎 פירות (25)</button>
+        <button type="button" class="chip" data-cat="ירקות">🥦 ירקות (25)</button>
+        <button type="button" class="chip" data-cat="כלי מטבח">🍳 כלי מטבח (25)</button>
+        <button type="button" class="chip" data-cat="תנ&quot;ך">📜 תנ״ך (25)</button>
+      </div>
+      <div class="identity-picker-grid" id="identityPickerGrid"></div>
     </div>
   </div>
 

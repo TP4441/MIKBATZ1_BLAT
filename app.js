@@ -3,7 +3,118 @@
 
   const STORAGE_KEY = "med_exam_cluster1_progress_v1";
   const THEME_KEY = "med_exam_theme_v1";
+  const IDENTITY_KEY = "med_exam_user_identity_v1";
+  const COMMUNITY_NOTES_CACHE_KEY = "med_exam_community_notes_cache_v1";
+  const CLOUD_NOTES_URL = "https://textdb.dev/api/data/mikbatz1_blat_notes_1b014a75-b087-45fc-9cea-c4749561ae4e";
   const HEBREW_LETTERS = ["א", "ב", "ג", "ד", "ה", "ו"];
+
+  // 100 unique identities across 4 categories (25 each)
+  const IDENTITY_CATALOG = [
+    // פירות (1-25)
+    { name: "תפוח", emoji: "🍎", category: "פירות" },
+    { name: "מנגו", emoji: "🥭", category: "פירות" },
+    { name: "תות", emoji: "🍓", category: "פירות" },
+    { name: "אננס", emoji: "🍍", category: "פירות" },
+    { name: "אבטיח", emoji: "🍉", category: "פירות" },
+    { name: "אפרסק", emoji: "🍑", category: "פירות" },
+    { name: "דובדבן", emoji: "🍒", category: "פירות" },
+    { name: "קיווי", emoji: "🥝", category: "פירות" },
+    { name: "בננה", emoji: "🍌", category: "פירות" },
+    { name: "ענבים", emoji: "🍇", category: "פירות" },
+    { name: "אגס", emoji: "🍐", category: "פירות" },
+    { name: "תפוז", emoji: "🍊", category: "פירות" },
+    { name: "לימון", emoji: "🍋", category: "פירות" },
+    { name: "אוכמניות", emoji: "🫐", category: "פירות" },
+    { name: "קוקוס", emoji: "🥥", category: "פירות" },
+    { name: "מלון", emoji: "🍈", category: "פירות" },
+    { name: "רימון", emoji: "🍎", category: "פירות" },
+    { name: "ליצ'י", emoji: "🍒", category: "פירות" },
+    { name: "פסיפלורה", emoji: "🥭", category: "פירות" },
+    { name: "שזיף", emoji: "🍑", category: "פירות" },
+    { name: "קלמנטינה", emoji: "🍊", category: "פירות" },
+    { name: "גויאבה", emoji: "🍈", category: "פירות" },
+    { name: "סברס", emoji: "🌵", category: "פירות" },
+    { name: "תמר", emoji: "🌴", category: "פירות" },
+    { name: "משמש", emoji: "🍑", category: "פירות" },
+    // ירקות (26-50)
+    { name: "עגבנייה", emoji: "🍅", category: "ירקות" },
+    { name: "מלפפון", emoji: "🥒", category: "ירקות" },
+    { name: "גזר", emoji: "🥕", category: "ירקות" },
+    { name: "אבוקדו", emoji: "🥑", category: "ירקות" },
+    { name: "ברוקולי", emoji: "🥦", category: "ירקות" },
+    { name: "חציל", emoji: "🍆", category: "ירקות" },
+    { name: "תירס", emoji: "🌽", category: "ירקות" },
+    { name: "פלפל חריף", emoji: "🌶️", category: "ירקות" },
+    { name: "גמבה", emoji: "🫑", category: "ירקות" },
+    { name: "שום", emoji: "🧄", category: "ירקות" },
+    { name: "בצל", emoji: "🧅", category: "ירקות" },
+    { name: "תפוח אדמה", emoji: "🥔", category: "ירקות" },
+    { name: "בטטה", emoji: "🍠", category: "ירקות" },
+    { name: "חסה", emoji: "🥬", category: "ירקות" },
+    { name: "פטרייה", emoji: "🍄", category: "ירקות" },
+    { name: "דלעת", emoji: "🎃", category: "ירקות" },
+    { name: "קישוא", emoji: "🥒", category: "ירקות" },
+    { name: "כרובית", emoji: "🥦", category: "ירקות" },
+    { name: "תרד", emoji: "🥬", category: "ירקות" },
+    { name: "ג'ינג'ר", emoji: "🫚", category: "ירקות" },
+    { name: "אפונה", emoji: "🫛", category: "ירקות" },
+    { name: "קולורבי", emoji: "🥗", category: "ירקות" },
+    { name: "סלרי", emoji: "🌿", category: "ירקות" },
+    { name: "זית", emoji: "🫒", category: "ירקות" },
+    { name: "צנונית", emoji: "🥕", category: "ירקות" },
+    // כלי מטבח (51-75)
+    { name: "מצקת", emoji: "🥄", category: "כלי מטבח" },
+    { name: "מחבת", emoji: "🍳", category: "כלי מטבח" },
+    { name: "סיר", emoji: "🍲", category: "כלי מטבח" },
+    { name: "קערה", emoji: "🥣", category: "כלי מטבח" },
+    { name: "מזלג", emoji: "🍴", category: "כלי מטבח" },
+    { name: "כף", emoji: "🥄", category: "כלי מטבח" },
+    { name: "סכין שף", emoji: "🔪", category: "כלי מטבח" },
+    { name: "צ'ופסטיקס", emoji: "🥢", category: "כלי מטבח" },
+    { name: "פינג'אן", emoji: "☕", category: "כלי מטבח" },
+    { name: "קומקום", emoji: "🫖", category: "כלי מטבח" },
+    { name: "תבנית אפייה", emoji: "🧁", category: "כלי מטבח" },
+    { name: "מערוך", emoji: "🥖", category: "כלי מטבח" },
+    { name: "פומפייה", emoji: "🧀", category: "כלי מטבח" },
+    { name: "מסננת", emoji: "🥗", category: "כלי מטבח" },
+    { name: "מרית", emoji: "🥞", category: "כלי מטבח" },
+    { name: "מטרפה", emoji: "🥚", category: "כלי מטבח" },
+    { name: "כותש שום", emoji: "🧄", category: "כלי מטבח" },
+    { name: "קולפן", emoji: "🥔", category: "כלי מטבח" },
+    { name: "קרש חיתוך", emoji: "🪵", category: "כלי מטבח" },
+    { name: "פותחן", emoji: "🥫", category: "כלי מטבח" },
+    { name: "משקל מטבח", emoji: "⚖️", category: "כלי מטבח" },
+    { name: "צנצנת", emoji: "🫙", category: "כלי מטבח" },
+    { name: "צלחת", emoji: "🍽️", category: "כלי מטבח" },
+    { name: "כוס מדידה", emoji: "🥛", category: "כלי מטבח" },
+    { name: "מבער", emoji: "🔥", category: "כלי מטבח" },
+    // תנ"ך (76-100)
+    { name: "משה", emoji: "📜", category: "תנ\"ך" },
+    { name: "דוד", emoji: "👑", category: "תנ\"ך" },
+    { name: "שלמה", emoji: "🦁", category: "תנ\"ך" },
+    { name: "דבורה", emoji: "⚖️", category: "תנ\"ך" },
+    { name: "אסתר", emoji: "👑", category: "תנ\"ך" },
+    { name: "רות", emoji: "🌾", category: "תנ\"ך" },
+    { name: "יהושע", emoji: "🎺", category: "תנ\"ך" },
+    { name: "אליהו", emoji: "🔥", category: "תנ\"ך" },
+    { name: "יונה", emoji: "🕊️", category: "תנ\"ך" },
+    { name: "שמשון", emoji: "💪", category: "תנ\"ך" },
+    { name: "שמואל", emoji: "🏺", category: "תנ\"ך" },
+    { name: "מרים", emoji: "🌿", category: "תנ\"ך" },
+    { name: "אברהם", emoji: "⛺", category: "תנ\"ך" },
+    { name: "שרה", emoji: "🌟", category: "תנ\"ך" },
+    { name: "יעקב", emoji: "🐑", category: "תנ\"ך" },
+    { name: "רחל", emoji: "🌸", category: "תנ\"ך" },
+    { name: "רבקה", emoji: "💧", category: "תנ\"ך" },
+    { name: "לאה", emoji: "🌾", category: "תנ\"ך" },
+    { name: "יוסף", emoji: "🧥", category: "תנ\"ך" },
+    { name: "יהונתן", emoji: "🏹", category: "תנ\"ך" },
+    { name: "דניאל", emoji: "🦁", category: "תנ\"ך" },
+    { name: "גדעון", emoji: "📯", category: "תנ\"ך" },
+    { name: "חזקיהו", emoji: "👑", category: "תנ\"ך" },
+    { name: "אביגיל", emoji: "🎶", category: "תנ\"ך" },
+    { name: "יעל", emoji: "🛡️", category: "תנ\"ך" },
+  ];
 
   const DATA = window.EXAM_DATA;
   if (!DATA || !Array.isArray(DATA.questions)) {
@@ -26,6 +137,15 @@
   let flashcardRevealed = false;
   let sessionAnswered = 0;
   let sessionCorrect = 0;
+  let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
+  let userIdentity = loadOrInitIdentity();
+  let notesExpanded = false; // Always closed by default (strict manual spoiler toggle)
+  let lastRenderedQId = null;
+  let activeIdentityCategory = "הכל";
+  let noteSyncState = "synced";
+  let noteInputDebounce = null;
+  const pendingDirtyQIds = new Set();
+  let cloudWriteQueue = Promise.resolve();
 
   // Filter state
   const filters = {
@@ -115,6 +235,481 @@
     t.textContent = msg;
     container.appendChild(t);
     setTimeout(() => t.remove(), 3200);
+  }
+
+  // Identity & Community Notes helpers
+  function loadCommunityNotesCache() {
+    try {
+      const raw = localStorage.getItem(COMMUNITY_NOTES_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveCommunityNotesCache() {
+    try {
+      localStorage.setItem(COMMUNITY_NOTES_CACHE_KEY, JSON.stringify(communityNotes));
+    } catch {}
+  }
+
+  function getTakenAuthorNames() {
+    const taken = new Set();
+    Object.values(communityNotes).forEach((byUser) => {
+      if (!byUser || typeof byUser !== "object") return;
+      Object.entries(byUser).forEach(([uid, noteObj]) => {
+        if (userIdentity && uid === userIdentity.userId) return;
+        if (noteObj && typeof noteObj.text === "string" && noteObj.text.trim() && noteObj.author) {
+          taken.add(noteObj.author);
+        }
+      });
+    });
+    return taken;
+  }
+
+  function pickRandomIdentity(excludeCurrent = true) {
+    const taken = getTakenAuthorNames();
+    let pool = IDENTITY_CATALOG.filter((item) => {
+      if (excludeCurrent && userIdentity && item.name === userIdentity.name) return false;
+      return !taken.has(item.name);
+    });
+    if (pool.length === 0) {
+      pool = IDENTITY_CATALOG.filter((item) => !(excludeCurrent && userIdentity && item.name === userIdentity.name));
+    }
+    if (pool.length === 0) pool = IDENTITY_CATALOG;
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  function loadOrInitIdentity() {
+    try {
+      const raw = localStorage.getItem(IDENTITY_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const match = IDENTITY_CATALOG.find((item) => item.name === parsed?.name);
+        if (parsed?.userId && match) {
+          return {
+            userId: String(parsed.userId),
+            name: match.name,
+            emoji: match.emoji,
+            category: match.category,
+          };
+        }
+      }
+    } catch {}
+    const picked = pickRandomIdentity(false);
+    const created = {
+      userId: "u_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
+      name: picked.name,
+      emoji: picked.emoji,
+      category: picked.category,
+    };
+    try {
+      localStorage.setItem(IDENTITY_KEY, JSON.stringify(created));
+    } catch {}
+    return created;
+  }
+
+  function updateIdentityUI() {
+    const label = `${userIdentity.emoji} ${userIdentity.name}`;
+    const badge = el("userIdentityBadge");
+    if (badge) badge.textContent = label;
+    const modalCur = el("identityModalCurrent");
+    if (modalCur) modalCur.textContent = label;
+    const myLabel = el("myNoteLabel");
+    if (myLabel) myLabel.textContent = `📝 ההערה שלי בתור ${label}:`;
+  }
+
+  function saveUserIdentity() {
+    try {
+      localStorage.setItem(IDENTITY_KEY, JSON.stringify(userIdentity));
+    } catch {}
+    updateIdentityUI();
+  }
+
+  function selectIdentity(entry) {
+    userIdentity = {
+      userId: userIdentity.userId,
+      name: entry.name,
+      emoji: entry.emoji,
+      category: entry.category,
+    };
+    saveUserIdentity();
+
+    let updatedAny = false;
+    const now = Date.now();
+    Object.entries(communityNotes).forEach(([qId, byUser]) => {
+      if (byUser && byUser[userIdentity.userId]) {
+        byUser[userIdentity.userId].author = entry.name;
+        byUser[userIdentity.userId].emoji = entry.emoji;
+        byUser[userIdentity.userId].category = entry.category;
+        byUser[userIdentity.userId].updatedAt = now;
+        pendingDirtyQIds.add(qId);
+        updatedAny = true;
+      }
+    });
+
+    if (updatedAny) {
+      saveCommunityNotesCache();
+      enqueueCloudSync();
+    }
+
+    if (!el("identityModal").classList.contains("hidden")) {
+      renderIdentityModal();
+    }
+    if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
+      renderNotesSection(filteredList[currentIndex], true);
+    }
+    showToast(`🎭 הכינוי שלך עודכן ל-${entry.emoji} ${entry.name}`);
+  }
+
+  function renderIdentityModal() {
+    updateIdentityUI();
+    const taken = getTakenAuthorNames();
+    const tabs = el("identityCategoryTabs").querySelectorAll(".chip");
+    tabs.forEach((t) => t.classList.toggle("active", t.dataset.cat === activeIdentityCategory));
+
+    const grid = el("identityPickerGrid");
+    grid.innerHTML = "";
+    const items = activeIdentityCategory === "הכל"
+      ? IDENTITY_CATALOG
+      : IDENTITY_CATALOG.filter((item) => item.category === activeIdentityCategory);
+
+    items.forEach((item) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      const isCurrent = item.name === userIdentity.name;
+      const isTaken = !isCurrent && taken.has(item.name);
+      btn.className = "identity-option-btn" + (isCurrent ? " active" : "");
+
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = `${item.emoji} ${item.name}`;
+
+      const statusSpan = document.createElement("span");
+      statusSpan.className = "identity-option-status";
+      statusSpan.textContent = isCurrent ? "שלך" : isTaken ? "פעיל" : "";
+
+      btn.append(nameSpan, statusSpan);
+      btn.onclick = () => selectIdentity(item);
+      grid.appendChild(btn);
+    });
+  }
+
+  function getMyNoteText(qId) {
+    const cloudMine = communityNotes[qId]?.[userIdentity.userId]?.text;
+    if (typeof cloudMine === "string") return cloudMine;
+    return progress.notes[qId] || "";
+  }
+
+  function getQuestionCommunityNotesList(qId) {
+    const byUser = communityNotes[qId];
+    const list = [];
+    if (byUser && typeof byUser === "object") {
+      Object.entries(byUser).forEach(([uid, noteObj]) => {
+        if (!noteObj || typeof noteObj.text !== "string") return;
+        const text = noteObj.text.trim();
+        if (!text) return;
+        list.push({
+          userId: uid,
+          author: noteObj.author || "אנונימי",
+          emoji: noteObj.emoji || "💬",
+          category: noteObj.category || "",
+          text: noteObj.text,
+          updatedAt: Number(noteObj.updatedAt) || 0,
+          isMine: uid === userIdentity.userId,
+        });
+      });
+    }
+    // Put current user's note first, then newest first
+    list.sort((a, b) => {
+      if (a.isMine !== b.isMine) return a.isMine ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    });
+    return list;
+  }
+
+  function formatNoteTime(ts) {
+    if (!ts) return "";
+    try {
+      return new Date(ts).toLocaleString("he-IL", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "";
+    }
+  }
+
+  function updateNoteSyncBadge() {
+    const statusEl = el("noteSyncStatus");
+    if (!statusEl) return;
+    if (noteSyncState === "saving") statusEl.textContent = "שומר לענן... ⏳";
+    else if (noteSyncState === "offline") statusEl.textContent = "שמור מקומית (אופליין) 💾";
+    else if (noteSyncState === "error") statusEl.textContent = "ממתין לסנכרון ⚠️";
+    else statusEl.textContent = "מסונכרן ☁️";
+  }
+
+  function renderNotesSection(q, preserveFocus = false) {
+    updateIdentityUI();
+    const notesList = getQuestionCommunityNotesList(q.id);
+
+    const toggleBtn = el("btnToggleNotes");
+    toggleBtn.setAttribute("aria-expanded", notesExpanded ? "true" : "false");
+    toggleBtn.classList.toggle("open", notesExpanded);
+    toggleBtn.classList.toggle("has-notes", notesList.length > 0);
+
+    el("notesToggleTitle").textContent = notesList.length > 0
+      ? `הערות לשאלה זו (${notesList.length})`
+      : "אין הערות עדיין לשאלה זו";
+
+    const previewEl = el("notesAuthorsPreview");
+    previewEl.innerHTML = "";
+    const maxPreview = 5;
+    notesList.slice(0, maxPreview).forEach((n) => {
+      const chip = document.createElement("span");
+      chip.className = "author-chip-mini" + (n.isMine ? " is-mine" : "");
+      chip.textContent = `${n.emoji} ${n.author}`;
+      previewEl.appendChild(chip);
+    });
+    if (notesList.length > maxPreview) {
+      const more = document.createElement("span");
+      more.className = "author-chip-mini";
+      more.textContent = `+${notesList.length - maxPreview}`;
+      previewEl.appendChild(more);
+    }
+
+    el("notesToggleArrow").textContent = notesExpanded
+      ? "הסתר הערות 🔼"
+      : notesList.length > 0
+      ? "לחץ להצגה 🔽"
+      : "הוסף הערה 🔽";
+
+    el("qNotesDrawer").classList.toggle("hidden", !notesExpanded);
+
+    const listEl = el("communityNotesList");
+    listEl.innerHTML = "";
+    if (notesList.length === 0) {
+      const emptyMsg = document.createElement("div");
+      emptyMsg.className = "community-notes-empty";
+      emptyMsg.textContent = "אין עדיין הערות משותפות לשאלה זו. כתוב הערה למטה והיא תשותף עם כולם!";
+      listEl.appendChild(emptyMsg);
+    } else {
+      notesList.forEach((n) => {
+        const card = document.createElement("div");
+        card.className = "community-note-card" + (n.isMine ? " is-mine" : "");
+
+        const head = document.createElement("div");
+        head.className = "community-note-head";
+
+        const authorSpan = document.createElement("span");
+        authorSpan.className = "community-note-author";
+        authorSpan.textContent = `${n.emoji} ${n.author}`;
+        if (n.isMine) {
+          const mineBadge = document.createElement("span");
+          mineBadge.className = "community-note-mine-badge";
+          mineBadge.textContent = "שלי";
+          authorSpan.appendChild(mineBadge);
+        }
+
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "community-note-time";
+        timeSpan.textContent = formatNoteTime(n.updatedAt);
+
+        head.append(authorSpan, timeSpan);
+
+        const textDiv = document.createElement("div");
+        textDiv.className = "community-note-text";
+        textDiv.textContent = n.text;
+
+        card.append(head, textDiv);
+        listEl.appendChild(card);
+      });
+    }
+
+    const inputEl = el("qNoteInput");
+    if (!(preserveFocus && document.activeElement === inputEl)) {
+      inputEl.value = getMyNoteText(q.id);
+    }
+    updateNoteSyncBadge();
+  }
+
+  function toggleNotesDrawer(forceState = null) {
+    if (filteredList.length === 0) return;
+    notesExpanded = forceState !== null ? Boolean(forceState) : !notesExpanded;
+    renderNotesSection(filteredList[currentIndex], true);
+  }
+
+  function normalizeCloudPayload(raw) {
+    if (raw && typeof raw === "object" && raw.notes && typeof raw.notes === "object") {
+      return { version: 1, notes: raw.notes };
+    }
+    return { version: 1, notes: {} };
+  }
+
+  function mergeCloudIntoLocal(cloudPayload) {
+    const normalized = normalizeCloudPayload(cloudPayload);
+    const merged = {};
+
+    // Start from cloud notes
+    Object.entries(normalized.notes).forEach(([qId, byUser]) => {
+      if (!byUser || typeof byUser !== "object") return;
+      merged[qId] = {};
+      Object.entries(byUser).forEach(([uid, noteObj]) => {
+        if (noteObj && typeof noteObj.text === "string" && noteObj.text.trim()) {
+          merged[qId][uid] = { ...noteObj };
+        }
+      });
+      if (Object.keys(merged[qId]).length === 0) delete merged[qId];
+    });
+
+    // Preserve any local unsynced edits for current user
+    pendingDirtyQIds.forEach((qId) => {
+      const localMine = communityNotes[qId]?.[userIdentity.userId];
+      if (!merged[qId]) merged[qId] = {};
+      if (localMine && localMine.text && localMine.text.trim()) {
+        merged[qId][userIdentity.userId] = { ...localMine };
+      } else {
+        delete merged[qId][userIdentity.userId];
+        if (Object.keys(merged[qId]).length === 0) delete merged[qId];
+      }
+    });
+
+    communityNotes = merged;
+    saveCommunityNotesCache();
+  }
+
+  async function fetchCloudNotesPayload() {
+    try {
+      const res = await fetch(CLOUD_NOTES_URL, { cache: "no-store" });
+      if (res.ok) {
+        const text = await res.text();
+        if (!text || !text.trim()) return { version: 1, notes: {} };
+        return normalizeCloudPayload(JSON.parse(text));
+      }
+    } catch {}
+    if (serverOnline) {
+      const res = await fetch("/api/community-notes", { cache: "no-store" });
+      if (res.ok) return normalizeCloudPayload(await res.json());
+    }
+    throw new Error("Cloud notes unreachable");
+  }
+
+  async function pullCloudNotes(showFeedback = false) {
+    try {
+      const cloudData = await fetchCloudNotesPayload();
+      mergeCloudIntoLocal(cloudData);
+      if (pendingDirtyQIds.size === 0) {
+        noteSyncState = "synced";
+      }
+      if (serverOnline) {
+        fetch("/api/community-notes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: 1, notes: communityNotes }),
+        }).catch(() => {});
+      }
+      if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
+        renderNotesSection(filteredList[currentIndex], true);
+      }
+      if (showFeedback) showToast("🔄 ההערות המשותפות רועננו מהענן!");
+    } catch {
+      if (pendingDirtyQIds.size > 0) noteSyncState = "offline";
+      updateNoteSyncBadge();
+      if (showFeedback) showToast("⚠️ לא ניתן להתחבר לענן כרגע — מציג מטמון מקומי.");
+    }
+  }
+
+  function enqueueCloudSync() {
+    cloudWriteQueue = cloudWriteQueue
+      .then(async () => {
+        if (pendingDirtyQIds.size === 0) return;
+        noteSyncState = "saving";
+        updateNoteSyncBadge();
+
+        const syncSnapshot = new Map();
+        pendingDirtyQIds.forEach((qId) => {
+          const entry = communityNotes[qId]?.[userIdentity.userId];
+          syncSnapshot.set(qId, entry ? { ...entry } : null);
+        });
+
+        let cloudData = { version: 1, notes: {} };
+        let cloudReachable = false;
+        try {
+          const res = await fetch(CLOUD_NOTES_URL, { cache: "no-store" });
+          if (res.ok) {
+            cloudReachable = true;
+            const text = await res.text();
+            if (text && text.trim()) {
+              cloudData = normalizeCloudPayload(JSON.parse(text));
+            }
+          }
+        } catch {}
+
+        // Apply our snapshot onto latest cloud data (merge-safe per questionId + userId)
+        syncSnapshot.forEach((entry, qId) => {
+          if (!cloudData.notes[qId] || typeof cloudData.notes[qId] !== "object") {
+            cloudData.notes[qId] = {};
+          }
+          if (entry && entry.text && entry.text.trim()) {
+            cloudData.notes[qId][userIdentity.userId] = entry;
+          } else {
+            delete cloudData.notes[qId][userIdentity.userId];
+            if (Object.keys(cloudData.notes[qId]).length === 0) {
+              delete cloudData.notes[qId];
+            }
+          }
+        });
+
+        let cloudSaved = false;
+        if (cloudReachable) {
+          try {
+            const postRes = await fetch(CLOUD_NOTES_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cloudData),
+            });
+            cloudSaved = postRes.ok;
+          } catch {}
+        }
+
+        if (serverOnline) {
+          fetch("/api/community-notes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cloudData),
+          }).catch(() => {});
+        }
+
+        if (cloudSaved) {
+          // Clear only qIds that haven't been modified again while request was in flight
+          syncSnapshot.forEach((sentEntry, qId) => {
+            const currentEntry = communityNotes[qId]?.[userIdentity.userId] || null;
+            const sameText = (sentEntry?.text || "") === (currentEntry?.text || "");
+            const sameAuthor = (sentEntry?.author || "") === (currentEntry?.author || "");
+            if (sameText && sameAuthor) {
+              pendingDirtyQIds.delete(qId);
+            }
+          });
+          mergeCloudIntoLocal(cloudData);
+          noteSyncState = pendingDirtyQIds.size > 0 ? "saving" : "synced";
+        } else {
+          noteSyncState = "offline";
+        }
+
+        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
+          renderNotesSection(filteredList[currentIndex], true);
+        } else {
+          updateNoteSyncBadge();
+        }
+      })
+      .catch(() => {
+        noteSyncState = "error";
+        updateNoteSyncBadge();
+      });
+    return cloudWriteQueue;
   }
 
   // Theme
@@ -228,7 +823,8 @@
 
         const att = progress.attempts[q.id];
         const fl = progress.flags[q.id] || {};
-        const note = (progress.notes[q.id] || "").trim();
+        const myNote = getMyNoteText(q.id).trim();
+        const qCommNotes = getQuestionCommunityNotesList(q.id);
 
         switch (filters.status) {
           case "unsolved": if (att) return false; break;
@@ -237,14 +833,17 @@
           case "unsure": if (!fl.unsure) return false; break;
           case "problematic": if (!fl.problem) return false; break;
           case "with_image": if (q.images.length === 0) return false; break;
-          case "with_note": if (!note) return false; break;
+          case "with_note": if (!myNote) return false; break;
+          case "with_any_note": if (qCommNotes.length === 0 && !myNote) return false; break;
         }
 
         if (term) {
+          const commText = qCommNotes.map((n) => `${n.emoji} ${n.author} ${n.text}`).join(" ");
           const hay = (
             q.stem + " " +
             q.options.map((o) => o.text).join(" ") + " " +
-            note + " " +
+            myNote + " " +
+            commText + " " +
             q.exam + " " +
             q.subject
           ).toLowerCase();
@@ -298,6 +897,10 @@
     if (currentIndex < 0) currentIndex = 0;
 
     const q = filteredList[currentIndex];
+    if (q.id !== lastRenderedQId) {
+      notesExpanded = false;
+      lastRenderedQId = q.id;
+    }
     const att = progress.attempts[q.id];
     const fl = progress.flags[q.id] || {};
     const struckSet = new Set(progress.struck[q.id] || []);
@@ -420,8 +1023,8 @@
       fcCtrl.classList.add("hidden");
     }
 
-    // Note
-    el("qNoteInput").value = progress.notes[q.id] || "";
+    // Notes (always closed by default on new question; preserves state when answering same question)
+    renderNotesSection(q, true);
   }
 
   function showFeedbackBox(q, isCorrect) {
@@ -979,9 +1582,10 @@
   async function exportToObsidian() {
     const wrongOrNoted = QUESTIONS.filter((q) => {
       const att = progress.attempts[q.id];
-      const note = (progress.notes[q.id] || "").trim();
+      const note = getMyNoteText(q.id).trim();
+      const qComm = getQuestionCommunityNotesList(q.id);
       const fl = progress.flags[q.id] || {};
-      return (att && !att.isCorrect) || note || fl.star || fl.problem;
+      return (att && !att.isCorrect) || note || qComm.length > 0 || fl.star || fl.problem;
     });
 
     if (wrongOrNoted.length === 0) {
@@ -994,7 +1598,7 @@
         const res = await fetch("/api/export-obsidian", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ progress }),
+          body: JSON.stringify({ progress, communityNotes }),
         });
         const data = await res.json();
         if (res.ok) {
@@ -1007,12 +1611,16 @@
     // Offline fallback: download Markdown
     const lines = ["# מחברת טעויות והערות – מקבץ 1\n"];
     wrongOrNoted.forEach((q) => {
-      const note = (progress.notes[q.id] || "").trim();
+      const note = getMyNoteText(q.id).trim();
+      const qComm = getQuestionCommunityNotesList(q.id);
       const corrText = q.correct.map((i) => `${q.options[i].letter}. ${q.options[i].text}`).join(" / ");
       lines.push(`## ${q.exam} · שאלה ${q.num} (${q.subject})`);
       lines.push(q.stem);
       lines.push(`**תשובה נכונה:** ${corrText}`);
-      if (note) lines.push(`> 📝 **הפנינה שלי:** ${note}`);
+      if (note) lines.push(`> 📝 **הפנינה שלי (${userIdentity.emoji} ${userIdentity.name}):** ${note}`);
+      qComm.filter((n) => !n.isMine).forEach((n) => {
+        lines.push(`> 💬 **${n.emoji} ${n.author}:** ${n.text}`);
+      });
       lines.push("");
     });
 
@@ -1027,6 +1635,8 @@
   // Mode switching
   function switchMode(mode) {
     currentMode = mode;
+    notesExpanded = false;
+    lastRenderedQId = null;
     document.querySelectorAll("#modeTabs .tab-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.mode === mode);
     });
@@ -1149,11 +1759,56 @@
       renderQuestion();
     };
 
+    el("btnToggleNotes").onclick = () => toggleNotesDrawer();
+    el("btnRefreshNotes").onclick = () => pullCloudNotes(true);
+
+    el("btnUserIdentity").onclick = () => {
+      renderIdentityModal();
+      el("identityModal").classList.remove("hidden");
+    };
+    el("btnCloseIdentity").onclick = () => el("identityModal").classList.add("hidden");
+    el("btnRandomIdentity").onclick = () => selectIdentity(pickRandomIdentity(true));
+    el("identityCategoryTabs").querySelectorAll(".chip").forEach((tab) => {
+      tab.onclick = () => {
+        activeIdentityCategory = tab.dataset.cat;
+        renderIdentityModal();
+      };
+    });
+
     el("qNoteInput").addEventListener("input", (e) => {
       if (filteredList.length === 0) return;
       const q = filteredList[currentIndex];
-      progress.notes[q.id] = e.target.value;
+      const text = e.target.value;
+      progress.notes[q.id] = text;
       saveProgress();
+
+      if (!communityNotes[q.id] || typeof communityNotes[q.id] !== "object") {
+        communityNotes[q.id] = {};
+      }
+      if (text.trim()) {
+        communityNotes[q.id][userIdentity.userId] = {
+          author: userIdentity.name,
+          emoji: userIdentity.emoji,
+          category: userIdentity.category,
+          text,
+          updatedAt: Date.now(),
+        };
+      } else {
+        delete communityNotes[q.id][userIdentity.userId];
+        if (Object.keys(communityNotes[q.id]).length === 0) {
+          delete communityNotes[q.id];
+        }
+      }
+
+      pendingDirtyQIds.add(q.id);
+      saveCommunityNotesCache();
+      noteSyncState = "saving";
+      renderNotesSection(q, true);
+
+      clearTimeout(noteInputDebounce);
+      noteInputDebounce = setTimeout(() => {
+        enqueueCloudSync();
+      }, 700);
     });
 
     // Flashcard
@@ -1217,6 +1872,7 @@
         el("lightboxModal").classList.add("hidden");
         el("backupModal").classList.add("hidden");
         el("shortcutsModal").classList.add("hidden");
+        el("identityModal").classList.add("hidden");
         return;
       }
       const tag = document.activeElement?.tagName;
@@ -1250,6 +1906,9 @@
         else nextQuestion();
       } else if (e.key.toLowerCase() === "s" || e.key.toLowerCase() === "f") {
         toggleFlag("star");
+      } else if (e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        toggleNotesDrawer();
       } else if (e.key.toLowerCase() === "r") {
         shuffleFilteredQuestions();
       }
@@ -1259,10 +1918,13 @@
   // Init
   initTheme();
   initLightbox();
+  updateIdentityUI();
   renderFilterChips();
   initExamSetup();
   updateDrillBadge();
   bindEvents();
   applyFilters();
   checkServer();
+  pullCloudNotes(false);
+  setInterval(() => pullCloudNotes(false), 45000);
 })();
