@@ -1736,11 +1736,8 @@
       showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
     };
 
-    el("qNoteInput").addEventListener("input", (e) => {
-      if (filteredList.length === 0) return;
+    function applyNoteInput(q, text) {
       identityNeedsCloudCheck = false;
-      const q = filteredList[currentIndex];
-      const text = e.target.value;
       progress.notes[q.id] = text;
       saveProgress();
 
@@ -1766,12 +1763,60 @@
       saveCommunityNotesCache();
       noteSyncState = "saving";
       renderNotesSection(q, true);
+    }
 
+    async function submitNoteNow() {
+      if (filteredList.length === 0) return;
+      const q = filteredList[currentIndex];
+      const text = el("qNoteInput").value;
+      clearTimeout(noteInputDebounce);
+      applyNoteInput(q, text);
+      await enqueueCloudSync();
+      if (noteSyncState === "synced") {
+        showToast(text.trim() ? "💬 ההערה נשלחה ונשמרה בענן!" : "🗑️ ההערה נמחקה.");
+      }
+    }
+
+    el("qNoteInput").addEventListener("input", (e) => {
+      if (filteredList.length === 0) return;
+      applyNoteInput(filteredList[currentIndex], e.target.value);
       clearTimeout(noteInputDebounce);
       noteInputDebounce = setTimeout(() => {
         enqueueCloudSync();
       }, 700);
     });
+
+    let lastNoteShiftDown = false;
+    let lastNoteEnterSubmitAt = 0;
+
+    function triggerEnterSubmit() {
+      const now = Date.now();
+      if (now - lastNoteEnterSubmitAt < 100) return;
+      lastNoteEnterSubmitAt = now;
+      submitNoteNow();
+    }
+
+    el("qNoteInput").addEventListener("keydown", (e) => {
+      lastNoteShiftDown = e.shiftKey;
+      const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter" || e.keyCode === 13;
+      if (isEnter && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        triggerEnterSubmit();
+      }
+    });
+
+    el("qNoteInput").addEventListener("keyup", (e) => {
+      lastNoteShiftDown = e.shiftKey;
+    });
+
+    el("qNoteInput").addEventListener("beforeinput", (e) => {
+      if ((e.inputType === "insertLineBreak" || (e.inputType === "insertText" && e.data === "\n")) && !lastNoteShiftDown) {
+        e.preventDefault();
+        triggerEnterSubmit();
+      }
+    });
+
+    el("btnSendNote").onclick = () => submitNoteNow();
 
     // Flashcard
     el("btnRevealCard").onclick = revealFlashcard;
