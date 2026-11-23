@@ -1,0 +1,421 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-23T18:06:00+02:00",
+  "title": "Design System: Technion Monograph",
+  "extensions": {
+    "colorMeta": {
+      "haifa-cobalt": {
+        "role": "primary",
+        "displayName": "Haifa Cobalt",
+        "canonical": "#163A5F",
+        "tonalRamp": ["#071525", "#0E253F", "#163A5F", "#245484", "#3B72A8", "#6598C7", "#A3C4E2", "#EBF1F6"]
+      },
+      "deep-cobalt": {
+        "role": "primary",
+        "displayName": "Deep Cobalt",
+        "canonical": "#102B47",
+        "tonalRamp": ["#06111D", "#0B1E32", "#102B47", "#1D446B", "#316290", "#5A88B4", "#98B8D8", "#E3ECF5"]
+      },
+      "cobalt-wash": {
+        "role": "primary",
+        "displayName": "Cobalt Wash",
+        "canonical": "#EBF1F6",
+        "tonalRamp": ["#0B1722", "#172E44", "#274B6E", "#416D96", "#6A94BA", "#9CBCD8", "#CADEEB", "#EBF1F6"]
+      },
+      "archival-paper": {
+        "role": "neutral",
+        "displayName": "Archival Paper",
+        "canonical": "#F9F7F2",
+        "tonalRamp": ["#1F1D18", "#3B372E", "#5B5548", "#7E7767", "#A49D8D", "#C8C2B4", "#E6E2D6", "#F9F7F2"]
+      },
+      "reading-plate": {
+        "role": "neutral",
+        "displayName": "Reading Plate",
+        "canonical": "#FFFFFF",
+        "tonalRamp": ["#1A1C1E", "#35383C", "#54585E", "#767B82", "#9A9FA6", "#BFC3C8", "#E2E4E7", "#FFFFFF"]
+      },
+      "muted-parchment": {
+        "role": "neutral",
+        "displayName": "Muted Parchment",
+        "canonical": "#F2EFE6",
+        "tonalRamp": ["#1E1C16", "#39352A", "#575142", "#79715E", "#9E9682", "#C1BA9E", "#DCD7C6", "#F2EFE6"]
+      },
+      "pressed-parchment": {
+        "role": "neutral",
+        "displayName": "Pressed Parchment",
+        "canonical": "#EAE5D9",
+        "tonalRamp": ["#1D1A14", "#363126", "#534C3C", "#746B57", "#978D77", "#B9B09A", "#D5CEBE", "#EAE5D9"]
+      },
+      "hairline-rule": {
+        "role": "neutral",
+        "displayName": "Hairline Rule",
+        "canonical": "#DFDBD0",
+        "tonalRamp": ["#1C1A15", "#343028", "#504A3E", "#6F6758", "#918878", "#B3AB9C", "#CCC6BA", "#DFDBD0"]
+      },
+      "folio-rule": {
+        "role": "neutral",
+        "displayName": "Folio Rule",
+        "canonical": "#C9C3B5",
+        "tonalRamp": ["#191713", "#2F2B24", "#494338", "#655D4E", "#857C6B", "#A79E8D", "#C9C3B5", "#EAE6DC"]
+      },
+      "editorial-ink": {
+        "role": "neutral",
+        "displayName": "Editorial Ink",
+        "canonical": "#111827",
+        "tonalRamp": ["#090D16", "#111827", "#1F2937", "#374151", "#525D6E", "#7B8594", "#B3BAC5", "#E5E8ED"]
+      },
+      "graphite-muted": {
+        "role": "neutral",
+        "displayName": "Graphite Muted",
+        "canonical": "#525866",
+        "tonalRamp": ["#121418", "#23262E", "#383D48", "#525866", "#707787", "#949AA8", "#BEC2CC", "#E6E8EC"]
+      },
+      "chalk-ivory": {
+        "role": "neutral",
+        "displayName": "Chalk Ivory",
+        "canonical": "#FAF8F5",
+        "tonalRamp": ["#1E1C19", "#393630", "#58534B", "#7A7469", "#A09A8E", "#C5BFB4", "#E4E0D8", "#FAF8F5"]
+      },
+      "slate-mist": {
+        "role": "neutral",
+        "displayName": "Slate Mist",
+        "canonical": "#CBD5E1",
+        "tonalRamp": ["#14191F", "#28313D", "#404C5D", "#5D6C80", "#808FA3", "#A4B2C4", "#CBD5E1", "#EDF2F7"]
+      },
+      "clinical-emerald": {
+        "role": "secondary",
+        "displayName": "Clinical Emerald",
+        "canonical": "#15803D",
+        "tonalRamp": ["#072913", "#0D4E24", "#15803D", "#1E9E4E", "#38BA68", "#68D18D", "#A3E6BA", "#DCFCE7"]
+      },
+      "emerald-wash": {
+        "role": "secondary",
+        "displayName": "Emerald Wash",
+        "canonical": "#DCFCE7",
+        "tonalRamp": ["#0B2614", "#154626", "#226B3B", "#379357", "#5AB97B", "#88D6A3", "#B8ECC9", "#DCFCE7"]
+      },
+      "deep-emerald-ink": {
+        "role": "secondary",
+        "displayName": "Deep Emerald Ink",
+        "canonical": "#14532D",
+        "tonalRamp": ["#082312", "#14532D", "#1D733F", "#2D9456", "#4BB373", "#77CE98", "#ADE4C1", "#DCFCE7"]
+      },
+      "crimson-alert": {
+        "role": "secondary",
+        "displayName": "Crimson Alert",
+        "canonical": "#B91C1C",
+        "tonalRamp": ["#3B0808", "#721111", "#B91C1C", "#DC2E2E", "#EB5353", "#F38383", "#F9B6B6", "#FEE2E2"]
+      },
+      "crimson-wash": {
+        "role": "secondary",
+        "displayName": "Crimson Wash",
+        "canonical": "#FEE2E2",
+        "tonalRamp": ["#331010", "#5C1E1E", "#8A2E2E", "#B84747", "#D86E6E", "#EC9A9A", "#F7C3C3", "#FEE2E2"]
+      },
+      "deep-crimson-ink": {
+        "role": "secondary",
+        "displayName": "Deep Crimson Ink",
+        "canonical": "#991B1B",
+        "tonalRamp": ["#320808", "#631111", "#991B1B", "#C52B2B", "#E25050", "#EE7F7F", "#F7B3B3", "#FEE2E2"]
+      },
+      "amber-appeal": {
+        "role": "secondary",
+        "displayName": "Amber Appeal",
+        "canonical": "#B45309",
+        "tonalRamp": ["#331702", "#6A3004", "#B45309", "#D97014", "#EE9136", "#F6B369", "#FAD3A2", "#FEF3C7"]
+      },
+      "amber-wash": {
+        "role": "secondary",
+        "displayName": "Amber Wash",
+        "canonical": "#FEF3C7",
+        "tonalRamp": ["#2D2109", "#553E12", "#83601E", "#B28632", "#D5AC55", "#E8CB82", "#F5E2AC", "#FEF3C7"]
+      },
+      "deep-amber-ink": {
+        "role": "secondary",
+        "displayName": "Deep Amber Ink",
+        "canonical": "#92400E",
+        "tonalRamp": ["#2B1203", "#5B2708", "#92400E", "#BD5B18", "#DC7C36", "#ECA366", "#F6C99E", "#FEF3C7"]
+      },
+      "night-abyss": {
+        "role": "neutral",
+        "displayName": "Night Desk Abyss",
+        "canonical": "#0B121B",
+        "tonalRamp": ["#05090E", "#0B121B", "#142030", "#22344D", "#385070", "#5A7394", "#8FA4BE", "#CFD9E6"]
+      },
+      "night-plate": {
+        "role": "neutral",
+        "displayName": "Night Plate",
+        "canonical": "#131E2C",
+        "tonalRamp": ["#080D14", "#131E2C", "#1E2E42", "#2F4561", "#486282", "#6C85A4", "#9DB0C8", "#D4DFEC"]
+      },
+      "night-slate": {
+        "role": "neutral",
+        "displayName": "Night Slate",
+        "canonical": "#1A2738",
+        "tonalRamp": ["#0A1018", "#1A2738", "#273A52", "#3A5373", "#547091", "#7992B0", "#A7B9CE", "#D8E2EE"]
+      },
+      "night-slate-hover": {
+        "role": "neutral",
+        "displayName": "Night Slate Hover",
+        "canonical": "#223247",
+        "tonalRamp": ["#0C131C", "#223247", "#314661", "#456082", "#617D9E", "#859DBB", "#B0C1D6", "#DCE5F0"]
+      },
+      "night-hairline": {
+        "role": "neutral",
+        "displayName": "Night Hairline",
+        "canonical": "#2A3B52",
+        "tonalRamp": ["#0E151F", "#1B2738", "#2A3B52", "#3E5472", "#587091", "#7B92B0", "#A6B8CE", "#D7E1ED"]
+      },
+      "night-rule-strong": {
+        "role": "neutral",
+        "displayName": "Night Rule Strong",
+        "canonical": "#394F6C",
+        "tonalRamp": ["#111923", "#223044", "#394F6C", "#4E698C", "#6A85A6", "#8FA5C0", "#B9C8DA", "#E1E8F0"]
+      },
+      "luminous-chalk": {
+        "role": "neutral",
+        "displayName": "Luminous Chalk",
+        "canonical": "#F1F5F9",
+        "tonalRamp": ["#161B22", "#2C3542", "#465366", "#66768C", "#8C9BB0", "#B4C0D0", "#D6DFE8", "#F1F5F9"]
+      },
+      "moonstone-muted": {
+        "role": "neutral",
+        "displayName": "Moonstone Muted",
+        "canonical": "#9FB0C7",
+        "tonalRamp": ["#131A23", "#263242", "#3D4E64", "#596E89", "#7B90AB", "#9FB0C7", "#C4D0DF", "#E7ECF2"]
+      },
+      "harbor-cobalt": {
+        "role": "primary",
+        "displayName": "Harbor Cobalt",
+        "canonical": "#0F1F33",
+        "tonalRamp": ["#060D17", "#0F1F33", "#18304F", "#264770", "#3D6491", "#6388B0", "#99B5D2", "#D7E3F0"]
+      },
+      "harbor-border": {
+        "role": "primary",
+        "displayName": "Harbor Border",
+        "canonical": "#1E3A5F",
+        "tonalRamp": ["#091321", "#12243C", "#1E3A5F", "#2D5484", "#4572A6", "#6D96C4", "#A4C1DF", "#DCE8F5"]
+      },
+      "crisp-starlight": {
+        "role": "neutral",
+        "displayName": "Crisp Starlight",
+        "canonical": "#F8FAFC",
+        "tonalRamp": ["#171C22", "#2E3642", "#4A5666", "#6B798C", "#919FB0", "#B8C3D0", "#DAE2EA", "#F8FAFC"]
+      },
+      "luminous-cobalt": {
+        "role": "primary",
+        "displayName": "Luminous Cobalt",
+        "canonical": "#1D4ED8",
+        "tonalRamp": ["#0A1B4D", "#12318C", "#1D4ED8", "#3B6AE6", "#658CEF", "#96B2F5", "#C4D5FA", "#EBF1FE"]
+      },
+      "deep-luminous-cobalt": {
+        "role": "primary",
+        "displayName": "Deep Luminous Cobalt",
+        "canonical": "#1E40AF",
+        "tonalRamp": ["#09153D", "#122770", "#1E40AF", "#3459CE", "#5B7DE0", "#8BA5EC", "#BCCDF5", "#E8EEFC"]
+      },
+      "night-blue-wash": {
+        "role": "primary",
+        "displayName": "Night Blue Wash",
+        "canonical": "rgba(59, 130, 246, 0.2)",
+        "tonalRamp": ["#0B1A33", "#153260", "#224E94", "#3B82F6", "#609BF8", "#8CB8FA", "#BDD8FC", "#E8F1FE"]
+      },
+      "sky-cobalt-ink": {
+        "role": "primary",
+        "displayName": "Sky Cobalt Ink",
+        "canonical": "#93C5FD",
+        "tonalRamp": ["#0E213A", "#1C3E6B", "#2E609E", "#4A84C8", "#6EA6E8", "#93C5FD", "#BDDDFF", "#E6F2FF"]
+      },
+      "night-emerald-wash": {
+        "role": "secondary",
+        "displayName": "Night Emerald Wash",
+        "canonical": "rgba(34, 197, 94, 0.16)",
+        "tonalRamp": ["#082413", "#104624", "#196E38", "#22C55E", "#4CD47D", "#7CE2A1", "#B2F0C9", "#E2FAEB"]
+      },
+      "night-emerald-ink": {
+        "role": "secondary",
+        "displayName": "Night Emerald Ink",
+        "canonical": "#86EFAC",
+        "tonalRamp": ["#0B2A16", "#164E29", "#247740", "#3AA35D", "#5ECA82", "#86EFAC", "#B6F6CD", "#E3FCEE"]
+      },
+      "night-crimson-wash": {
+        "role": "secondary",
+        "displayName": "Night Crimson Wash",
+        "canonical": "rgba(239, 68, 68, 0.18)",
+        "tonalRamp": ["#2E0B0B", "#5A1515", "#8F2222", "#EF4444", "#F36B6B", "#F79696", "#FBC1C1", "#FDE8E8"]
+      },
+      "night-crimson-ink": {
+        "role": "secondary",
+        "displayName": "Night Crimson Ink",
+        "canonical": "#FCA5A5",
+        "tonalRamp": ["#331010", "#611F1F", "#943232", "#C44D4D", "#E37777", "#FCA5A5", "#FDC8C8", "#FEEAEA"]
+      },
+      "night-amber": {
+        "role": "secondary",
+        "displayName": "Night Amber",
+        "canonical": "#D97706",
+        "tonalRamp": ["#331A02", "#663604", "#A15605", "#D97706", "#ED952B", "#F5B562", "#FAD39B", "#FEF0D7"]
+      },
+      "night-amber-wash": {
+        "role": "secondary",
+        "displayName": "Night Amber Wash",
+        "canonical": "rgba(245, 158, 11, 0.18)",
+        "tonalRamp": ["#2E1C04", "#593809", "#8E5A10", "#F59E0B", "#F7B33D", "#F9C872", "#FCE0AC", "#FEF3DA"]
+      },
+      "night-amber-ink": {
+        "role": "secondary",
+        "displayName": "Night Amber Ink",
+        "canonical": "#FDE68A",
+        "tonalRamp": ["#2D2408", "#574612", "#866C1E", "#B8952F", "#DBB852", "#F0D375", "#FDE68A", "#FEF5CD"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Analytics KPI figures (1.65rem) and exam simulation countdown timer (1.35rem) with tabular-nums." },
+      "headline": { "displayName": "Headline", "purpose": "Section, modal, and analytics panel H2 headers (1.08rem–1.25rem)." },
+      "title": { "displayName": "Title", "purpose": "Topbar brand heading (1rem desktop / 0.88rem mobile) and simulation setup H3 blocks." },
+      "body": { "displayName": "Body", "purpose": "Clinical question stems (1.02rem, 72ch measure), 0.94rem MCQ options, and 0.92rem community notes." },
+      "label": { "displayName": "Label", "purpose": "Mode tabs, filter chips, question badges, sync pills, and numeric counters with tabular-nums." }
+    },
+    "shadows": [
+      { "name": "card-rest-light", "value": "0 2px 8px rgba(17, 24, 39, 0.05), 0 1px 2px rgba(17, 24, 39, 0.04)", "purpose": "Resting elevation on .card and .kpi-card reading plates in light mode." },
+      { "name": "card-rest-dark", "value": "0 4px 16px rgba(0, 0, 0, 0.35)", "purpose": "Resting elevation on .card and .kpi-card plates in Night Desk dark mode." },
+      { "name": "elevated-light", "value": "0 10px 28px rgba(17, 24, 39, 0.12)", "purpose": "Modal boxes and toast notifications in light mode." },
+      { "name": "elevated-dark", "value": "0 12px 32px rgba(0, 0, 0, 0.55)", "purpose": "Modal boxes and toast notifications in Night Desk dark mode." },
+      { "name": "mobile-dock", "value": "0 -4px 14px rgba(17, 24, 39, 0.07)", "purpose": "Upward separation shadow above the sticky bottom question navigation dock on <=720px viewports." },
+      { "name": "sticky-matrix-col", "value": "-2px 0 6px rgba(17, 24, 39, 0.06)", "purpose": "Horizontal edge cue on the sticky right-hand exam column inside .readiness-matrix." }
+    ],
+    "motion": [
+      { "name": "button-state", "value": "background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease", "purpose": "Default hover and active feedback for buttons and icon controls." },
+      { "name": "tab-switch", "value": "background-color 0.15s ease, color 0.15s ease", "purpose": "Topbar study mode tab hover and active transitions." },
+      { "name": "option-hover", "value": "background-color 0.14s ease, border-color 0.14s ease", "purpose": "MCQ answer option hover highlight." },
+      { "name": "chip-hover", "value": "border-color 0.12s ease, background-color 0.12s ease", "purpose": "Filter chip border and wash transition." },
+      { "name": "chevron-rotate", "value": "transform 0.18s ease", "purpose": "180deg rotation of the filter expand chevron." },
+      { "name": "toggle-slide", "value": "0.2s", "purpose": "Pathology merge toggle track color and thumb translation." },
+      { "name": "progress-fill", "value": "width 0.3s ease", "purpose": "Subject accuracy and completion bar fill." },
+      { "name": "lightbox-transform", "value": "transform 0.05s linear", "purpose": "Smooth pan and zoom updates on clinical images." }
+    ],
+    "breakpoints": [
+      { "name": "mobile-max", "value": "max-width: 720px" },
+      { "name": "split-content", "value": "min-width: 860px" },
+      { "name": "inline-header", "value": "min-width: 960px" },
+      { "name": "compact-sync", "value": "max-width: 1240px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary cobalt CTA used for advancing questions, starting exam simulation, and submitting notes.",
+      "html": "<button type=\"button\" class=\"ds-btn-primary\" dir=\"rtl\"><span>הבאה</span><svg class=\"ds-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polyline points=\"15 18 9 12 15 6\"/></svg></button>",
+      "css": ".ds-btn-primary { font-family: \"Heebo\", \"Segoe UI\", sans-serif; border: 1px solid transparent; border-radius: var(--radius-sm, 8px); padding: 8px 14px; font-size: 0.88rem; font-weight: 600; background: var(--primary, #163A5F); color: var(--primary-on-solid, #FFFFFF); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.1s ease; } .ds-btn-primary:hover { background: var(--primary-hover, #102B47); } .ds-btn-primary:focus-visible { outline: 2px solid var(--primary-ink, #163A5F); outline-offset: 2px; } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary .ds-ico { width: 16px; height: 16px; flex-shrink: 0; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Muted parchment secondary control for previous question, shuffle actions, and filter drawer toggles.",
+      "html": "<button type=\"button\" class=\"ds-btn-secondary\" dir=\"rtl\"><svg class=\"ds-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polygon points=\"22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3\"/></svg><span>סינון</span></button>",
+      "css": ".ds-btn-secondary { font-family: \"Heebo\", \"Segoe UI\", sans-serif; border: 1px solid var(--border, #DFDBD0); border-radius: var(--radius-sm, 8px); padding: 5px 10px; font-size: 0.82rem; font-weight: 600; background: var(--surface-2, #F2EFE6); color: var(--text, #111827); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease; } .ds-btn-secondary:hover { background: var(--surface-hover, #EAE5D9); border-color: var(--border-strong, #C9C3B5); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--primary-ink, #163A5F); outline-offset: 2px; } .ds-btn-secondary .ds-ico { width: 16px; height: 16px; flex-shrink: 0; }"
+    },
+    {
+      "name": "Exam Index Search Input",
+      "kind": "input",
+      "refersTo": "input-search",
+      "description": "RTL full-text search input inside the collapsed Exam Index Strip.",
+      "html": "<div class=\"ds-search-box\" dir=\"rtl\"><svg class=\"ds-search-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"8\"/><path d=\"m21 21-4.3-4.3\"/></svg><input type=\"text\" class=\"ds-search-input\" placeholder=\"חיפוש בשאלות, מסיחים או הערות...\" aria-label=\"חיפוש חופשי\" /></div>",
+      "css": ".ds-search-box { position: relative; display: flex; align-items: center; width: 100%; max-width: 380px; font-family: \"Heebo\", \"Segoe UI\", sans-serif; } .ds-search-ico { position: absolute; right: 11px; width: 16px; height: 16px; color: var(--text-muted, #525866); pointer-events: none; } .ds-search-input { width: 100%; padding: 7px 34px 7px 30px; border-radius: var(--radius-sm, 8px); border: 1px solid var(--border, #DFDBD0); background: var(--surface-2, #F2EFE6); color: var(--text, #111827); font-family: inherit; font-size: 0.88rem; } .ds-search-input::placeholder { color: var(--text-muted, #525866); } .ds-search-input:focus { border-color: var(--primary-ink, #163A5F); background: var(--surface, #FFFFFF); } .ds-search-input:focus-visible { outline: 2px solid var(--primary-ink, #163A5F); outline-offset: 2px; }"
+    },
+    {
+      "name": "Haifa Cobalt Shell & Mode Tabs",
+      "kind": "nav",
+      "refersTo": "nav-topbar",
+      "description": "Sticky Haifa Cobalt header holding brand mark, 5 mode tabs, and active pill indicator.",
+      "html": "<header class=\"ds-topbar\" dir=\"rtl\"><div class=\"ds-brand\"><span class=\"ds-brand-mark\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.5 3.5v4a4.5 4.5 0 0 0 9 0v-4\"/><path d=\"M9 12v3a5 5 0 0 0 10 0v-2\"/><circle cx=\"19\" cy=\"11\" r=\"2\"/></svg></span><div><div class=\"ds-brand-title\">מבחני עבר – מקבץ 1</div><span class=\"ds-brand-sub\">951 שאלות · 12 מבחנים</span></div></div><nav class=\"ds-mode-tabs\" aria-label=\"מצבי לימוד\"><button type=\"button\" class=\"ds-tab-btn is-active\">תרגול</button><button type=\"button\" class=\"ds-tab-btn\">סימולציית מבחן</button><button type=\"button\" class=\"ds-tab-btn\">תיקון טעויות <span class=\"ds-badge-pill\">14</span></button></nav></header>",
+      "css": ".ds-topbar { font-family: \"Heebo\", \"Segoe UI\", sans-serif; background: var(--shell-bg, #163A5F); color: var(--shell-text, #FAF8F5); border-bottom: 1px solid var(--shell-border, #102B47); padding: 8px 18px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; } .ds-brand { display: flex; align-items: center; gap: 10px; } .ds-brand-mark { width: 32px; height: 32px; border-radius: 8px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); display: inline-flex; align-items: center; justify-content: center; } .ds-brand-mark svg { width: 17px; height: 17px; } .ds-brand-title { font-size: 1rem; font-weight: 800; line-height: 1.2; letter-spacing: -0.01em; } .ds-brand-sub { display: block; font-size: 0.75rem; color: var(--shell-muted, #CBD5E1); font-variant-numeric: tabular-nums; } .ds-mode-tabs { display: flex; align-items: center; gap: 4px; } .ds-tab-btn { font-family: inherit; background: transparent; border: 1px solid transparent; color: var(--shell-muted, #CBD5E1); padding: 6px 12px; border-radius: 7px; font-size: 0.86rem; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background-color 0.15s ease, color 0.15s ease; } .ds-tab-btn:hover { background: rgba(255,255,255,0.1); color: var(--shell-text, #FAF8F5); } .ds-tab-btn.is-active { background: var(--shell-text, #FAF8F5); color: #163A5F; font-weight: 700; } .ds-tab-btn:focus-visible { outline: 2px solid var(--shell-text, #FAF8F5); outline-offset: 2px; } .ds-badge-pill { background: var(--danger, #B91C1C); color: #FFFFFF; font-size: 0.72rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Filter Chip",
+      "kind": "chip",
+      "refersTo": "chip-filter",
+      "description": "Pill-shaped exam, subject, and status filter chip with tabular numeral counts.",
+      "html": "<div class=\"ds-chips-wrap\" dir=\"rtl\"><button type=\"button\" class=\"ds-chip is-active\">הכל</button><button type=\"button\" class=\"ds-chip\">2026 (100)</button><button type=\"button\" class=\"ds-chip\">קרדיולוגיה</button></div>",
+      "css": ".ds-chips-wrap { display: flex; flex-wrap: wrap; gap: 6px; font-family: \"Heebo\", \"Segoe UI\", sans-serif; } .ds-chip { font-family: inherit; background: var(--surface-2, #F2EFE6); border: 1px solid var(--border, #DFDBD0); color: var(--text, #111827); padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 500; cursor: pointer; font-variant-numeric: tabular-nums; transition: border-color 0.12s ease, background-color 0.12s ease; } .ds-chip:hover { border-color: var(--primary-ink, #163A5F); background: var(--surface-hover, #EAE5D9); } .ds-chip.is-active { background: var(--primary, #163A5F); border-color: var(--primary, #163A5F); color: var(--primary-on-solid, #FFFFFF); font-weight: 700; } .ds-chip:focus-visible { outline: 2px solid var(--primary-ink, #163A5F); outline-offset: 2px; }"
+    },
+    {
+      "name": "Question Reading Plate",
+      "kind": "card",
+      "refersTo": "card-question",
+      "description": "Primary reading plate housing metadata badges, 72ch clinical stem, and progress strip.",
+      "html": "<article class=\"ds-q-card\" dir=\"rtl\"><div class=\"ds-q-header\"><div class=\"ds-q-meta\"><span class=\"ds-q-badge is-exam\">2026 · שאלה 14</span><span class=\"ds-q-badge is-subject\">קרדיולוגיה</span><span class=\"ds-q-badge is-appeal\">שאלת ערעור</span></div><button type=\"button\" class=\"ds-flag-btn is-active\" aria-label=\"סמן כמועדף\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polygon points=\"12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2\"/></svg></button></div><div class=\"ds-q-progress\">שאלה 14 מתוך 951</div><p class=\"ds-q-stem\">בן 64 מתייצג עם כאב לוחץ בחזה והרמות מקטע ST ב-II, III, aVF. איזה ממצא צפוי בבדיקה גופנית?</p></article>",
+      "css": ".ds-q-card { font-family: \"Heebo\", \"Segoe UI\", sans-serif; background: var(--surface, #FFFFFF); color: var(--text, #111827); border: 1px solid var(--border, #DFDBD0); border-radius: var(--radius, 12px); box-shadow: var(--shadow, 0 2px 8px rgba(17,24,39,0.05)); padding: 16px 20px; display: flex; flex-direction: column; gap: 11px; } .ds-q-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; } .ds-q-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; } .ds-q-badge { font-size: 0.8rem; font-weight: 700; padding: 4px 10px; border-radius: 6px; font-variant-numeric: tabular-nums; } .ds-q-badge.is-exam { background: var(--primary-soft, #EBF1F6); color: var(--primary-ink, #163A5F); } .ds-q-badge.is-subject { background: var(--surface-2, #F2EFE6); border: 1px solid var(--border, #DFDBD0); color: var(--text, #111827); } .ds-q-badge.is-appeal { background: var(--warning-soft, #FEF3C7); color: var(--warning-ink, #92400E); } .ds-flag-btn { background: var(--surface-2, #F2EFE6); border: 1px solid var(--border, #DFDBD0); border-radius: 8px; padding: 6px 10px; cursor: pointer; color: var(--text-muted, #525866); display: inline-flex; align-items: center; transition: all 0.15s ease; } .ds-flag-btn.is-active { background: var(--warning-soft, #FEF3C7); border-color: var(--warning, #B45309); color: var(--warning-ink, #92400E); } .ds-flag-btn svg { width: 16px; height: 16px; } .ds-q-progress { font-size: 0.82rem; color: var(--text-muted, #525866); border-bottom: 1px solid var(--border, #DFDBD0); padding-bottom: 10px; font-variant-numeric: tabular-nums; } .ds-q-stem { font-size: 1.02rem; line-height: 1.62; max-width: 72ch; margin: 0; }"
+    },
+    {
+      "name": "MCQ Option & Strike-Out Row",
+      "kind": "custom",
+      "refersTo": "option-row",
+      "description": "Answer option plate paired with inline distractor strike-out button showing default, correct, and struck states.",
+      "html": "<div class=\"ds-options\" dir=\"rtl\"><div class=\"ds-option-row\"><button type=\"button\" class=\"ds-option-btn is-correct\"><span class=\"ds-option-letter\">א.</span><span>גודש ורידי צוואר וירידת לחץ דם בשאיפה</span></button><button type=\"button\" class=\"ds-strike-btn\" aria-label=\"פסול מסיח\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"18\" y1=\"6\" x2=\"6\" y2=\"18\"/><line x1=\"6\" y1=\"6\" x2=\"18\" y2=\"18\"/></svg></button></div><div class=\"ds-option-row is-struck\"><button type=\"button\" class=\"ds-option-btn\"><span class=\"ds-option-letter\">ב.</span><span>רשרוש פלאורלי חד-צדדי באונה העליונה</span></button><button type=\"button\" class=\"ds-strike-btn\" aria-label=\"פסול מסיח\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"18\" y1=\"6\" x2=\"6\" y2=\"18\"/><line x1=\"6\" y1=\"6\" x2=\"18\" y2=\"18\"/></svg></button></div></div>",
+      "css": ".ds-options { display: flex; flex-direction: column; gap: 7px; font-family: \"Heebo\", \"Segoe UI\", sans-serif; } .ds-option-row { display: flex; align-items: stretch; gap: 8px; } .ds-option-btn { flex: 1; text-align: right; font-family: inherit; background: var(--surface-2, #F2EFE6); border: 1.5px solid var(--border, #DFDBD0); border-radius: 10px; padding: 9px 14px; cursor: pointer; color: var(--text, #111827); font-size: 0.94rem; line-height: 1.48; display: flex; align-items: flex-start; gap: 10px; transition: background-color 0.14s ease, border-color 0.14s ease; } .ds-option-btn:hover { border-color: var(--primary-ink, #163A5F); background: var(--primary-soft, #EBF1F6); } .ds-option-btn.is-correct { border-color: var(--success, #15803D); background: var(--success-soft, #DCFCE7); } .ds-option-letter { font-weight: 800; min-width: 24px; color: var(--primary-ink, #163A5F); font-variant-numeric: tabular-nums; } .ds-option-btn.is-correct .ds-option-letter { color: var(--success-ink, #14532D); } .ds-strike-btn { background: var(--surface-2, #F2EFE6); border: 1px solid var(--border, #DFDBD0); border-radius: 10px; min-width: 42px; padding: 0 11px; cursor: pointer; color: var(--text-muted, #525866); display: inline-flex; align-items: center; justify-content: center; } .ds-strike-btn:hover, .ds-option-row.is-struck .ds-strike-btn { border-color: var(--danger, #B91C1C); color: var(--danger-ink, #991B1B); background: var(--danger-soft, #FEE2E2); } .ds-strike-btn svg { width: 16px; height: 16px; } .ds-option-row.is-struck .ds-option-btn { opacity: 0.45; text-decoration: line-through; } .ds-option-btn:focus-visible, .ds-strike-btn:focus-visible { outline: 2px solid var(--primary-ink, #163A5F); outline-offset: 2px; }"
+    },
+    {
+      "name": "Spoiler-Safe Peer Notes Toggle",
+      "kind": "custom",
+      "refersTo": "drawer-notes",
+      "description": "Dashed-separated collapsed peer-notes toggle showing anonymous student author chips without revealing spoilers.",
+      "html": "<div class=\"ds-notes-wrap\" dir=\"rtl\"><button type=\"button\" class=\"ds-notes-toggle\" aria-expanded=\"false\"><span class=\"ds-notes-right\"><svg class=\"ds-ico\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z\"/></svg><span>הערות לשאלה זו (2)</span><span class=\"ds-author-chip is-mine\">🍎 תפוח</span><span class=\"ds-author-chip\">🥑 אבוקדו</span></span><span class=\"ds-notes-arrow\">הצג הערות</span></button></div>",
+      "css": ".ds-notes-wrap { padding-top: 10px; border-top: 1px dashed var(--border, #DFDBD0); font-family: \"Heebo\", \"Segoe UI\", sans-serif; } .ds-notes-toggle { width: 100%; font-family: inherit; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border, #DFDBD0); background: var(--surface-2, #F2EFE6); color: var(--text, #111827); cursor: pointer; text-align: right; font-size: 0.88rem; font-weight: 600; transition: border-color 0.15s ease, background-color 0.15s ease; } .ds-notes-toggle:hover { border-color: var(--primary-ink, #163A5F); } .ds-notes-toggle:focus-visible { outline: 2px solid var(--primary-ink, #163A5F); outline-offset: 2px; } .ds-notes-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; } .ds-ico { width: 16px; height: 16px; } .ds-author-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--primary-soft, #EBF1F6); color: var(--primary-ink, #163A5F); border: 1px solid transparent; } .ds-author-chip.is-mine { border-color: var(--primary-ink, #163A5F); } .ds-notes-arrow { font-size: 0.8rem; color: var(--primary-ink, #163A5F); font-weight: 700; white-space: nowrap; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Technion Monograph",
+    "overview": "Technion Monograph replaces dense SaaS quiz chrome with a calm, high-legibility academic study edition engineered for sustained medical exam preparation. A slim Haifa Cobalt header anchors the five study modes and utility controls, while a single collapsed Exam Index Strip keeps search and active filter counts visible without pushing the active clinical question below the fold. Every question sits on a crisp reading plate over warm archival paper so clinical stems, embedded English/Latin medical terms, diagnostic images, and five Hebrew-lettered options command immediate focus from the first pixel.\n\nThe system adapts seamlessly across long library sessions and late-night review on mobile. In light mode, warm parchment surfaces and hairline rules eliminate harsh pure-white glare across the viewport while reserving stark `#FFFFFF` exclusively for reading plates and diagnostic image frames. Switching to the paired \"Night Desk\" dark theme shifts the workspace into deep navy slate surfaces with luminous sky-cobalt inks and desaturated translucent state washes, preserving exact clinical legibility without visual fatigue.",
+    "keyCharacteristics": [
+      "Warm archival paper ground (`#F9F7F2`) paired with pure white reading plates (`#FFFFFF`) and warm hairline rules (`#DFDBD0`), paired with a low-glare \"Night Desk\" dark mode (`#0B121B` / `#131E2C`).",
+      "Single-line collapsed Exam Index Strip (`951/951` counter, search input, shuffle controls, and expandable filter drawer) so the Question Card leads above the fold on desktop and mobile.",
+      "Bilingual Hebrew RTL/LTR `Heebo` typography with `tabular-nums` alignment across question numbers, timers, KPI metrics, and readiness matrix cells.",
+      "Unified `1.75px`-stroke rounded-cap inline SVG iconography across header utilities, mode tabs, flag toggles, and inline distractor strike-out controls.",
+      "Thumb-friendly mobile ergonomics (`<=720px`) featuring `46px` minimum option tap targets and a sticky bottom navigation dock with safe-area padding."
+    ],
+    "rules": [
+      {
+        "name": "The Clinical Contrast Rule",
+        "body": "Semantic colors (`#15803D`, `#B91C1C`, `#B45309`) are reserved strictly for clinical answer feedback, appeal/flag states, drill badges, and readiness heatmaps—never for decorative chrome or mode branding.",
+        "section": "colors"
+      },
+      {
+        "name": "The White-Plate Imaging Rule",
+        "body": "Clinical image thumbnails (`.q-image-wrap`) and zoomed lightbox images (`.lightbox-stage img`) always render on a pure `#FFFFFF` backing even in Night Desk dark mode so ECG grids, tracings, and diagrams never invert or bleed into dark slate.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Numerals Rule",
+        "body": "Every dynamic numeric readout—question counters, session accuracy, exam timer, jump inputs, simulation grid cells, and readiness matrix ratios—must apply `tabular-nums` so numbers align vertically and never shift layout during updates.",
+        "section": "typography"
+      },
+      {
+        "name": "The 72-Character Clinical Measure Rule",
+        "body": "Question stems cap line length at `max-width: 72ch` to maintain effortless eye tracking across desktop viewports and split-column clinical image layouts.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tonal Plate Rule",
+        "body": "Hierarchy inside a card is conveyed through surface tone (`--surface` `#FFFFFF` vs. `--surface-2` `#F2EFE6`) and `1px` solid or dashed rules—never nested shadows inside cards.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do keep the Exam Index Strip collapsed by default in Practice and Flashcard modes so the Question Card leads above the fold.",
+      "Do preserve `1px solid var(--border)` hairline framing and `#FFFFFF` clinical image backing (`#FFFFFF` even in dark mode) for ECGs, radiology, and pathology figures.",
+      "Do apply `tabular-nums` (`tabular-text`) to every question counter, timer, badge count, percentage, and matrix cell.",
+      "Do keep all UI icons as inline `1.75px`-stroke rounded-cap SVGs (`viewBox=\"0 0 24 24\"`) and preserve playful Unicode emojis strictly for anonymous student identities.",
+      "Do enforce `46px` minimum touch height on option/strike rows and the sticky safe-area bottom navigation dock below `<=720px`."
+    ],
+    "donts": [
+      "Don't expand the filter drawer by default or insert marketing heroes, eyebrows, or kickers above the Question Card.",
+      "Don't use hard offset shadows, glassmorphic blur backdrops, or nested box-shadows inside `.card` containers.",
+      "Don't introduce secondary brand hues or decorative gradients that compete with the semantic clinical feedback states (`#15803D`, `#B91C1C`, `#B45309`).",
+      "Don't auto-open the peer community notes drawer on question load; spoiler-safety requires explicit toggle expansion."
+    ]
+  }
+}

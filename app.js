@@ -334,8 +334,8 @@
       const curQId = filteredList?.[currentIndex]?.id;
       const isEditing = curQId && editingNoteQIds.has(curQId);
       myLabel.textContent = isEditing
-        ? `✏️ עריכת ההערה שלי בתור ${label}:`
-        : `📝 ההערה שלי בתור ${label}:`;
+        ? `עריכת ההערה שלי בתור ${label}:`
+        : `ההערה שלי בתור ${label}:`;
     }
   }
 
@@ -409,11 +409,11 @@
     if (!statusEl) return;
     const curQId = filteredList?.[currentIndex]?.id;
     const hasDraft = Boolean(curQId && ((noteDrafts[curQId] || "").trim().length > 0 || editingNoteQIds.has(curQId)));
-    if (noteSyncState === "saving") statusEl.textContent = "שומר לענן... ⏳";
-    else if (hasDraft) statusEl.textContent = "טיוטה — לחץ Enter או ➤ לשליחה";
-    else if (noteSyncState === "offline") statusEl.textContent = "שמור מקומית (אופליין) 💾";
-    else if (noteSyncState === "error") statusEl.textContent = "ממתין לסנכרון ⚠️";
-    else statusEl.textContent = "מסונכרן ☁️";
+    if (noteSyncState === "saving") statusEl.textContent = "שומר לענן...";
+    else if (hasDraft) statusEl.textContent = "טיוטה · לחץ Enter לשליחה";
+    else if (noteSyncState === "offline") statusEl.textContent = "שמור מקומית (אופליין)";
+    else if (noteSyncState === "error") statusEl.textContent = "ממתין לסנכרון";
+    else statusEl.textContent = "מסונכרן";
   }
 
   function startEditMyNote(qId) {
@@ -459,7 +459,7 @@
     }
     await enqueueCloudSync();
     if (noteSyncState === "synced") {
-      showToast("🗑️ ההערה שלך נמחקה.");
+      showToast("ההערה שלך נמחקה.");
     }
   }
 
@@ -493,10 +493,10 @@
     }
 
     el("notesToggleArrow").textContent = notesExpanded
-      ? "הסתר הערות 🔼"
+      ? "הסתר הערות"
       : notesList.length > 0
-      ? "לחץ להצגה 🔽"
-      : "הוסף הערה 🔽";
+      ? "הצג הערות"
+      : "הוסף הערה";
 
     el("qNotesDrawer").classList.toggle("hidden", !notesExpanded);
 
@@ -538,14 +538,14 @@
           editBtn.type = "button";
           editBtn.className = "note-card-action-btn";
           editBtn.title = "ערוך את ההערה שלי";
-          editBtn.textContent = "✏️ ערוך";
+          editBtn.textContent = "ערוך";
           editBtn.onclick = () => startEditMyNote(q.id);
 
           const delBtn = document.createElement("button");
           delBtn.type = "button";
           delBtn.className = "note-card-action-btn danger";
           delBtn.title = "מחק את ההערה שלי";
-          delBtn.textContent = "🗑️ מחק";
+          delBtn.textContent = "מחק";
           delBtn.onclick = () => deleteMyNote(q.id);
 
           headActions.append(editBtn, delBtn);
@@ -667,11 +667,11 @@
       if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
         renderNotesSection(filteredList[currentIndex], true);
       }
-      if (showFeedback) showToast("🔄 ההערות המשותפות רועננו מהענן!");
+      if (showFeedback) showToast("ההערות המשותפות רועננו מהענן.");
     } catch {
       if (pendingDirtyQIds.size > 0) noteSyncState = "offline";
       updateNoteSyncBadge();
-      if (showFeedback) showToast("⚠️ לא ניתן להתחבר לענן כרגע — מציג מטמון מקומי.");
+      if (showFeedback) showToast("לא ניתן להתחבר לענן כרגע — מציג מטמון מקומי.");
     }
   }
 
@@ -769,7 +769,7 @@
   function initTheme() {
     const saved = localStorage.getItem(THEME_KEY) || "light";
     document.documentElement.setAttribute("data-theme", saved);
-    el("btnTheme").textContent = saved === "dark" ? "☀️" : "🌙";
+    el("btnTheme").title = saved === "dark" ? "עבור למצב בהיר" : "עבור למצב כהה";
   }
 
   function toggleTheme() {
@@ -777,7 +777,7 @@
     const next = cur === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem(THEME_KEY, next);
-    el("btnTheme").textContent = next === "dark" ? "☀️" : "🌙";
+    el("btnTheme").title = next === "dark" ? "עבור למצב בהיר" : "עבור למצב כהה";
   }
 
   // Server check (only probe local Python server when running on localhost / 127.0.0.1)
@@ -915,6 +915,14 @@
 
     el("filteredCountText").textContent = `מציג ${filteredList.length} מתוך ${QUESTIONS.length} שאלות`;
     el("jumpInput").max = Math.max(1, filteredList.length);
+    const hasCustomFilter = filters.exams.size > 0 || filters.subjects.size > 0 || filters.status !== "all" || !!filters.search.trim();
+    const summaryParts = [];
+    if (filters.exams.size > 0) summaryParts.push(`${filters.exams.size} מועדים`);
+    if (filters.subjects.size > 0) summaryParts.push(`${filters.subjects.size} מקצועות`);
+    if (filters.status !== "all") summaryParts.push("מסונן");
+    const prefix = summaryParts.length > 0 ? summaryParts.join(" · ") : "הכל";
+    el("filterSummaryBadge").textContent = `${prefix} · ${filteredList.length}/${QUESTIONS.length}`;
+    el("filterActiveDot").classList.toggle("hidden", !hasCustomFilter);
     renderQuestion();
   }
 
@@ -968,7 +976,7 @@
       pdfLink.classList.remove("hidden");
       const encodedPdf = encodeURI(q.pdf);
       pdfLink.href = q.pdfPage ? `${encodedPdf}#page=${q.pdfPage}` : encodedPdf;
-      pdfLink.textContent = q.pdfPage ? `📖 עמ׳ ${q.pdfPage} במבחן` : "📖 קובץ המבחן";
+      pdfLink.textContent = q.pdfPage ? `עמ׳ ${q.pdfPage} במבחן` : "קובץ המבחן";
     } else {
       pdfLink.classList.add("hidden");
     }
@@ -984,7 +992,7 @@
     if (currentMode === "drill") {
       const st = progress.drillStreak[q.id] || 0;
       drillStreakEl.classList.remove("hidden");
-      drillStreakEl.textContent = `🔥 רצף תיקון: ${st}/2`;
+      drillStreakEl.textContent = `רצף תיקון: ${st}/2`;
     } else {
       drillStreakEl.classList.add("hidden");
     }
@@ -994,6 +1002,7 @@
       : "";
 
     el("qStem").textContent = q.stem;
+    el("qContentGrid").classList.toggle("has-images", q.images.length > 0);
 
     // Images
     const imgWrap = el("qImages");
@@ -1006,7 +1015,7 @@
       img.alt = `תמונה ${idx + 1} לשאלה ${q.num}`;
       const hint = document.createElement("span");
       hint.className = "q-image-hint";
-      hint.textContent = "🔍 לחץ לזום";
+      hint.textContent = "לחץ לזום";
       box.append(img, hint);
       box.onclick = () => openLightbox(src, `${q.exam} · שאלה ${q.num}`);
       imgWrap.appendChild(box);
@@ -1049,9 +1058,11 @@
       };
 
       const strikeBtn = document.createElement("button");
+      strikeBtn.type = "button";
       strikeBtn.className = "strike-btn";
       strikeBtn.title = "פסול מסיח (לחיצה ימנית)";
-      strikeBtn.textContent = "✂️";
+      strikeBtn.setAttribute("aria-label", "פסול מסיח");
+      strikeBtn.innerHTML = `<svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
       strikeBtn.onclick = () => toggleStrike(q.id, origIdx);
 
       row.append(btn, strikeBtn);
@@ -1096,15 +1107,15 @@
       .join("<br/>");
 
     let html = isCorrect === true
-      ? "✅ <strong>תשובה נכונה!</strong>"
+      ? "<strong>תשובה נכונה!</strong>"
       : isCorrect === false
-      ? `❌ <strong>טעות.</strong> התשובה הנכונה:<br/>${correctLabels}`
-      : `💡 <strong>התשובה הנכונה:</strong><br/>${correctLabels}`;
+      ? `<strong>טעות.</strong> התשובה הנכונה:<br/>${correctLabels}`
+      : `<strong>התשובה הנכונה:</strong><br/>${correctLabels}`;
 
     if (q.allAccepted) {
-      html += `<div class="appeal-note">⚖️ כל התשובות התקבלו בשאלה זו.</div>`;
+      html += `<div class="appeal-note">הערת ערעור: כל התשובות התקבלו בשאלה זו.</div>`;
     } else if (q.appealNote) {
-      html += `<div class="appeal-note">⚖️ ${escapeHtml(q.appealNote)}</div>`;
+      html += `<div class="appeal-note">הערת ערעור: ${escapeHtml(q.appealNote)}</div>`;
     }
 
     fb.innerHTML = html;
@@ -1124,7 +1135,7 @@
       if (isCorrect) {
         progress.drillStreak[q.id] = (progress.drillStreak[q.id] || 0) + 1;
         if (progress.drillStreak[q.id] >= 2) {
-          showToast("🎉 ענית נכון פעמיים! השאלה הושלמה בתיקון טעויות.");
+          showToast("ענית נכון פעמיים! השאלה הושלמה בתיקון טעויות.");
         }
       } else {
         progress.drillStreak[q.id] = 0;
@@ -1228,16 +1239,20 @@
     }
     currentIndex = 0;
     renderQuestion();
-    showToast("🔀 סדר השאלות עורבב!");
+    showToast("סדר השאלות עורבב.");
   }
 
   function toggleShuffleOptions() {
     shuffleOptionsEnabled = !shuffleOptionsEnabled;
     optionPermutations.clear();
-    el("btnShuffleOptions").classList.toggle("btn-primary", shuffleOptionsEnabled);
-    el("btnShuffleOptions").classList.toggle("btn-secondary", !shuffleOptionsEnabled);
+    ["btnShuffleOptions", "btnShuffleOptionsMobile"].forEach((id) => {
+      const b = el(id);
+      if (!b) return;
+      b.classList.toggle("btn-primary", shuffleOptionsEnabled);
+      b.classList.toggle("btn-secondary", !shuffleOptionsEnabled);
+    });
     renderQuestion();
-    showToast(shuffleOptionsEnabled ? "🎲 ערבוב מסיחים הופעל" : "סדר מסיחים מקורי");
+    showToast(shuffleOptionsEnabled ? "ערבוב מסיחים הופעל" : "סדר מסיחים מקורי");
   }
 
   // Lightbox Pan & Zoom
@@ -1245,14 +1260,27 @@
     lbScale = 1;
     lbX = 0;
     lbY = 0;
-    el("lightboxImg").src = src;
+    const stage = el("lightboxStage");
+    stage.innerHTML = "";
+    const img = document.createElement("img");
+    img.id = "lightboxImg";
+    img.alt = "תמונה קלינית מוגדלת";
+    img.draggable = false;
+    img.src = src;
+    stage.appendChild(img);
     el("lightboxCaption").textContent = caption;
     updateLightboxTransform();
     el("lightboxModal").classList.remove("hidden");
   }
 
+  function closeLightbox() {
+    el("lightboxModal").classList.add("hidden");
+    el("lightboxStage").innerHTML = "";
+  }
+
   function updateLightboxTransform() {
-    el("lightboxImg").style.transform = `translate(${lbX}px, ${lbY}px) scale(${lbScale})`;
+    const img = el("lightboxImg");
+    if (img) img.style.transform = `translate(${lbX}px, ${lbY}px) scale(${lbScale})`;
   }
 
   function initLightbox() {
@@ -1279,7 +1307,7 @@
     el("btnZoomIn").onclick = () => { lbScale = Math.min(5, lbScale + 0.35); updateLightboxTransform(); };
     el("btnZoomOut").onclick = () => { lbScale = Math.max(0.5, lbScale - 0.35); updateLightboxTransform(); };
     el("btnZoomReset").onclick = () => { lbScale = 1; lbX = 0; lbY = 0; updateLightboxTransform(); };
-    el("btnCloseLightbox").onclick = () => el("lightboxModal").classList.add("hidden");
+    el("btnCloseLightbox").onclick = closeLightbox;
   }
 
   // Exam Simulation
@@ -1402,14 +1430,25 @@
             <span class="q-badge exam-badge">שאלה ${simState.currentIndex + 1} מתוך ${simState.questions.length}</span>
             <span class="q-badge subject-badge">${escapeHtml(getSubject(q))} · ${escapeHtml(q.exam)}</span>
           </div>
-          <button class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">🚩 סמן לבדיקה</button>
+          <button type="button" class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+            <span>סמן לבדיקה</span>
+          </button>
         </div>
-        <div class="q-stem">${escapeHtml(q.stem)}</div>
-        <div class="q-images" id="simImages"></div>
+        <div class="q-content-grid${q.images.length > 0 ? " has-images" : ""}">
+          <div class="q-stem">${escapeHtml(q.stem)}</div>
+          <div class="q-images" id="simImages"></div>
+        </div>
         <div class="q-options" id="simOptions"></div>
         <div class="q-nav-footer">
-          <button class="btn-secondary" id="simPrevBtn">→ הקודמת</button>
-          <button class="btn-primary" id="simNextBtn">הבאה ←</button>
+          <button type="button" class="btn-secondary nav-prev-btn" id="simPrevBtn">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+            <span>הקודמת</span>
+          </button>
+          <button type="button" class="btn-primary nav-next-btn" id="simNextBtn">
+            <span>הבאה</span>
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
         </div>
       </article>
     `;
@@ -1424,7 +1463,7 @@
     q.images.forEach((src) => {
       const box = document.createElement("div");
       box.className = "q-image-wrap";
-      box.innerHTML = `<img src="${src}" alt="תמונה" /><span class="q-image-hint">🔍 לחץ לזום</span>`;
+      box.innerHTML = `<img src="${src}" alt="תמונה" /><span class="q-image-hint">לחץ לזום</span>`;
       box.onclick = () => openLightbox(src, `סימולציה · שאלה ${simState.currentIndex + 1}`);
       imgWrap.appendChild(box);
     });
@@ -1451,8 +1490,10 @@
       };
 
       const strikeBtn = document.createElement("button");
+      strikeBtn.type = "button";
       strikeBtn.className = "strike-btn";
-      strikeBtn.textContent = "✂️";
+      strikeBtn.setAttribute("aria-label", "פסול מסיח");
+      strikeBtn.innerHTML = `<svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
       strikeBtn.onclick = () => {
         if (!simState.struck.has(q.id)) simState.struck.set(q.id, new Set());
         const st = simState.struck.get(q.id);
@@ -1518,7 +1559,7 @@
       .join("");
 
     resEl.innerHTML = `
-      <h2>🏁 תוצאות הסימולציה</h2>
+      <h2>תוצאות הסימולציה</h2>
       <div class="kpi-grid" style="margin-top:14px;">
         <div class="kpi-card"><div class="kpi-label">ציון סופי</div><div class="kpi-value">${pct}%</div></div>
         <div class="kpi-card"><div class="kpi-label">תשובות נכונות</div><div class="kpi-value">${correctCount} / ${simState.questions.length}</div></div>
@@ -1527,8 +1568,8 @@
       <h3>פילוח לפי מקצוע</h3>
       <div class="subject-progress-list">${subjRows}</div>
       <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;">
-        <button class="btn-primary" id="btnReviewSimWrong">🔥 תחקר טעויות מהסימולציה (${wrongIds.length})</button>
-        <button class="btn-secondary" id="btnNewSim">🔄 סימולציה חדשה</button>
+        <button type="button" class="btn-primary" id="btnReviewSimWrong">תחקר טעויות מהסימולציה (${wrongIds.length})</button>
+        <button type="button" class="btn-secondary" id="btnNewSim">סימולציה חדשה</button>
       </div>
     `;
 
@@ -1558,7 +1599,7 @@
       <div class="kpi-card"><div class="kpi-label">התקדמות כוללת</div><div class="kpi-value">${totalSolved} / ${QUESTIONS.length}</div></div>
       <div class="kpi-card"><div class="kpi-label">דיוק מצטבר</div><div class="kpi-value">${acc}%</div></div>
       <div class="kpi-card"><div class="kpi-label">נפתרו היום</div><div class="kpi-value">${today.answered}</div></div>
-      <div class="kpi-card"><div class="kpi-label">מועדפים לחזרה ⭐</div><div class="kpi-value">${starredCount}</div></div>
+      <div class="kpi-card"><div class="kpi-label">מועדפים לחזרה</div><div class="kpi-value">${starredCount}</div></div>
     `;
 
     // By subject
@@ -1597,7 +1638,7 @@
           ? `המקצוע שדורש הכי הרבה חיזוק כרגע: <strong>${escapeHtml(weakSubjs[0].s)}</strong> (${Math.round(weakSubjs[0].acc * 100)}% דיוק).`
           : "פתור כמה שאלות כדי לראות המלצות מותאמות אישית!"}
       </p>
-      <p style="margin-top:10px;">יש לך <strong>${getDrillQuestions().length}</strong> שאלות שממתינות בתיקון טעויות 🔥.</p>
+      <p style="margin-top:10px;">יש לך <strong>${getDrillQuestions().length}</strong> שאלות שממתינות בתיקון טעויות.</p>
     `;
 
     // Readiness Matrix (Exam x Subject)
@@ -1655,7 +1696,7 @@
         });
         const data = await res.json();
         if (res.ok) {
-          showToast(`📓 יוצאו ${data.count} שאלות למחברת הטעויות ב-Obsidian!`);
+          showToast(`יוצאו ${data.count} שאלות למחברת הטעויות ב-Obsidian.`);
           return;
         }
       } catch {}
@@ -1682,7 +1723,7 @@
     a.href = URL.createObjectURL(blob);
     a.download = "מחברת טעויות - מקבץ 1.md";
     a.click();
-    showToast(`📥 הורד קובץ Markdown עם ${wrongOrNoted.length} שאלות!`);
+    showToast(`הורד קובץ Markdown עם ${wrongOrNoted.length} שאלות.`);
   }
 
   // Mode switching
@@ -1751,8 +1792,13 @@
     el("btnToggleFilters").onclick = () => {
       const body = el("filterBody");
       const hidden = body.classList.toggle("hidden");
-      el("btnToggleFilters").textContent = hidden ? "🔼 הרחב סינון" : "🔽 צמצם סינון";
+      el("btnToggleFilters").setAttribute("aria-expanded", hidden ? "false" : "true");
+      el("filterToggleLabel").textContent = hidden ? "סינון" : "צמצם";
     };
+
+    if (el("btnShuffleOptionsMobile")) {
+      el("btnShuffleOptionsMobile").onclick = toggleShuffleOptions;
+    }
 
     // Year quick buttons
     el("btnRecentYears").onclick = () => {
@@ -1815,7 +1861,7 @@
     el("btnToggleNotes").onclick = () => toggleNotesDrawer();
     el("btnRefreshNotes").onclick = () => pullCloudNotes(true);
     el("userIdentityPill").onclick = () => {
-      showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
+      showToast(`הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
     };
 
     el("btnCancelEditNote").onclick = () => {
@@ -1834,7 +1880,7 @@
         if (isEditing) {
           await deleteMyNote(q.id);
         } else {
-          showToast("✏️ כתוב הערה לפני השליחה.");
+          showToast("כתוב הערה לפני השליחה.");
           el("qNoteInput").focus();
         }
         return;
@@ -1866,7 +1912,7 @@
 
       await enqueueCloudSync();
       if (noteSyncState === "synced") {
-        showToast(isEditing ? "✏️ ההערה עודכנה בענן!" : "💬 ההערה נשלחה ונשמרה בענן!");
+        showToast(isEditing ? "ההערה עודכנה בענן." : "ההערה נשלחה ונשמרה בענן.");
       }
     }
 
@@ -1946,9 +1992,9 @@
           saveProgress();
           renderCurrentView();
           el("backupModal").classList.add("hidden");
-          showToast("✅ הגיבוי שוחזר בהצלחה!");
+          showToast("הגיבוי שוחזר בהצלחה.");
         } catch {
-          showToast("❌ קובץ גיבוי לא תקין");
+          showToast("קובץ גיבוי לא תקין");
         }
       };
       reader.readAsText(file);
@@ -1967,7 +2013,7 @@
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        el("lightboxModal").classList.add("hidden");
+        closeLightbox();
         el("backupModal").classList.add("hidden");
         el("shortcutsModal").classList.add("hidden");
         return;
