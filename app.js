@@ -143,7 +143,8 @@
   let notesExpanded = false; // Always closed by default (strict manual spoiler toggle)
   let lastRenderedQId = null;
   let noteSyncState = "synced";
-  let noteInputDebounce = null;
+  const noteDrafts = {}; // qId -> unsent draft text
+  const editingNoteQIds = new Set();
   const pendingDirtyQIds = new Set();
   let cloudWriteQueue = Promise.resolve();
 
@@ -329,7 +330,13 @@
     const badge = el("userIdentityBadge");
     if (badge) badge.textContent = label;
     const myLabel = el("myNoteLabel");
-    if (myLabel) myLabel.textContent = `📝 ההערה שלי בתור ${label}:`;
+    if (myLabel) {
+      const curQId = filteredList?.[currentIndex]?.id;
+      const isEditing = curQId && editingNoteQIds.has(curQId);
+      myLabel.textContent = isEditing
+        ? `✏️ עריכת ההערה שלי בתור ${label}:`
+        : `📝 ההערה שלי בתור ${label}:`;
+    }
   }
 
   function saveUserIdentity() {
@@ -400,10 +407,60 @@
   function updateNoteSyncBadge() {
     const statusEl = el("noteSyncStatus");
     if (!statusEl) return;
+    const curQId = filteredList?.[currentIndex]?.id;
+    const hasDraft = Boolean(curQId && ((noteDrafts[curQId] || "").trim().length > 0 || editingNoteQIds.has(curQId)));
     if (noteSyncState === "saving") statusEl.textContent = "שומר לענן... ⏳";
+    else if (hasDraft) statusEl.textContent = "טיוטה — לחץ Enter או ➤ לשליחה";
     else if (noteSyncState === "offline") statusEl.textContent = "שמור מקומית (אופליין) 💾";
     else if (noteSyncState === "error") statusEl.textContent = "ממתין לסנכרון ⚠️";
     else statusEl.textContent = "מסונכרן ☁️";
+  }
+
+  function startEditMyNote(qId) {
+    const existing = communityNotes[qId]?.[userIdentity.userId]?.text || "";
+    noteDrafts[qId] = existing;
+    editingNoteQIds.add(qId);
+    notesExpanded = true;
+    const q = Q_MAP.get(qId);
+    if (q) renderNotesSection(q, false);
+    const inputEl = el("qNoteInput");
+    if (inputEl) {
+      inputEl.focus();
+      inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    }
+  }
+
+  function cancelEditMyNote(qId) {
+    editingNoteQIds.delete(qId);
+    delete noteDrafts[qId];
+    const q = Q_MAP.get(qId);
+    if (q) renderNotesSection(q, false);
+  }
+
+  async function deleteMyNote(qId) {
+    editingNoteQIds.delete(qId);
+    delete noteDrafts[qId];
+    delete progress.notes[qId];
+    saveProgress();
+
+    if (communityNotes[qId]) {
+      delete communityNotes[qId][userIdentity.userId];
+      if (Object.keys(communityNotes[qId]).length === 0) {
+        delete communityNotes[qId];
+      }
+    }
+
+    pendingDirtyQIds.add(qId);
+    saveCommunityNotesCache();
+    noteSyncState = "saving";
+    const q = Q_MAP.get(qId);
+    if (q && filteredList[currentIndex]?.id === qId) {
+      renderNotesSection(q, false);
+    }
+    await enqueueCloudSync();
+    if (noteSyncState === "synced") {
+      showToast("🗑️ ההערה שלך נמחקה.");
+    }
   }
 
   function renderNotesSection(q, preserveFocus = false) {
@@ -468,11 +525,33 @@
           authorSpan.appendChild(mineBadge);
         }
 
+        const headActions = document.createElement("div");
+        headActions.className = "community-note-head-actions";
+
         const timeSpan = document.createElement("span");
         timeSpan.className = "community-note-time";
         timeSpan.textContent = formatNoteTime(n.updatedAt);
+        headActions.appendChild(timeSpan);
 
-        head.append(authorSpan, timeSpan);
+        if (n.isMine) {
+          const editBtn = document.createElement("button");
+          editBtn.type = "button";
+          editBtn.className = "note-card-action-btn";
+          editBtn.title = "ערוך את ההערה שלי";
+          editBtn.textContent = "✏️ ערוך";
+          editBtn.onclick = () => startEditMyNote(q.id);
+
+          const delBtn = document.createElement("button");
+          delBtn.type = "button";
+          delBtn.className = "note-card-action-btn danger";
+          delBtn.title = "מחק את ההערה שלי";
+          delBtn.textContent = "🗑️ מחק";
+          delBtn.onclick = () => deleteMyNote(q.id);
+
+          headActions.append(editBtn, delBtn);
+        }
+
+        head.append(authorSpan, headActions);
 
         const textDiv = document.createElement("div");
         textDiv.className = "community-note-text";
@@ -483,9 +562,12 @@
       });
     }
 
+    const cancelBtn = el("btnCancelEditNote");
+    if (cancelBtn) cancelBtn.classList.toggle("hidden", !editingNoteQIds.has(q.id));
+
     const inputEl = el("qNoteInput");
     if (!(preserveFocus && document.activeElement === inputEl)) {
-      inputEl.value = getMyNoteText(q.id);
+      inputEl.value = noteDrafts[q.id] ?? "";
     }
     updateNoteSyncBadge();
   }
@@ -1736,54 +1818,63 @@
       showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
     };
 
-    function applyNoteInput(q, text) {
+    el("btnCancelEditNote").onclick = () => {
+      if (filteredList.length === 0) return;
+      cancelEditMyNote(filteredList[currentIndex].id);
+    };
+
+    async function submitNoteNow() {
+      if (filteredList.length === 0) return;
+      const q = filteredList[currentIndex];
+      const rawText = el("qNoteInput").value;
+      const trimmed = rawText.trim();
+      const isEditing = editingNoteQIds.has(q.id);
+
+      if (!trimmed) {
+        if (isEditing) {
+          await deleteMyNote(q.id);
+        } else {
+          showToast("✏️ כתוב הערה לפני השליחה.");
+          el("qNoteInput").focus();
+        }
+        return;
+      }
+
       identityNeedsCloudCheck = false;
-      progress.notes[q.id] = text;
+      progress.notes[q.id] = rawText;
       saveProgress();
 
       if (!communityNotes[q.id] || typeof communityNotes[q.id] !== "object") {
         communityNotes[q.id] = {};
       }
-      if (text.trim()) {
-        communityNotes[q.id][userIdentity.userId] = {
-          author: userIdentity.name,
-          emoji: userIdentity.emoji,
-          category: userIdentity.category,
-          text,
-          updatedAt: Date.now(),
-        };
-      } else {
-        delete communityNotes[q.id][userIdentity.userId];
-        if (Object.keys(communityNotes[q.id]).length === 0) {
-          delete communityNotes[q.id];
-        }
-      }
+      communityNotes[q.id][userIdentity.userId] = {
+        author: userIdentity.name,
+        emoji: userIdentity.emoji,
+        category: userIdentity.category,
+        text: rawText,
+        updatedAt: Date.now(),
+      };
+
+      delete noteDrafts[q.id];
+      editingNoteQIds.delete(q.id);
+      el("qNoteInput").value = "";
 
       pendingDirtyQIds.add(q.id);
       saveCommunityNotesCache();
       noteSyncState = "saving";
-      renderNotesSection(q, true);
-    }
+      renderNotesSection(q, false);
 
-    async function submitNoteNow() {
-      if (filteredList.length === 0) return;
-      const q = filteredList[currentIndex];
-      const text = el("qNoteInput").value;
-      clearTimeout(noteInputDebounce);
-      applyNoteInput(q, text);
       await enqueueCloudSync();
       if (noteSyncState === "synced") {
-        showToast(text.trim() ? "💬 ההערה נשלחה ונשמרה בענן!" : "🗑️ ההערה נמחקה.");
+        showToast(isEditing ? "✏️ ההערה עודכנה בענן!" : "💬 ההערה נשלחה ונשמרה בענן!");
       }
     }
 
     el("qNoteInput").addEventListener("input", (e) => {
       if (filteredList.length === 0) return;
-      applyNoteInput(filteredList[currentIndex], e.target.value);
-      clearTimeout(noteInputDebounce);
-      noteInputDebounce = setTimeout(() => {
-        enqueueCloudSync();
-      }, 700);
+      const q = filteredList[currentIndex];
+      noteDrafts[q.id] = e.target.value;
+      updateNoteSyncBadge();
     });
 
     let lastNoteShiftDown = false;

@@ -838,6 +838,35 @@ button, .file-upload-btn {
   color: var(--text-muted);
 }
 
+.community-note-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.note-card-action-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.note-card-action-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.note-card-action-btn.danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
 .community-note-text {
   font-size: 0.92rem;
   line-height: 1.55;

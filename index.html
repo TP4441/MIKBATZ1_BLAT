@@ -180,12 +180,13 @@
               <div class="my-note-header">
                 <label for="qNoteInput" id="myNoteLabel">📝 ההערה שלי:</label>
                 <div class="my-note-actions">
+                  <button type="button" class="link-btn hidden" id="btnCancelEditNote">ביטול עריכה</button>
                   <span class="note-sync-status" id="noteSyncStatus">מסונכרן ☁️</span>
                   <button type="button" class="link-btn" id="btnRefreshNotes" title="רענן הערות מהענן">🔄 רענן</button>
                 </div>
               </div>
               <div class="my-note-input-row">
-                <textarea id="qNoteInput" rows="2" placeholder="כתוב הסבר, אבחנה מבדלת או כלל אצבע... (Enter לשליחה, Shift+Enter לשורה חדשה)"></textarea>
+                <textarea id="qNoteInput" rows="2" placeholder="כתוב הסבר, אבחנה מבדלת או כלל אצבע... (Enter או ➤ לשליחה, Shift+Enter לשורה חדשה)"></textarea>
                 <button type="button" class="btn-primary note-send-btn" id="btnSendNote" title="שלח ושמור בענן (Enter)" aria-label="שלח הערה">➤</button>
               </div>
             </div>
