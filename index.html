@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="theme-color" content="#1e3a8a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="מבחנים מקבץ 1" />
+  <title>תרגול מבחני עבר – מקבץ 1 🩺</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-right">
+      <div class="brand">
+        <span class="brand-icon">🩺</span>
+        <div>
+          <h1>מבחני עבר – מקבץ 1</h1>
+          <span class="brand-sub" id="totalStatsBadge">951 שאלות · 12 מבחנים</span>
+        </div>
+      </div>
+      <nav class="mode-tabs" id="modeTabs">
+        <button class="tab-btn active" data-mode="practice">📚 תרגול</button>
+        <button class="tab-btn" data-mode="exam">⏱️ סימולציית מבחן</button>
+        <button class="tab-btn" data-mode="drill">🔥 תיקון טעויות <span class="badge-pill" id="drillCountBadge">0</span></button>
+        <button class="tab-btn" data-mode="flashcard">⚡ כרטיסיות</button>
+        <button class="tab-btn" data-mode="analytics">📊 אנליטיקה</button>
+      </nav>
+    </div>
+    <div class="topbar-left">
+      <span class="sync-pill offline" id="syncPill" title="מצב שמירת התקדמות">
+        <span class="dot"></span>
+        <span id="syncText">שמירה אוטומטית בדפדפן</span>
+      </span>
+      <button class="icon-btn" id="btnExportObsidian" title="ייצוא שאלות שטעית בהן והערות למחברת טעויות ב-Obsidian">
+        📓 ייצוא טעויות
+      </button>
+      <button class="icon-btn" id="btnBackupMenu" title="גיבוי / שחזור התקדמות">💾 גיבוי</button>
+      <button class="icon-btn" id="btnShortcuts" title="קיצורי מקלדת">⌨️</button>
+      <button class="icon-btn" id="btnTheme" title="מצב כהה / בהיר">🌙</button>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Filter Bar (shown in Practice & Flashcard modes) -->
+    <section class="filter-panel card" id="filterPanel">
+      <div class="filter-header">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="searchInput" placeholder="חיפוש חופשי בשאלות, מסיחים או הערות (למשל: FEV1, STEMI, אפילפסיה)..." />
+          <button class="clear-search hidden" id="clearSearchBtn" title="נקה חיפוש">✕</button>
+        </div>
+        <div class="filter-quick-actions">
+          <label class="toggle-switch" title="אחד את פתולוגיית ריאות ופתולוגיית קרדיולוגיה לתוך ריאות וקרדיולוגיה">
+            <input type="checkbox" id="mergePathologyToggle" checked />
+            <span class="slider"></span>
+            <span class="toggle-label">איחוד תתי-פתולוגיה</span>
+          </label>
+          <button class="btn-secondary btn-sm" id="btnShuffleQuestions" title="ערבב סדר שאלות (R)">🔀 ערבב שאלות</button>
+          <button class="btn-secondary btn-sm" id="btnShuffleOptions" title="ערבב סדר מסיחים">🎲 ערבב מסיחים</button>
+          <button class="btn-ghost btn-sm" id="btnToggleFilters">🔽 צמצם סינון</button>
+        </div>
+      </div>
+
+      <div class="filter-body" id="filterBody">
+        <div class="filter-row">
+          <div class="filter-label">
+            <span>📅 שנה / מועד:</span>
+            <div class="filter-mini-links">
+              <button class="link-btn" id="btnRecentYears">2021–2026</button>
+              <button class="link-btn" id="btnAllYears">הכל</button>
+              <button class="link-btn" id="btnClearYears">נקה</button>
+            </div>
+          </div>
+          <div class="chips-wrap" id="examChips"></div>
+        </div>
+
+        <div class="filter-row">
+          <div class="filter-label">
+            <span>🏥 מקצוע:</span>
+            <div class="filter-mini-links">
+              <button class="link-btn" id="btnAllSubjects">הכל</button>
+              <button class="link-btn" id="btnClearSubjects">נקה</button>
+            </div>
+          </div>
+          <div class="chips-wrap" id="subjectChips"></div>
+        </div>
+
+        <div class="filter-row">
+          <div class="filter-label"><span>🏷️ סטטוס:</span></div>
+          <div class="chips-wrap" id="statusChips">
+            <button class="chip active" data-status="all">הכל</button>
+            <button class="chip" data-status="unsolved">לא נפתרו</button>
+            <button class="chip" data-status="wrong">טעיתי בהן ❌</button>
+            <button class="chip" data-status="starred">מועדפים ⭐</button>
+            <button class="chip" data-status="unsure">התלבטתי 🤔</button>
+            <button class="chip" data-status="problematic">בעייתיות ⚠️</button>
+            <button class="chip" data-status="with_image">עם תמונה 🖼️</button>
+            <button class="chip" data-status="with_note">עם הערה שלי 📝</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="filter-footer">
+        <span id="filteredCountText">מציג 951 מתוך 951 שאלות</span>
+        <div class="jump-box">
+          <label for="jumpInput">קפוץ לשאלה:</label>
+          <input type="number" id="jumpInput" min="1" value="1" />
+          <button class="btn-secondary btn-sm" id="btnJump">עבור</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Practice / Drill / Flashcard View -->
+    <section id="studyView" class="study-view">
+      <div class="empty-state card hidden" id="emptyState">
+        <div class="empty-icon">🔍</div>
+        <h3>לא נמצאו שאלות התואמות לסינון</h3>
+        <p>נסה לנקות חלק מהמסננים או לשנות את מילת החיפוש.</p>
+        <button class="btn-primary" id="btnResetFiltersEmpty">אפס מסננים</button>
+      </div>
+
+      <article class="question-card card" id="questionCard">
+        <div class="q-header">
+          <div class="q-meta">
+            <span class="q-badge exam-badge" id="qExamBadge">2026 · שאלה 1</span>
+            <span class="q-badge subject-badge" id="qSubjectBadge">ריאות</span>
+            <span class="q-badge appeal-badge hidden" id="qAppealBadge">⚖️ שאלת ערעור</span>
+            <a class="pdf-link hidden" id="qPdfLink" href="#" target="_blank" rel="noopener">📖 פתח במבחן המקורי</a>
+          </div>
+          <div class="q-flags">
+            <button class="flag-btn" id="btnFlagStar" title="מועדפים / לחזרה (S)">⭐</button>
+            <button class="flag-btn" id="btnFlagUnsure" title="ניחשתי / לא בטוח">🤔</button>
+            <button class="flag-btn" id="btnFlagProblem" title="שאלה בעייתית / שגויה בשחזור">⚠️</button>
+          </div>
+        </div>
+
+        <div class="q-progress-strip">
+          <span id="qPositionText">שאלה 1 מתוך 951</span>
+          <span id="qDrillStreakText" class="drill-streak hidden"></span>
+          <span id="qSessionStatsText" class="session-mini"></span>
+        </div>
+
+        <div class="q-stem" id="qStem"></div>
+
+        <div class="q-images" id="qImages"></div>
+
+        <div class="q-options" id="qOptions"></div>
+
+        <div class="q-feedback hidden" id="qFeedback"></div>
+
+        <!-- Flashcard reveal & self-rating controls -->
+        <div class="flashcard-controls hidden" id="flashcardControls">
+          <button class="btn-primary btn-lg" id="btnRevealCard">👁️ חשוף תשובה (Space)</button>
+          <div class="flashcard-rate hidden" id="flashcardRate">
+            <button class="btn-success" id="btnCardKnew">✅ ידעתי</button>
+            <button class="btn-danger" id="btnCardForgot">❌ לא ידעתי</button>
+          </div>
+        </div>
+
+        <div class="q-note-section">
+          <label for="qNoteInput">📝 הפנינה שלי (נשמר אוטומטית):</label>
+          <textarea id="qNoteInput" rows="2" placeholder="כתוב לעצמך הסבר קצר, אבחנה מבדלת או כלל אצבע לשאלה זו..."></textarea>
+        </div>
+
+        <div class="q-nav-footer">
+          <button class="btn-secondary" id="btnPrevQ">→ הקודמת</button>
+          <div class="q-nav-center">
+            <button class="btn-ghost btn-sm" id="btnClearAttempt" title="אפס תשובה לשאלה זו כדי לפתור שוב">🔄 פתור שוב</button>
+          </div>
+          <button class="btn-primary" id="btnNextQ">הבאה ←</button>
+        </div>
+      </article>
+    </section>
+
+    <!-- Exam Simulation View -->
+    <section id="examView" class="exam-view hidden">
+      <div class="exam-setup card" id="examSetup">
+        <h2>⏱️ סימולציית מבחן</h2>
+        <p class="muted">בחן את עצמך בתנאי מבחן אמיתיים — ללא חשיפת תשובות עד להגשה, עם טיימר ומפת שאלות.</p>
+        <div class="setup-grid">
+          <div class="setup-block">
+            <h3>1. בחר סוג סימולציה</h3>
+            <label class="radio-card">
+              <input type="radio" name="simType" value="full" checked />
+              <div>
+                <strong>מבחן עבר מלא</strong>
+                <span>פתור מבחן שלם לפי שנה (למשל 2026 – 100 שאלות)</span>
+              </div>
+            </label>
+            <select id="simExamSelect" class="form-select"></select>
+
+            <label class="radio-card" style="margin-top: 12px;">
+              <input type="radio" name="simType" value="custom" />
+              <div>
+                <strong>מבחן מותאם אישית</strong>
+                <span>הרכב מבחן אקראי ממקצועות ושנים נבחרים</span>
+              </div>
+            </label>
+            <div class="custom-sim-opts" id="customSimOpts">
+              <div class="inline-field">
+                <label for="simCustomCount">מספר שאלות:</label>
+                <input type="number" id="simCustomCount" min="5" max="200" value="30" />
+              </div>
+              <div class="inline-field">
+                <label>מקצועות:</label>
+                <div class="chips-wrap" id="simSubjectChips"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="setup-block">
+            <h3>2. הגדרות זמן ואפשרויות</h3>
+            <div class="inline-field">
+              <label for="simMinutes">זמן מבחן (בדקות, 0 = ללא טיימר):</label>
+              <input type="number" id="simMinutes" min="0" max="300" value="90" />
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="simShuffleOpts" />
+              <span>ערבב סדר מסיחים בכל שאלה</span>
+            </label>
+            <button class="btn-primary btn-lg" id="btnStartSim" style="margin-top: 20px; width: 100%;">🚀 התחל סימולציה</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="exam-active hidden" id="examActive">
+        <div class="exam-hud card">
+          <div class="hud-item">
+            <span class="hud-label">זמן שנותר</span>
+            <strong class="hud-timer" id="simTimerDisplay">90:00</strong>
+          </div>
+          <div class="hud-item">
+            <span class="hud-label">נענו</span>
+            <strong id="simAnsweredDisplay">0 / 100</strong>
+          </div>
+          <div class="hud-actions">
+            <button class="btn-secondary btn-sm" id="btnToggleSimGrid">🗺️ מפת שאלות</button>
+            <button class="btn-danger" id="btnSubmitSim">🏁 הגש מבחן</button>
+          </div>
+        </div>
+
+        <div class="exam-grid-panel card hidden" id="simGridPanel">
+          <div class="sim-grid" id="simGrid"></div>
+        </div>
+
+        <div id="simQuestionMount"></div>
+      </div>
+
+      <div class="exam-results card hidden" id="examResults"></div>
+    </section>
+
+    <!-- Analytics Dashboard View -->
+    <section id="analyticsView" class="analytics-view hidden">
+      <div class="kpi-grid" id="analyticsKpis"></div>
+
+      <div class="analytics-two-col">
+        <div class="card">
+          <h3>📊 התקדמות ודיוק לפי מקצוע</h3>
+          <div id="subjectProgressList" class="subject-progress-list"></div>
+        </div>
+        <div class="card">
+          <h3>🎯 פילוח מהיר והמלצות</h3>
+          <div id="analyticsSummaryBox"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 16px;">
+        <h3>🗓️ מטריצת מוכנות (שנה × מקצוע)</h3>
+        <p class="muted" style="margin-bottom: 12px;">לחץ על כל תא במטריצה כדי לתרגל ישירות את השאלות של אותו מבחן ומקצוע.</p>
+        <div class="matrix-scroll">
+          <table class="readiness-matrix" id="readinessMatrix"></table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Image Lightbox Modal (Pan & Zoom) -->
+  <div class="modal-overlay hidden" id="lightboxModal">
+    <div class="lightbox-toolbar">
+      <span id="lightboxCaption">תמונה קלינית</span>
+      <div class="lightbox-controls">
+        <button class="btn-secondary btn-sm" id="btnZoomIn">🔍+</button>
+        <button class="btn-secondary btn-sm" id="btnZoomOut">🔍-</button>
+        <button class="btn-secondary btn-sm" id="btnZoomReset">איפוס</button>
+        <button class="btn-danger btn-sm" id="btnCloseLightbox">✕ סגור (Esc)</button>
+      </div>
+    </div>
+    <div class="lightbox-stage" id="lightboxStage">
+      <img id="lightboxImg" src="" alt="תמונה קלינית מוגדלת" draggable="false" />
+    </div>
+  </div>
+
+  <!-- Backup / Import Modal -->
+  <div class="modal-overlay hidden" id="backupModal">
+    <div class="modal-box card">
+      <div class="modal-header">
+        <h3>💾 גיבוי ושחזור התקדמות</h3>
+        <button class="icon-btn" id="btnCloseBackup">✕</button>
+      </div>
+      <p class="muted">ההתקדמות שלך נשמרת אוטומטית בדפדפן (וגם בדיסק כשמפעילים דרך <code>server.py</code>). ניתן לייצא או לייבא קובץ JSON לגיבוי.</p>
+      <div class="modal-actions-col">
+        <button class="btn-primary" id="btnDownloadBackup">⬇️ הורד גיבוי JSON</button>
+        <label class="btn-secondary file-upload-btn">
+          ⬆️ ייבא גיבוי JSON
+          <input type="file" id="importBackupInput" accept=".json" hidden />
+        </label>
+        <button class="btn-danger btn-sm" id="btnResetProgress" style="margin-top: 12px;">🗑️ אפס את כל ההתקדמות</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard Shortcuts Modal -->
+  <div class="modal-overlay hidden" id="shortcutsModal">
+    <div class="modal-box card">
+      <div class="modal-header">
+        <h3>⌨️ קיצורי מקלדת</h3>
+        <button class="icon-btn" id="btnCloseShortcuts">✕</button>
+      </div>
+      <ul class="shortcuts-list">
+        <li><kbd>1</kbd>–<kbd>5</kbd> או <kbd>א</kbd>–<kbd>ה</kbd> — בחירת תשובה</li>
+        <li><kbd>Shift</kbd> + <kbd>1</kbd>–<kbd>5</kbd> — פסילת מסיח (Strikethrough) ✂️</li>
+        <li><kbd>←</kbd> / <kbd>→</kbd> — שאלה הבאה / קודמת</li>
+        <li><kbd>Space</kbd> / <kbd>Enter</kbd> — חשיפת כרטיסייה / מעבר לשאלה הבאה</li>
+        <li><kbd>S</kbd> או <kbd>F</kbd> — סימון/ביטול מועדפים ⭐</li>
+        <li><kbd>R</kbd> — ערבוב סדר השאלות 🔀</li>
+        <li><kbd>Esc</kbd> — סגירת זום תמונה / חלון</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="questions_data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
