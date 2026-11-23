@@ -129,6 +129,9 @@
   // State
   let serverOnline = false;
   let currentMode = "practice"; // practice | exam | drill | flashcard | analytics
+  let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
+  let identityNeedsCloudCheck = false;
+  let userIdentity = loadOrInitIdentity();
   let progress = loadProgress();
   let filteredList = [...QUESTIONS];
   let currentIndex = 0;
@@ -137,11 +140,8 @@
   let flashcardRevealed = false;
   let sessionAnswered = 0;
   let sessionCorrect = 0;
-  let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
-  let userIdentity = loadOrInitIdentity();
   let notesExpanded = false; // Always closed by default (strict manual spoiler toggle)
   let lastRenderedQId = null;
-  let activeIdentityCategory = "הכל";
   let noteSyncState = "synced";
   let noteInputDebounce = null;
   const pendingDirtyQIds = new Set();
@@ -182,6 +182,9 @@
 
   function defaultProgress() {
     return {
+      identity: userIdentity
+        ? { userId: userIdentity.userId, name: userIdentity.name, emoji: userIdentity.emoji, category: userIdentity.category }
+        : null,
       attempts: {}, // qId -> { selected: number, isCorrect: boolean, ts: number }
       flags: {},    // qId -> { star?: bool, unsure?: bool, problem?: bool }
       notes: {},    // qId -> string
@@ -203,6 +206,12 @@
 
   let saveTimeout = null;
   function saveProgress() {
+    progress.identity = {
+      userId: userIdentity.userId,
+      name: userIdentity.name,
+      emoji: userIdentity.emoji,
+      category: userIdentity.category,
+    };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
     updateDrillBadge();
     if (serverOnline) {
@@ -289,11 +298,13 @@
         const parsed = JSON.parse(raw);
         const match = IDENTITY_CATALOG.find((item) => item.name === parsed?.name);
         if (parsed?.userId && match) {
+          identityNeedsCloudCheck = false;
           return {
             userId: String(parsed.userId),
             name: match.name,
             emoji: match.emoji,
             category: match.category,
+            locked: true,
           };
         }
       }
@@ -304,7 +315,9 @@
       name: picked.name,
       emoji: picked.emoji,
       category: picked.category,
+      locked: true,
     };
+    identityNeedsCloudCheck = true;
     try {
       localStorage.setItem(IDENTITY_KEY, JSON.stringify(created));
     } catch {}
@@ -315,8 +328,6 @@
     const label = `${userIdentity.emoji} ${userIdentity.name}`;
     const badge = el("userIdentityBadge");
     if (badge) badge.textContent = label;
-    const modalCur = el("identityModalCurrent");
-    if (modalCur) modalCur.textContent = label;
     const myLabel = el("myNoteLabel");
     if (myLabel) myLabel.textContent = `📝 ההערה שלי בתור ${label}:`;
   }
@@ -325,75 +336,18 @@
     try {
       localStorage.setItem(IDENTITY_KEY, JSON.stringify(userIdentity));
     } catch {}
+    if (progress) {
+      progress.identity = {
+        userId: userIdentity.userId,
+        name: userIdentity.name,
+        emoji: userIdentity.emoji,
+        category: userIdentity.category,
+      };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+      } catch {}
+    }
     updateIdentityUI();
-  }
-
-  function selectIdentity(entry) {
-    userIdentity = {
-      userId: userIdentity.userId,
-      name: entry.name,
-      emoji: entry.emoji,
-      category: entry.category,
-    };
-    saveUserIdentity();
-
-    let updatedAny = false;
-    const now = Date.now();
-    Object.entries(communityNotes).forEach(([qId, byUser]) => {
-      if (byUser && byUser[userIdentity.userId]) {
-        byUser[userIdentity.userId].author = entry.name;
-        byUser[userIdentity.userId].emoji = entry.emoji;
-        byUser[userIdentity.userId].category = entry.category;
-        byUser[userIdentity.userId].updatedAt = now;
-        pendingDirtyQIds.add(qId);
-        updatedAny = true;
-      }
-    });
-
-    if (updatedAny) {
-      saveCommunityNotesCache();
-      enqueueCloudSync();
-    }
-
-    if (!el("identityModal").classList.contains("hidden")) {
-      renderIdentityModal();
-    }
-    if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
-      renderNotesSection(filteredList[currentIndex], true);
-    }
-    showToast(`🎭 הכינוי שלך עודכן ל-${entry.emoji} ${entry.name}`);
-  }
-
-  function renderIdentityModal() {
-    updateIdentityUI();
-    const taken = getTakenAuthorNames();
-    const tabs = el("identityCategoryTabs").querySelectorAll(".chip");
-    tabs.forEach((t) => t.classList.toggle("active", t.dataset.cat === activeIdentityCategory));
-
-    const grid = el("identityPickerGrid");
-    grid.innerHTML = "";
-    const items = activeIdentityCategory === "הכל"
-      ? IDENTITY_CATALOG
-      : IDENTITY_CATALOG.filter((item) => item.category === activeIdentityCategory);
-
-    items.forEach((item) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      const isCurrent = item.name === userIdentity.name;
-      const isTaken = !isCurrent && taken.has(item.name);
-      btn.className = "identity-option-btn" + (isCurrent ? " active" : "");
-
-      const nameSpan = document.createElement("span");
-      nameSpan.textContent = `${item.emoji} ${item.name}`;
-
-      const statusSpan = document.createElement("span");
-      statusSpan.className = "identity-option-status";
-      statusSpan.textContent = isCurrent ? "שלך" : isTaken ? "פעיל" : "";
-
-      btn.append(nameSpan, statusSpan);
-      btn.onclick = () => selectIdentity(item);
-      grid.appendChild(btn);
-    });
   }
 
   function getMyNoteText(qId) {
@@ -601,6 +555,23 @@
     try {
       const cloudData = await fetchCloudNotesPayload();
       mergeCloudIntoLocal(cloudData);
+      if (identityNeedsCloudCheck) {
+        identityNeedsCloudCheck = false;
+        const hasMyNotes = pendingDirtyQIds.size > 0 || Object.values(communityNotes).some(
+          (byUser) => byUser && byUser[userIdentity.userId]
+        );
+        if (!hasMyNotes && getTakenAuthorNames().has(userIdentity.name)) {
+          const fresh = pickRandomIdentity(true);
+          userIdentity = {
+            userId: userIdentity.userId,
+            name: fresh.name,
+            emoji: fresh.emoji,
+            category: fresh.category,
+            locked: true,
+          };
+          saveUserIdentity();
+        }
+      }
       if (pendingDirtyQIds.size === 0) {
         noteSyncState = "synced";
       }
@@ -1761,22 +1732,13 @@
 
     el("btnToggleNotes").onclick = () => toggleNotesDrawer();
     el("btnRefreshNotes").onclick = () => pullCloudNotes(true);
-
-    el("btnUserIdentity").onclick = () => {
-      renderIdentityModal();
-      el("identityModal").classList.remove("hidden");
+    el("userIdentityPill").onclick = () => {
+      showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
     };
-    el("btnCloseIdentity").onclick = () => el("identityModal").classList.add("hidden");
-    el("btnRandomIdentity").onclick = () => selectIdentity(pickRandomIdentity(true));
-    el("identityCategoryTabs").querySelectorAll(".chip").forEach((tab) => {
-      tab.onclick = () => {
-        activeIdentityCategory = tab.dataset.cat;
-        renderIdentityModal();
-      };
-    });
 
     el("qNoteInput").addEventListener("input", (e) => {
       if (filteredList.length === 0) return;
+      identityNeedsCloudCheck = false;
       const q = filteredList[currentIndex];
       const text = e.target.value;
       progress.notes[q.id] = text;
@@ -1872,7 +1834,6 @@
         el("lightboxModal").classList.add("hidden");
         el("backupModal").classList.add("hidden");
         el("shortcutsModal").classList.add("hidden");
-        el("identityModal").classList.add("hidden");
         return;
       }
       const tag = document.activeElement?.tagName;

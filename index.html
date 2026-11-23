@@ -30,10 +30,9 @@
       </nav>
     </div>
     <div class="topbar-left">
-      <button class="identity-pill-btn" id="btnUserIdentity" title="הכינוי שלך להערות משותפות — לחץ לשינוי או הגרלה">
+      <div class="identity-pill-static" id="userIdentityPill" title="הכינוי הקבוע שלך במכשיר זה (אינו ניתן לשינוי)">
         <span id="userIdentityBadge">🍎 תפוח</span>
-        <span class="identity-caret">▾</span>
-      </button>
+      </div>
       <span class="sync-pill offline" id="syncPill" title="מצב שמירת התקדמות">
         <span class="dot"></span>
         <span id="syncText">שמירה אוטומטית בדפדפן</span>
@@ -354,32 +353,6 @@
         <li><kbd>R</kbd> — ערבוב סדר השאלות 🔀</li>
         <li><kbd>Esc</kbd> — סגירת זום תמונה / חלון</li>
       </ul>
-    </div>
-  </div>
-
-  <!-- Identity Picker Modal -->
-  <div class="modal-overlay hidden" id="identityModal">
-    <div class="modal-box card identity-modal-box">
-      <div class="modal-header">
-        <h3>🎭 בחירת כינוי להערות משותפות</h3>
-        <button class="icon-btn" id="btnCloseIdentity">✕</button>
-      </div>
-      <p class="muted">בחר שם מתוך מאגר 100 הכינויים (פירות, ירקות, כלי מטבח ודמויות מהתנ״ך). ההערות שתכתוב יוצגו לכולם תחת הכינוי הזה.</p>
-      <div class="identity-current-banner">
-        <div>
-          <span class="muted">הכינוי הנוכחי שלך:</span>
-          <strong id="identityModalCurrent" class="identity-current-name">🍎 תפוח</strong>
-        </div>
-        <button type="button" class="btn-primary btn-sm" id="btnRandomIdentity">🎲 הגרל שם פנוי</button>
-      </div>
-      <div class="identity-category-tabs" id="identityCategoryTabs">
-        <button type="button" class="chip active" data-cat="הכל">הכל (100)</button>
-        <button type="button" class="chip" data-cat="פירות">🍎 פירות (25)</button>
-        <button type="button" class="chip" data-cat="ירקות">🥦 ירקות (25)</button>
-        <button type="button" class="chip" data-cat="כלי מטבח">🍳 כלי מטבח (25)</button>
-        <button type="button" class="chip" data-cat="תנ&quot;ך">📜 תנ״ך (25)</button>
-      </div>
-      <div class="identity-picker-grid" id="identityPickerGrid"></div>
     </div>
   </div>
 
