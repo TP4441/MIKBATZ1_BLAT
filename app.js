@@ -334,8 +334,8 @@
       const curQId = filteredList?.[currentIndex]?.id;
       const isEditing = curQId && editingNoteQIds.has(curQId);
       myLabel.textContent = isEditing
-        ? `עריכת ההערה שלי בתור ${label}:`
-        : `ההערה שלי בתור ${label}:`;
+        ? `✏️ עריכת ההערה שלי בתור ${label}:`
+        : `📝 ההערה שלי בתור ${label}:`;
     }
   }
 
@@ -409,11 +409,11 @@
     if (!statusEl) return;
     const curQId = filteredList?.[currentIndex]?.id;
     const hasDraft = Boolean(curQId && ((noteDrafts[curQId] || "").trim().length > 0 || editingNoteQIds.has(curQId)));
-    if (noteSyncState === "saving") statusEl.textContent = "שומר לענן...";
+    if (noteSyncState === "saving") statusEl.textContent = "שומר לענן... ⏳";
     else if (hasDraft) statusEl.textContent = "טיוטה · לחץ Enter לשליחה";
-    else if (noteSyncState === "offline") statusEl.textContent = "שמור מקומית (אופליין)";
-    else if (noteSyncState === "error") statusEl.textContent = "ממתין לסנכרון";
-    else statusEl.textContent = "מסונכרן";
+    else if (noteSyncState === "offline") statusEl.textContent = "שמור מקומית (אופליין) 💾";
+    else if (noteSyncState === "error") statusEl.textContent = "ממתין לסנכרון ⚠️";
+    else statusEl.textContent = "מסונכרן ☁️";
   }
 
   function startEditMyNote(qId) {
@@ -459,7 +459,7 @@
     }
     await enqueueCloudSync();
     if (noteSyncState === "synced") {
-      showToast("ההערה שלך נמחקה.");
+      showToast("🗑️ ההערה שלך נמחקה.");
     }
   }
 
@@ -493,10 +493,10 @@
     }
 
     el("notesToggleArrow").textContent = notesExpanded
-      ? "הסתר הערות"
+      ? "הסתר הערות 🔼"
       : notesList.length > 0
-      ? "הצג הערות"
-      : "הוסף הערה";
+      ? "הצג הערות 🔽"
+      : "הוסף הערה 🔽";
 
     el("qNotesDrawer").classList.toggle("hidden", !notesExpanded);
 
@@ -538,14 +538,14 @@
           editBtn.type = "button";
           editBtn.className = "note-card-action-btn";
           editBtn.title = "ערוך את ההערה שלי";
-          editBtn.textContent = "ערוך";
+          editBtn.textContent = "✏️ ערוך";
           editBtn.onclick = () => startEditMyNote(q.id);
 
           const delBtn = document.createElement("button");
           delBtn.type = "button";
           delBtn.className = "note-card-action-btn danger";
           delBtn.title = "מחק את ההערה שלי";
-          delBtn.textContent = "מחק";
+          delBtn.textContent = "🗑️ מחק";
           delBtn.onclick = () => deleteMyNote(q.id);
 
           headActions.append(editBtn, delBtn);
@@ -667,11 +667,11 @@
       if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
         renderNotesSection(filteredList[currentIndex], true);
       }
-      if (showFeedback) showToast("ההערות המשותפות רועננו מהענן.");
+      if (showFeedback) showToast("🔄 ההערות המשותפות רועננו מהענן!");
     } catch {
       if (pendingDirtyQIds.size > 0) noteSyncState = "offline";
       updateNoteSyncBadge();
-      if (showFeedback) showToast("לא ניתן להתחבר לענן כרגע — מציג מטמון מקומי.");
+      if (showFeedback) showToast("⚠️ לא ניתן להתחבר לענן כרגע — מציג מטמון מקומי.");
     }
   }
 
@@ -807,6 +807,22 @@
     }
   }
 
+  const SUBJECT_EMOJIS = {
+    "אונקולוגיה": "🎗️",
+    "מבואות": "📚",
+    "נוירולוגיה": "🧠",
+    "פתולוגיה": "🔬",
+    "קרדיולוגיה": "🫀",
+    "ריאות": "🫁",
+    "פתולוגיית קרדיולוגיה": "🫀🔬",
+    "פתולוגיית ריאות": "🫁🔬",
+  };
+
+  function formatSubject(subj) {
+    const emo = SUBJECT_EMOJIS[subj];
+    return emo ? `${emo} ${subj}` : subj;
+  }
+
   function getSubject(q) {
     return filters.mergePathology ? q.baseSubject : q.subject;
   }
@@ -838,7 +854,7 @@
     getUniqueSubjects().forEach((subj) => {
       const btn = document.createElement("button");
       btn.className = "chip" + (filters.subjects.has(subj) ? " active" : "");
-      btn.textContent = subj;
+      btn.textContent = formatSubject(subj);
       btn.onclick = () => {
         if (filters.subjects.has(subj)) filters.subjects.delete(subj);
         else filters.subjects.add(subj);
@@ -968,7 +984,7 @@
     flashcardRevealed = false;
 
     el("qExamBadge").textContent = `${q.exam} · שאלה ${q.num}`;
-    el("qSubjectBadge").textContent = getSubject(q);
+    el("qSubjectBadge").textContent = formatSubject(getSubject(q));
     el("qAppealBadge").classList.toggle("hidden", !(q.correct.length > 1 || q.allAccepted));
 
     const pdfLink = el("qPdfLink");
@@ -976,7 +992,7 @@
       pdfLink.classList.remove("hidden");
       const encodedPdf = encodeURI(q.pdf);
       pdfLink.href = q.pdfPage ? `${encodedPdf}#page=${q.pdfPage}` : encodedPdf;
-      pdfLink.textContent = q.pdfPage ? `עמ׳ ${q.pdfPage} במבחן` : "קובץ המבחן";
+      pdfLink.textContent = q.pdfPage ? `📖 עמ׳ ${q.pdfPage} במבחן` : "📖 קובץ המבחן";
     } else {
       pdfLink.classList.add("hidden");
     }
@@ -992,7 +1008,7 @@
     if (currentMode === "drill") {
       const st = progress.drillStreak[q.id] || 0;
       drillStreakEl.classList.remove("hidden");
-      drillStreakEl.textContent = `רצף תיקון: ${st}/2`;
+      drillStreakEl.textContent = `🔥 רצף תיקון: ${st}/2`;
     } else {
       drillStreakEl.classList.add("hidden");
     }
@@ -1015,7 +1031,7 @@
       img.alt = `תמונה ${idx + 1} לשאלה ${q.num}`;
       const hint = document.createElement("span");
       hint.className = "q-image-hint";
-      hint.textContent = "לחץ לזום";
+      hint.textContent = "🔍 לחץ לזום";
       box.append(img, hint);
       box.onclick = () => openLightbox(src, `${q.exam} · שאלה ${q.num}`);
       imgWrap.appendChild(box);
@@ -1062,7 +1078,7 @@
       strikeBtn.className = "strike-btn";
       strikeBtn.title = "פסול מסיח (לחיצה ימנית)";
       strikeBtn.setAttribute("aria-label", "פסול מסיח");
-      strikeBtn.innerHTML = `<svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+      strikeBtn.textContent = "✂️";
       strikeBtn.onclick = () => toggleStrike(q.id, origIdx);
 
       row.append(btn, strikeBtn);
@@ -1107,15 +1123,15 @@
       .join("<br/>");
 
     let html = isCorrect === true
-      ? "<strong>תשובה נכונה!</strong>"
+      ? "✅ <strong>תשובה נכונה!</strong>"
       : isCorrect === false
-      ? `<strong>טעות.</strong> התשובה הנכונה:<br/>${correctLabels}`
-      : `<strong>התשובה הנכונה:</strong><br/>${correctLabels}`;
+      ? `❌ <strong>טעות.</strong> התשובה הנכונה:<br/>${correctLabels}`
+      : `💡 <strong>התשובה הנכונה:</strong><br/>${correctLabels}`;
 
     if (q.allAccepted) {
-      html += `<div class="appeal-note">הערת ערעור: כל התשובות התקבלו בשאלה זו.</div>`;
+      html += `<div class="appeal-note">⚖️ הערת ערעור: כל התשובות התקבלו בשאלה זו.</div>`;
     } else if (q.appealNote) {
-      html += `<div class="appeal-note">הערת ערעור: ${escapeHtml(q.appealNote)}</div>`;
+      html += `<div class="appeal-note">⚖️ הערת ערעור: ${escapeHtml(q.appealNote)}</div>`;
     }
 
     fb.innerHTML = html;
@@ -1135,7 +1151,7 @@
       if (isCorrect) {
         progress.drillStreak[q.id] = (progress.drillStreak[q.id] || 0) + 1;
         if (progress.drillStreak[q.id] >= 2) {
-          showToast("ענית נכון פעמיים! השאלה הושלמה בתיקון טעויות.");
+          showToast("🎉 ענית נכון פעמיים! השאלה הושלמה בתיקון טעויות.");
         }
       } else {
         progress.drillStreak[q.id] = 0;
@@ -1239,7 +1255,7 @@
     }
     currentIndex = 0;
     renderQuestion();
-    showToast("סדר השאלות עורבב.");
+    showToast("🔀 סדר השאלות עורבב!");
   }
 
   function toggleShuffleOptions() {
@@ -1252,7 +1268,7 @@
       b.classList.toggle("btn-secondary", !shuffleOptionsEnabled);
     });
     renderQuestion();
-    showToast(shuffleOptionsEnabled ? "ערבוב מסיחים הופעל" : "סדר מסיחים מקורי");
+    showToast(shuffleOptionsEnabled ? "🎲 ערבוב מסיחים הופעל" : "סדר מסיחים מקורי");
   }
 
   // Lightbox Pan & Zoom
@@ -1328,7 +1344,7 @@
       btn.type = "button";
       btn.className = "chip active";
       btn.dataset.subj = s;
-      btn.textContent = s;
+      btn.textContent = formatSubject(s);
       btn.onclick = () => btn.classList.toggle("active");
       simSubjWrap.appendChild(btn);
     });
@@ -1428,12 +1444,9 @@
         <div class="q-header">
           <div class="q-meta">
             <span class="q-badge exam-badge">שאלה ${simState.currentIndex + 1} מתוך ${simState.questions.length}</span>
-            <span class="q-badge subject-badge">${escapeHtml(getSubject(q))} · ${escapeHtml(q.exam)}</span>
+            <span class="q-badge subject-badge">${escapeHtml(formatSubject(getSubject(q)))} · ${escapeHtml(q.exam)}</span>
           </div>
-          <button type="button" class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">
-            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
-            <span>סמן לבדיקה</span>
-          </button>
+          <button type="button" class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">🚩 סמן לבדיקה</button>
         </div>
         <div class="q-content-grid${q.images.length > 0 ? " has-images" : ""}">
           <div class="q-stem">${escapeHtml(q.stem)}</div>
@@ -1463,7 +1476,7 @@
     q.images.forEach((src) => {
       const box = document.createElement("div");
       box.className = "q-image-wrap";
-      box.innerHTML = `<img src="${src}" alt="תמונה" /><span class="q-image-hint">לחץ לזום</span>`;
+      box.innerHTML = `<img src="${src}" alt="תמונה" /><span class="q-image-hint">🔍 לחץ לזום</span>`;
       box.onclick = () => openLightbox(src, `סימולציה · שאלה ${simState.currentIndex + 1}`);
       imgWrap.appendChild(box);
     });
@@ -1493,7 +1506,7 @@
       strikeBtn.type = "button";
       strikeBtn.className = "strike-btn";
       strikeBtn.setAttribute("aria-label", "פסול מסיח");
-      strikeBtn.innerHTML = `<svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+      strikeBtn.textContent = "✂️";
       strikeBtn.onclick = () => {
         if (!simState.struck.has(q.id)) simState.struck.set(q.id, new Set());
         const st = simState.struck.get(q.id);
@@ -1552,14 +1565,14 @@
         const sp = Math.round((st.correct / st.total) * 100);
         return `
           <div class="prog-item">
-            <div class="prog-item-head"><span>${escapeHtml(subj)}</span><strong>${st.correct}/${st.total} (${sp}%)</strong></div>
+            <div class="prog-item-head"><span>${escapeHtml(formatSubject(subj))}</span><strong>${st.correct}/${st.total} (${sp}%)</strong></div>
             <div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${sp}%"></div></div>
           </div>`;
       })
       .join("");
 
     resEl.innerHTML = `
-      <h2>תוצאות הסימולציה</h2>
+      <h2>🏁 תוצאות הסימולציה</h2>
       <div class="kpi-grid" style="margin-top:14px;">
         <div class="kpi-card"><div class="kpi-label">ציון סופי</div><div class="kpi-value">${pct}%</div></div>
         <div class="kpi-card"><div class="kpi-label">תשובות נכונות</div><div class="kpi-value">${correctCount} / ${simState.questions.length}</div></div>
@@ -1568,8 +1581,8 @@
       <h3>פילוח לפי מקצוע</h3>
       <div class="subject-progress-list">${subjRows}</div>
       <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;">
-        <button type="button" class="btn-primary" id="btnReviewSimWrong">תחקר טעויות מהסימולציה (${wrongIds.length})</button>
-        <button type="button" class="btn-secondary" id="btnNewSim">סימולציה חדשה</button>
+        <button type="button" class="btn-primary" id="btnReviewSimWrong">🔥 תחקר טעויות מהסימולציה (${wrongIds.length})</button>
+        <button type="button" class="btn-secondary" id="btnNewSim">🔄 סימולציה חדשה</button>
       </div>
     `;
 
@@ -1596,10 +1609,10 @@
     const starredCount = Object.values(progress.flags).filter((f) => f.star).length;
 
     el("analyticsKpis").innerHTML = `
-      <div class="kpi-card"><div class="kpi-label">התקדמות כוללת</div><div class="kpi-value">${totalSolved} / ${QUESTIONS.length}</div></div>
-      <div class="kpi-card"><div class="kpi-label">דיוק מצטבר</div><div class="kpi-value">${acc}%</div></div>
-      <div class="kpi-card"><div class="kpi-label">נפתרו היום</div><div class="kpi-value">${today.answered}</div></div>
-      <div class="kpi-card"><div class="kpi-label">מועדפים לחזרה</div><div class="kpi-value">${starredCount}</div></div>
+      <div class="kpi-card"><div class="kpi-label">📈 התקדמות כוללת</div><div class="kpi-value">${totalSolved} / ${QUESTIONS.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🎯 דיוק מצטבר</div><div class="kpi-value">${acc}%</div></div>
+      <div class="kpi-card"><div class="kpi-label">📅 נפתרו היום</div><div class="kpi-value">${today.answered}</div></div>
+      <div class="kpi-card"><div class="kpi-label">⭐ מועדפים לחזרה</div><div class="kpi-value">${starredCount}</div></div>
     `;
 
     // By subject
@@ -1613,7 +1626,7 @@
       return `
         <div class="prog-item">
           <div class="prog-item-head">
-            <strong>${escapeHtml(s)} (${qs.length})</strong>
+            <strong>${escapeHtml(formatSubject(s))} (${qs.length})</strong>
             <span>השלמה: ${compPct}% · דיוק: ${solved.length ? accPct + "%" : "—"}</span>
           </div>
           <div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${compPct}%"></div></div>
@@ -1635,15 +1648,15 @@
     el("analyticsSummaryBox").innerHTML = `
       <p class="muted" style="margin-top:8px;">
         ${weakSubjs.length > 0
-          ? `המקצוע שדורש הכי הרבה חיזוק כרגע: <strong>${escapeHtml(weakSubjs[0].s)}</strong> (${Math.round(weakSubjs[0].acc * 100)}% דיוק).`
+          ? `המקצוע שדורש הכי הרבה חיזוק כרגע: <strong>${escapeHtml(formatSubject(weakSubjs[0].s))}</strong> (${Math.round(weakSubjs[0].acc * 100)}% דיוק).`
           : "פתור כמה שאלות כדי לראות המלצות מותאמות אישית!"}
       </p>
-      <p style="margin-top:10px;">יש לך <strong>${getDrillQuestions().length}</strong> שאלות שממתינות בתיקון טעויות.</p>
+      <p style="margin-top:10px;">יש לך <strong>${getDrillQuestions().length}</strong> שאלות שממתינות בתיקון טעויות 🔥.</p>
     `;
 
     // Readiness Matrix (Exam x Subject)
     const table = el("readinessMatrix");
-    let head = `<tr><th>שנה / מקצוע</th>${subjs.map((s) => `<th>${escapeHtml(s)}</th>`).join("")}</tr>`;
+    let head = `<tr><th>שנה / מקצוע</th>${subjs.map((s) => `<th>${escapeHtml(formatSubject(s))}</th>`).join("")}</tr>`;
     let rows = EXAMS.map((ex) => {
       const cells = subjs.map((s) => {
         const qs = QUESTIONS.filter((q) => q.exam === ex.name && getSubject(q) === s);
@@ -1696,7 +1709,7 @@
         });
         const data = await res.json();
         if (res.ok) {
-          showToast(`יוצאו ${data.count} שאלות למחברת הטעויות ב-Obsidian.`);
+          showToast(`📓 יוצאו ${data.count} שאלות למחברת הטעויות ב-Obsidian!`);
           return;
         }
       } catch {}
@@ -1723,7 +1736,7 @@
     a.href = URL.createObjectURL(blob);
     a.download = "מחברת טעויות - מקבץ 1.md";
     a.click();
-    showToast(`הורד קובץ Markdown עם ${wrongOrNoted.length} שאלות.`);
+    showToast(`📥 הורד קובץ Markdown עם ${wrongOrNoted.length} שאלות!`);
   }
 
   // Mode switching
@@ -1861,7 +1874,7 @@
     el("btnToggleNotes").onclick = () => toggleNotesDrawer();
     el("btnRefreshNotes").onclick = () => pullCloudNotes(true);
     el("userIdentityPill").onclick = () => {
-      showToast(`הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
+      showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
     };
 
     el("btnCancelEditNote").onclick = () => {
@@ -1880,7 +1893,7 @@
         if (isEditing) {
           await deleteMyNote(q.id);
         } else {
-          showToast("כתוב הערה לפני השליחה.");
+          showToast("✏️ כתוב הערה לפני השליחה.");
           el("qNoteInput").focus();
         }
         return;
@@ -1912,7 +1925,7 @@
 
       await enqueueCloudSync();
       if (noteSyncState === "synced") {
-        showToast(isEditing ? "ההערה עודכנה בענן." : "ההערה נשלחה ונשמרה בענן.");
+        showToast(isEditing ? "✏️ ההערה עודכנה בענן!" : "💬 ההערה נשלחה ונשמרה בענן!");
       }
     }
 
@@ -1992,9 +2005,9 @@
           saveProgress();
           renderCurrentView();
           el("backupModal").classList.add("hidden");
-          showToast("הגיבוי שוחזר בהצלחה.");
+          showToast("✅ הגיבוי שוחזר בהצלחה!");
         } catch {
-          showToast("קובץ גיבוי לא תקין");
+          showToast("❌ קובץ גיבוי לא תקין");
         }
       };
       reader.readAsText(file);
