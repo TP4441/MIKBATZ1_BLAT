@@ -5,6 +5,7 @@
   const THEME_KEY = "med_exam_theme_v1";
   const IDENTITY_KEY = "med_exam_user_identity_v1";
   const DEVICE_ID_KEY = "med_exam_device_id_v1";
+  const ONBOARDING_SEEN_KEY = "med_exam_onboarding_v1_seen";
   const SYNC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
   const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
   const COMMUNITY_NOTES_CACHE_KEY = "med_exam_community_notes_cache_v1";
@@ -377,6 +378,17 @@
   let lbDragging = false;
   let lbStartX = 0;
   let lbStartY = 0;
+
+  // Onboarding tour state
+  let tourState = {
+    active: false,
+    stepIndex: 0,
+    steps: [],
+    returnMode: null,
+    pendingAfterSyncModal: false,
+    manual: false,
+  };
+  let tourScrollTimer = null;
 
   // DOM refs
   const el = (id) => document.getElementById(id);
@@ -3614,6 +3626,23 @@
     el("btnShortcuts").onclick = () => el("shortcutsModal").classList.remove("hidden");
     el("btnCloseShortcuts").onclick = () => el("shortcutsModal").classList.add("hidden");
 
+    // Onboarding Spotlight Tour
+    el("btnHelpTour")?.addEventListener("click", () => startOnboardingTour({ manual: true }));
+    el("btnTourNext")?.addEventListener("click", nextTourStep);
+    el("btnTourPrev")?.addEventListener("click", prevTourStep);
+    el("btnTourSkip")?.addEventListener("click", () => closeOnboardingTour({ markSeen: true }));
+    el("btnTourClose")?.addEventListener("click", () => closeOnboardingTour({ markSeen: true }));
+    el("tourBackdrop")?.addEventListener("click", (e) => e.stopPropagation());
+
+    const handleTourViewportChange = () => {
+      if (!tourState.active) return;
+      requestAnimationFrame(() => {
+        if (tourState.active) positionTourSpotlightAndPopover();
+      });
+    };
+    window.addEventListener("resize", handleTourViewportChange);
+    window.addEventListener("scroll", handleTourViewportChange, { passive: true });
+
     el("btnDownloadBackup").onclick = () => {
       const blob = new Blob([JSON.stringify(progress, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
@@ -3726,6 +3755,26 @@
 
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
+      if (tourState.active) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closeOnboardingTour({ markSeen: true });
+        } else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          nextTourStep();
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          prevTourStep();
+        } else if (e.key === "Enter") {
+          const activeEl = document.activeElement;
+          const popoverEl = el("tourPopover");
+          if (!activeEl || !popoverEl?.contains(activeEl) || activeEl === popoverEl) {
+            e.preventDefault();
+            nextTourStep();
+          }
+        }
+        return;
+      }
       if (e.key === "Escape") {
         closeLightbox();
         closeOnlineUsersPopover();
@@ -4783,6 +4832,14 @@
 
   function closeSyncModal() {
     el("syncModal")?.classList.add("hidden");
+    if (tourState.pendingAfterSyncModal && !hasSeenOnboarding()) {
+      tourState.pendingAfterSyncModal = false;
+      setTimeout(() => {
+        if (!tourState.active && !simState.active && !isAnyBlockingModalOpen()) {
+          startOnboardingTour({ manual: false });
+        }
+      }, 120);
+    }
   }
 
   async function copyTextToClipboard(text, successMsg) {
@@ -5305,6 +5362,383 @@
     }
   }
 
+  // ============================================================
+  // Onboarding Spotlight Tour
+  // ============================================================
+
+  function hasSeenOnboarding() {
+    try {
+      return localStorage.getItem(ONBOARDING_SEEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function markOnboardingSeen() {
+    try {
+      localStorage.setItem(ONBOARDING_SEEN_KEY, "1");
+    } catch {}
+  }
+
+  function isAnyBlockingModalOpen() {
+    const modalIds = [
+      "syncModal",
+      "backupModal",
+      "shortcutsModal",
+      "problemReportModal",
+      "adminLoginModal",
+      "adminQuestionModal",
+      "adminDashboardModal",
+      "lightboxModal",
+    ];
+    return modalIds.some((id) => {
+      const node = el(id);
+      return node && !node.classList.contains("hidden");
+    });
+  }
+
+  function getTourSteps() {
+    const identityLabel = escapeHtml(`${userIdentity?.emoji || "🩺"} ${userIdentity?.name || "אנונימי"}`);
+    return [
+      {
+        target: null,
+        title: "🩺 ברוכים הבאים למבחני עבר – מקבץ 1",
+        html: `
+          <p class="tour-lead">הכינוי האנונימי שלך במכשיר זה הוא <span class="tour-tag">${identityLabel}</span>.</p>
+          <ul class="tour-points">
+            <li><strong>שמירה אוטומטית מלאה:</strong> ההתקדמות, הסימונים וההערות שלך נשמרים אוטומטית בדפדפן ובענן מרגע הפתרון — ללא צורך בהרשמה.</li>
+            <li>סיור קצר בן 7 צעדים יראה לך איפה נמצא כל כלי באתר.</li>
+          </ul>
+        `,
+      },
+      {
+        target: "#modeTabs",
+        title: "🧭 5 מצבי לימוד",
+        html: `
+          <ul class="tour-points">
+            <li><strong>תרגול:</strong> פתרון חופשי עם משוב מיידי והערות.</li>
+            <li><strong>סימולציית מבחן:</strong> תנאי מבחן אמיתיים עם טיימר ומפת שאלות.</li>
+            <li><strong>תיקון טעויות:</strong> חזרה ממוקדת עד <strong>2 הצלחות ברצף</strong> לכל שאלה.</li>
+            <li><strong>כרטיסיות ואנליטיקה:</strong> שינון מהיר ומעקב מוכנות לפי שנה ומקצוע.</li>
+          </ul>
+        `,
+      },
+      {
+        target: "#btnSyncModal",
+        title: "☁️ סנכרון ושמירה בין מכשירים",
+        html: `
+          <ul class="tour-points">
+            <li>מציג את מצב הסנכרון בענן בזמן אמת.</li>
+            <li>לחיצה פותחת <strong>קוד סנכרון בן 12 תווים, קישור קסם ו-QR</strong> כדי להעביר או למזג את ההתקדמות והכינוי שלך בין המחשב, האייפד והטלפון.</li>
+          </ul>
+        `,
+      },
+      {
+        target: ".topbar-utils",
+        title: "🛠️ כלים שימושיים בסרגל העליון",
+        html: `
+          <ul class="tour-points">
+            <li>הכינוי שלך (<span class="tour-tag">${identityLabel}</span>) וכפתור <strong>מחוברים עכשיו</strong> לראות מי מתרגל כרגע.</li>
+            <li><strong>ייצוא</strong> שגיאות והערות ל-Markdown/Obsidian ו<strong>גיבוי</strong> מלא לקובץ JSON.</li>
+            <li>החלפת <strong>מצב כהה/בהיר</strong>, ובמחשב גם <strong>קיצורי מקלדת</strong>.</li>
+          </ul>
+        `,
+      },
+      {
+        target: "#filterPanel",
+        compactTarget: "#filterPanel .filter-header",
+        title: "🔍 חיפוש, סינון וערבוב",
+        html: `
+          <ul class="tour-points">
+            <li>חיפוש חופשי בכל השאלות, המסיחים וההערות.</li>
+            <li>ערבוב שאלות או מסיחים (<span class="tour-tag">🔀</span> / <span class="tour-tag">🎲</span>).</li>
+            <li>פתיחת <strong>סינון</strong> לפילוח לפי שנה, מקצוע וסטטוס (טעיתי, מועדפים, עם תמונה, עם הערות קהילה) או קפיצה ישירה לשאלה.</li>
+          </ul>
+        `,
+      },
+      {
+        target: "#questionCard .q-header",
+        title: "⭐ סימונים, פסילה ודיווח",
+        html: `
+          <ul class="tour-points">
+            <li><span class="tour-tag">⭐</span> מועדפים, <span class="tour-tag">🤔</span> התלבטתי, <span class="tour-tag">⚠️</span> דיווח בעיה לכולם, וקישור <span class="tour-tag">📖</span> למבחן המקורי.</li>
+            <li><strong>בשאלה עצמה:</strong> לחיצה על <span class="tour-tag">✂️</span> (או קליק ימני / <span class="tour-tag">Shift+1–5</span>) פוסלת מסיח, ולחיצה על תמונה פותחת זום.</li>
+          </ul>
+        `,
+      },
+      {
+        target: "#qNotesContainer",
+        title: "💬 הערות ופנינים משותפות",
+        html: `
+          <ul class="tour-points">
+            <li>המגירה סגורה כברירת מחדל כדי למנוע ספוילרים (לחיצה או <span class="tour-tag">N</span> לפתיחה).</li>
+            <li>אפשר לקרוא פנינים של כולם ולפרסם, לערוך או למחוק הערה משלך בענן.</li>
+            <li>ניתן לפתוח את המדריך שוב בכל רגע דרך כפתור <span class="tour-tag">?</span> בסרגל העליון.</li>
+          </ul>
+        `,
+      },
+    ];
+  }
+
+  function getTourTargetElement(step) {
+    if (!step || !step.target) return null;
+    const isVisibleNode = (node) => {
+      if (!node) return false;
+      if (node.closest(".hidden")) return false;
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+    const node = document.querySelector(step.target);
+    if (!isVisibleNode(node)) return null;
+    if (step.compactTarget) {
+      const topbarEl = document.querySelector(".topbar");
+      const topbarH = topbarEl ? topbarEl.getBoundingClientRect().height : 0;
+      const rect = node.getBoundingClientRect();
+      if (rect.height > window.innerHeight - topbarH - 270) {
+        const compactNode = document.querySelector(step.compactTarget);
+        if (isVisibleNode(compactNode)) return compactNode;
+      }
+    }
+    return node;
+  }
+
+  function positionTourSpotlightAndPopover() {
+    if (!tourState.active) return;
+    const step = tourState.steps[tourState.stepIndex];
+    const backdrop = el("tourBackdrop");
+    const spotlight = el("tourSpotlight");
+    const popover = el("tourPopover");
+    if (!step || !backdrop || !spotlight || !popover) return;
+
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 12;
+    const gap = 12;
+    const targetEl = getTourTargetElement(step);
+
+    if (!targetEl) {
+      backdrop.classList.add("is-centered");
+      spotlight.classList.add("hidden");
+      const popRect = popover.getBoundingClientRect();
+      const left = Math.max(margin, Math.round((vw - popRect.width) / 2));
+      const top = Math.max(margin, Math.round((vh - popRect.height) / 2));
+      popover.style.left = `${left}px`;
+      popover.style.top = `${top}px`;
+      return;
+    }
+
+    backdrop.classList.remove("is-centered");
+    spotlight.classList.remove("hidden");
+
+    const pad = 6;
+    const raw = targetEl.getBoundingClientRect();
+    const spotLeft = Math.max(4, raw.left - pad);
+    const spotTop = Math.max(4, raw.top - pad);
+    const spotRight = Math.min(vw - 4, raw.right + pad);
+    const spotBottom = Math.min(vh - 4, raw.bottom + pad);
+    const spotW = Math.max(24, spotRight - spotLeft);
+    const spotH = Math.max(24, spotBottom - spotTop);
+
+    spotlight.style.left = `${Math.round(spotLeft)}px`;
+    spotlight.style.top = `${Math.round(spotTop)}px`;
+    spotlight.style.width = `${Math.round(spotW)}px`;
+    spotlight.style.height = `${Math.round(spotH)}px`;
+
+    const popRect = popover.getBoundingClientRect();
+    const popW = popRect.width;
+    const popH = popRect.height;
+
+    const spaceBelow = vh - spotBottom - gap - margin;
+    const spaceAbove = spotTop - gap - margin;
+    const spaceLeft = spotLeft - gap - margin;
+    const spaceRight = vw - spotRight - gap - margin;
+
+    let left;
+    let top;
+
+    if (vw <= 720) {
+      left = Math.max(margin, Math.round((vw - popW) / 2));
+      if (spaceBelow >= popH && (spotTop < vh / 2 || spaceBelow >= spaceAbove)) {
+        top = Math.min(vh - popH - margin, Math.round(spotBottom + gap));
+      } else if (spaceAbove >= popH) {
+        top = Math.max(margin, Math.round(spotTop - gap - popH));
+      } else if (spaceBelow >= spaceAbove) {
+        top = Math.max(margin, vh - popH - margin);
+      } else {
+        top = margin;
+      }
+    } else {
+      const centeredX = Math.round(spotLeft + (spotW - popW) / 2);
+      const rtlAlignedX = Math.round(spotRight - popW);
+      const preferredX = spotW > popW ? centeredX : rtlAlignedX;
+      const clampedX = Math.min(vw - popW - margin, Math.max(margin, preferredX));
+
+      if (spaceBelow >= popH) {
+        left = clampedX;
+        top = Math.round(spotBottom + gap);
+      } else if (spaceAbove >= popH) {
+        left = clampedX;
+        top = Math.round(spotTop - gap - popH);
+      } else if (spaceLeft >= popW) {
+        left = Math.round(spotLeft - gap - popW);
+        top = Math.min(vh - popH - margin, Math.max(margin, Math.round(spotTop)));
+      } else if (spaceRight >= popW) {
+        left = Math.round(spotRight + gap);
+        top = Math.min(vh - popH - margin, Math.max(margin, Math.round(spotTop)));
+      } else {
+        left = clampedX;
+        top = spaceBelow >= spaceAbove ? Math.max(margin, vh - popH - margin) : margin;
+      }
+    }
+
+    left = Math.min(Math.max(margin, vw - popW - margin), Math.max(margin, left));
+    top = Math.min(Math.max(margin, vh - popH - margin), Math.max(margin, top));
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+  }
+
+  function renderTourStep() {
+    if (!tourState.active) return;
+    const total = tourState.steps.length;
+    const step = tourState.steps[tourState.stepIndex];
+    if (!step) return;
+
+    const counterEl = el("tourStepCounter");
+    const titleEl = el("tourTitle");
+    const bodyEl = el("tourBody");
+    const dotsEl = el("tourDots");
+    const prevBtn = el("btnTourPrev");
+    const nextBtn = el("btnTourNext");
+    const skipBtn = el("btnTourSkip");
+
+    if (counterEl) counterEl.textContent = `${tourState.stepIndex + 1} / ${total}`;
+    if (titleEl) titleEl.textContent = step.title;
+    if (bodyEl) bodyEl.innerHTML = step.html;
+    if (dotsEl) {
+      dotsEl.innerHTML = tourState.steps
+        .map((_, idx) => `<span class="tour-dot${idx === tourState.stepIndex ? " active" : ""}"></span>`)
+        .join("");
+    }
+    if (prevBtn) prevBtn.disabled = tourState.stepIndex === 0;
+    if (nextBtn) nextBtn.textContent = tourState.stepIndex === total - 1 ? "סיום!" : "הבא";
+    if (skipBtn) skipBtn.classList.toggle("hidden", tourState.stepIndex === total - 1);
+
+    const targetEl = getTourTargetElement(step);
+    if (targetEl && !targetEl.closest(".topbar")) {
+      const rect = targetEl.getBoundingClientRect();
+      const topbarEl = document.querySelector(".topbar");
+      const topbarH = topbarEl ? topbarEl.getBoundingClientRect().height : 0;
+      const inView = rect.top >= topbarH + 12 && rect.bottom <= window.innerHeight - 16;
+      if (!inView) {
+        const availableH = window.innerHeight - topbarH;
+        const desiredTop = rect.height <= availableH - 160
+          ? window.scrollY + rect.top - topbarH - Math.max(16, (availableH - rect.height) / 2)
+          : window.scrollY + rect.top - topbarH - 12;
+        window.scrollTo({ top: Math.max(0, Math.round(desiredTop)), behavior: "smooth" });
+      }
+    }
+
+    if (tourScrollTimer) {
+      clearTimeout(tourScrollTimer);
+      tourScrollTimer = null;
+    }
+    requestAnimationFrame(() => positionTourSpotlightAndPopover());
+    tourScrollTimer = setTimeout(() => {
+      tourScrollTimer = null;
+      if (tourState.active) positionTourSpotlightAndPopover();
+    }, 260);
+  }
+
+  function nextTourStep() {
+    if (!tourState.active) return;
+    if (tourState.stepIndex < tourState.steps.length - 1) {
+      tourState.stepIndex += 1;
+      renderTourStep();
+    } else {
+      closeOnboardingTour({ markSeen: true });
+    }
+  }
+
+  function prevTourStep() {
+    if (!tourState.active) return;
+    if (tourState.stepIndex > 0) {
+      tourState.stepIndex -= 1;
+      renderTourStep();
+    }
+  }
+
+  function startOnboardingTour({ manual = false } = {}) {
+    if (simState.active) {
+      if (manual) showToast("⏱️ לא ניתן לפתוח את המדריך בזמן סימולציית מבחן פעילה.");
+      return false;
+    }
+    if (isAnyBlockingModalOpen()) return false;
+    closeOnlineUsersPopover();
+
+    const previousMode = currentMode;
+    if (currentMode !== "practice") {
+      switchMode("practice");
+    }
+
+    const steps = getTourSteps().filter((s) => !s.target || Boolean(getTourTargetElement(s)));
+    if (steps.length === 0) {
+      if (previousMode !== currentMode) switchMode(previousMode);
+      return false;
+    }
+
+    tourState.active = true;
+    tourState.stepIndex = 0;
+    tourState.steps = steps;
+    tourState.returnMode = previousMode !== "practice" ? previousMode : null;
+    tourState.pendingAfterSyncModal = false;
+    tourState.manual = Boolean(manual);
+
+    const layer = el("tourLayer");
+    if (layer) {
+      layer.classList.remove("hidden");
+      layer.setAttribute("aria-hidden", "false");
+    }
+
+    renderTourStep();
+    requestAnimationFrame(() => {
+      el("btnTourNext")?.focus({ preventScroll: true });
+    });
+    return true;
+  }
+
+  function closeOnboardingTour({ markSeen = true } = {}) {
+    if (!tourState.active) return;
+    if (tourScrollTimer) {
+      clearTimeout(tourScrollTimer);
+      tourScrollTimer = null;
+    }
+    const wasReturnMode = tourState.returnMode;
+    const wasManual = tourState.manual;
+
+    tourState.active = false;
+    tourState.stepIndex = 0;
+    tourState.steps = [];
+    tourState.returnMode = null;
+    tourState.manual = false;
+
+    const layer = el("tourLayer");
+    if (layer) {
+      layer.classList.add("hidden");
+      layer.setAttribute("aria-hidden", "true");
+    }
+    if (markSeen) {
+      markOnboardingSeen();
+    }
+    if (wasReturnMode && wasReturnMode !== currentMode) {
+      switchMode(wasReturnMode);
+    }
+    if (wasManual) {
+      el("btnHelpTour")?.focus();
+    }
+  }
+
   // Init
   const initialMagicSyncCode = extractMagicSyncCodeFromHash();
   initTheme();
@@ -5325,6 +5759,13 @@
       await registerIdentityPing(false);
       await ensureSyncCodeRegistered();
       await pullCloudProgress({ silent: true });
+    }
+    if (!hasSeenOnboarding() && !tourState.active && !simState.active) {
+      if (!el("syncModal")?.classList.contains("hidden")) {
+        tourState.pendingAfterSyncModal = true;
+      } else if (!isAnyBlockingModalOpen()) {
+        startOnboardingTour({ manual: false });
+      }
     }
   })();
 

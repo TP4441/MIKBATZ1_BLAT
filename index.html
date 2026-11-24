@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261124d" />
+  <link rel="stylesheet" href="styles.css?v=20261124e" />
 </head>
 <body>
   <header class="topbar">
@@ -112,6 +112,13 @@
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="2" y="5" width="20" height="14" rx="2" />
               <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 13h.01M12 13h.01M16 13h.01M7 16h10" />
+            </svg>
+          </button>
+          <button type="button" class="icon-btn icon-only" id="btnHelpTour" title="מדריך קצר על כפתורי האתר" aria-label="פתח מדריך היכרות עם האתר">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
             </svg>
           </button>
           <button type="button" class="icon-btn icon-only" id="btnTheme" title="החלף מצב בהיר / כהה" aria-label="החלף מצב בהיר או כהה">
@@ -832,10 +839,45 @@
     </div>
   </div>
 
+  <!-- Onboarding Spotlight Tour -->
+  <div class="tour-layer hidden" id="tourLayer" aria-hidden="true">
+    <div class="tour-backdrop" id="tourBackdrop"></div>
+    <div class="tour-spotlight" id="tourSpotlight" aria-hidden="true"></div>
+    <div
+      class="tour-popover card"
+      id="tourPopover"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tourTitle"
+      aria-describedby="tourBody"
+      tabindex="-1"
+    >
+      <div class="tour-head">
+        <span class="tour-step-pill tabular-text" id="tourStepCounter">1 / 7</span>
+        <button type="button" class="icon-btn icon-only tour-close-btn" id="btnTourClose" title="סגור מדריך (Esc)" aria-label="סגור מדריך">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+      <h2 class="tour-title" id="tourTitle"></h2>
+      <div class="tour-body" id="tourBody"></div>
+      <div class="tour-dots" id="tourDots" aria-hidden="true"></div>
+      <div class="tour-footer">
+        <button type="button" class="btn-ghost btn-sm" id="btnTourSkip">דלג</button>
+        <div class="tour-nav-btns">
+          <button type="button" class="btn-secondary btn-sm" id="btnTourPrev">הקודם</button>
+          <button type="button" class="btn-primary btn-sm" id="btnTourNext">הבא</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <script src="questions_data.js"></script>
   <script src="qr.js?v=20261124d"></script>
-  <script src="app.js?v=20261124d"></script>
+  <script src="app.js?v=20261124e"></script>
 </body>
 </html>
