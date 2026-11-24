@@ -36,6 +36,10 @@
           <div class="identity-pill-static" id="userIdentityPill" title="הכינוי הקבוע שלך במכשיר זה (אינו ניתן לשינוי)">
             <span id="userIdentityBadge">🍎 תפוח</span>
           </div>
+          <button type="button" class="icon-btn admin-pill-btn hidden" id="btnAdminPanel" title="לוח בקרה למנהל" aria-label="לוח בקרה למנהל">
+            <span aria-hidden="true">🛡️</span>
+            <span class="btn-label-desktop">מנהל</span>
+          </button>
           <span class="sync-pill offline" id="syncPill" title="מצב שמירת התקדמות">
             <span class="dot" aria-hidden="true"></span>
             <span id="syncText" class="sync-text-label">שמירה בדפדפן</span>
@@ -241,13 +245,19 @@
             <span class="q-badge appeal-badge hidden" id="qAppealBadge">⚖️ שאלת ערעור</span>
             <a class="pdf-link hidden" id="qPdfLink" href="#" target="_blank" rel="noopener">📖 פתח במבחן המקורי</a>
           </div>
-          <div class="q-flags">
-            <button type="button" class="flag-btn" id="btnFlagStar" title="מועדפים / לחזרה (S)" aria-label="סמן כמועדף">⭐</button>
-            <button type="button" class="flag-btn" id="btnFlagUnsure" title="ניחשתי / לא בטוח" aria-label="סמן התלבטות">🤔</button>
-            <button type="button" class="flag-btn" id="btnFlagProblem" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
-              <span aria-hidden="true">⚠️</span>
-              <span class="flag-count hidden" id="btnFlagProblemCount"></span>
-            </button>
+          <div class="q-flags-wrap">
+            <div class="q-admin-actions hidden" id="adminQuestionActions">
+              <button type="button" class="flag-btn admin-action-btn" id="btnAdminEditQ" title="ערוך שאלה ומסיחים" aria-label="ערוך שאלה">✏️ ערוך</button>
+              <button type="button" class="flag-btn admin-action-btn danger" id="btnAdminHideQ" title="הסר שאלה מהבנק" aria-label="הסר שאלה">🗑️ הסר</button>
+            </div>
+            <div class="q-flags">
+              <button type="button" class="flag-btn" id="btnFlagStar" title="מועדפים / לחזרה (S)" aria-label="סמן כמועדף">⭐</button>
+              <button type="button" class="flag-btn" id="btnFlagUnsure" title="ניחשתי / לא בטוח" aria-label="סמן התלבטות">🤔</button>
+              <button type="button" class="flag-btn" id="btnFlagProblem" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
+                <span aria-hidden="true">⚠️</span>
+                <span class="flag-count hidden" id="btnFlagProblemCount"></span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -552,9 +562,151 @@
     </div>
   </div>
 
+  <!-- Admin Login Modal -->
+  <div class="modal-overlay hidden" id="adminLoginModal" role="dialog" aria-modal="true" aria-labelledby="adminLoginTitle">
+    <div class="modal-box card admin-login-box">
+      <div class="modal-header">
+        <h2 id="adminLoginTitle">🛡️ כניסת מנהל</h2>
+        <button type="button" class="icon-btn icon-only" id="btnCloseAdminLogin" aria-label="סגור חלון">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <p class="muted">האימות מתבצע בצד השרת בלבד. התחברות מאפשרת עריכת שאלות ומסיחים, הסרת שאלות, מודרציה וצפייה במשתמשים.</p>
+      <form id="adminLoginForm" class="admin-login-form">
+        <div class="admin-field">
+          <label for="adminPasswordInput">סיסמת מנהל</label>
+          <input type="password" id="adminPasswordInput" autocomplete="current-password" placeholder="הזן סיסמת מנהל..." required />
+        </div>
+        <label class="checkbox-row admin-remember-row">
+          <input type="checkbox" id="adminRememberDevice" checked />
+          <span>זכור אותי במכשיר זה (בטל סימון במחשב ציבורי)</span>
+        </label>
+        <div class="admin-form-error hidden" id="adminLoginError" role="alert"></div>
+        <div class="admin-modal-footer">
+          <button type="submit" class="btn-primary" id="btnSubmitAdminLogin">🔓 כניסה למצב מנהל</button>
+          <button type="button" class="btn-secondary" id="btnCancelAdminLogin">ביטול</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Admin Edit Question Modal -->
+  <div class="modal-overlay hidden" id="adminQuestionModal" role="dialog" aria-modal="true" aria-labelledby="adminQuestionModalTitle">
+    <div class="modal-box card admin-question-box">
+      <div class="modal-header">
+        <div>
+          <h2 id="adminQuestionModalTitle">✏️ עריכת שאלה ומסיחים</h2>
+          <span class="muted problem-modal-q-label" id="adminEditQLabel"></span>
+        </div>
+        <button type="button" class="icon-btn icon-only" id="btnCloseAdminQuestion" aria-label="סגור חלון">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="admin-question-form">
+        <div class="admin-field">
+          <label for="adminEditSubject">מקצוע</label>
+          <select id="adminEditSubject" class="form-select"></select>
+        </div>
+
+        <div class="admin-field">
+          <label for="adminEditStem">נוסח השאלה</label>
+          <textarea id="adminEditStem" rows="5" placeholder="נוסח השאלה..."></textarea>
+        </div>
+
+        <div class="admin-field">
+          <div class="admin-options-head">
+            <label>מסיחים ותשובה נכונה</label>
+            <button type="button" class="btn-secondary btn-sm" id="btnAdminAddOption">+ הוסף מסיח</button>
+          </div>
+          <div class="admin-options-list" id="adminEditOptionsList"></div>
+        </div>
+
+        <div class="admin-appeal-box">
+          <label class="checkbox-row">
+            <input type="checkbox" id="adminEditAllAccepted" />
+            <span>כל התשובות התקבלו בשאלה זו (ערעור מלא)</span>
+          </label>
+          <div class="admin-field">
+            <label for="adminEditAppealNote">הערת ערעור (אופציונלי)</label>
+            <input type="text" id="adminEditAppealNote" placeholder="למשל: במפתח התקבלו תשובות א׳ + ג׳..." />
+          </div>
+        </div>
+      </div>
+
+      <div class="admin-modal-footer admin-question-footer">
+        <button type="button" class="btn-primary" id="btnAdminSaveQuestion">💾 שמור שינויים בענן</button>
+        <button type="button" class="btn-secondary btn-sm" id="btnAdminResetQuestion">↩️ אפס למקור</button>
+        <button type="button" class="btn-danger btn-sm" id="btnAdminToggleHideQuestion">🗑️ הסר שאלה מהבנק</button>
+        <button type="button" class="btn-secondary" id="btnCancelAdminQuestion">ביטול</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Dashboard Modal -->
+  <div class="modal-overlay hidden" id="adminDashboardModal" role="dialog" aria-modal="true" aria-labelledby="adminDashboardTitle">
+    <div class="modal-box card admin-dashboard-box">
+      <div class="modal-header admin-dashboard-header">
+        <h2 id="adminDashboardTitle">🛡️ לוח בקרה למנהל</h2>
+        <div class="admin-dashboard-header-actions">
+          <button type="button" class="btn-secondary btn-sm" id="btnAdminLogout">🚪 התנתק ממצב מנהל</button>
+          <button type="button" class="icon-btn icon-only" id="btnCloseAdminDashboard" aria-label="סגור חלון">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="admin-tabs" role="tablist" aria-label="לשוניות לוח בקרה">
+        <button type="button" class="admin-tab-btn active" data-admin-tab="users" role="tab" aria-selected="true">👥 משתמשים וכינויים</button>
+        <button type="button" class="admin-tab-btn" data-admin-tab="overrides" role="tab" aria-selected="false">📝 שאלות ששונו/הוסרו</button>
+        <button type="button" class="admin-tab-btn" data-admin-tab="moderation" role="tab" aria-selected="false">💬 מודרציית תגובות ודיווחים</button>
+      </div>
+
+      <!-- Users & Nicknames Tab -->
+      <div class="admin-tab-panel" id="adminTabUsers">
+        <div class="kpi-grid admin-kpis" id="adminUsersKpis"></div>
+        <div class="admin-toolbar">
+          <input type="text" id="adminUsersSearch" class="admin-search-input" placeholder="חיפוש לפי כינוי, קטגוריה או מזהה..." />
+          <button type="button" class="btn-secondary btn-sm" id="btnAdminRefreshUsers">🔄 רענן משתמשים</button>
+        </div>
+        <details class="admin-names-details">
+          <summary>🏷️ מפת 100 הכינויים (תפוסים מול פנויים)</summary>
+          <div class="admin-names-grid" id="adminNamesGrid"></div>
+        </details>
+        <div class="admin-table-wrap" id="adminUsersList"></div>
+      </div>
+
+      <!-- Question Overrides Tab -->
+      <div class="admin-tab-panel hidden" id="adminTabOverrides">
+        <div class="admin-toolbar">
+          <div class="chips-wrap" id="adminOverridesFilterChips">
+            <button type="button" class="chip active" data-ov-filter="all">הכל</button>
+            <button type="button" class="chip" data-ov-filter="hidden">מוסתרות בלבד</button>
+            <button type="button" class="chip" data-ov-filter="edited">ערוכות בלבד</button>
+          </div>
+          <input type="text" id="adminOverridesSearch" class="admin-search-input" placeholder="חיפוש שאלה לפי נוסח, שנה או מזהה..." />
+        </div>
+        <div class="admin-feed-list" id="adminOverridesList"></div>
+      </div>
+
+      <!-- Moderation Tab -->
+      <div class="admin-tab-panel hidden" id="adminTabModeration">
+        <div class="admin-toolbar">
+          <div class="chips-wrap" id="adminModerationFilterChips">
+            <button type="button" class="chip active" data-mod-filter="all">הכל</button>
+            <button type="button" class="chip" data-mod-filter="notes">💬 הערות קהילה</button>
+            <button type="button" class="chip" data-mod-filter="problems">⚠️ דיווחי בעיות</button>
+          </div>
+          <input type="text" id="adminModerationSearch" class="admin-search-input" placeholder="חיפוש לפי מחבר, תוכן או שאלה..." />
+        </div>
+        <div class="admin-feed-list" id="adminModerationList"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <script src="questions_data.js"></script>
-  <script src="app.js?v=20261124a"></script>
+  <script src="app.js?v=20261124b"></script>
 </body>
 </html>

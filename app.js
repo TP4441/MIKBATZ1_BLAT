@@ -6,9 +6,40 @@
   const IDENTITY_KEY = "med_exam_user_identity_v1";
   const COMMUNITY_NOTES_CACHE_KEY = "med_exam_community_notes_cache_v1";
   const COMMUNITY_PROBLEMS_CACHE_KEY = "med_exam_community_problems_cache_v1";
-  const CLOUD_NOTES_URL = "https://textdb.dev/api/data/mikbatz1_blat_notes_1b014a75-b087-45fc-9cea-c4749561ae4e";
-  const CLOUD_PROBLEMS_URL = "https://textdb.dev/api/data/mikbatz1_blat_problems_a9f3e2c1-7d4b-4e8a-9c2f-31d5e8a4b210";
+  const QUESTION_OVERRIDES_CACHE_KEY = "med_exam_question_overrides_cache_v1";
+  const TAKEN_NAMES_CACHE_KEY = "med_exam_taken_names_cache_v1";
+  const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
+  const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
+  const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
+  const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
+  const CLOUD_API_BASE = resolveCloudApiBase();
   const HEBREW_LETTERS = ["א", "ב", "ג", "ד", "ה", "ו"];
+
+  function resolveCloudApiBase() {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const apiParam = params.get("api");
+      if (apiParam) {
+        const clean = apiParam.replace(/\/+$/, "");
+        sessionStorage.setItem(CLOUD_API_OVERRIDE_KEY, clean);
+        params.delete("api");
+        const qs = params.toString();
+        const nextUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+        history.replaceState(null, "", nextUrl);
+        return clean;
+      }
+      const savedOverride = sessionStorage.getItem(CLOUD_API_OVERRIDE_KEY);
+      if (savedOverride) return savedOverride.replace(/\/+$/, "");
+    } catch {}
+    if (typeof window.CLOUD_API_BASE === "string" && window.CLOUD_API_BASE.trim()) {
+      return window.CLOUD_API_BASE.trim().replace(/\/+$/, "");
+    }
+    return DEFAULT_CLOUD_API_BASE.replace(/\/+$/, "");
+  }
+
+  function isCloudApiConfigured() {
+    return Boolean(CLOUD_API_BASE && !CLOUD_API_BASE.includes("REPLACE_WITH_SUBDOMAIN"));
+  }
 
   const PROBLEM_TYPES = {
     question_issue: {
@@ -151,19 +182,23 @@
     return;
   }
 
-  const QUESTIONS = DATA.questions;
-  const EXAMS = DATA.exams;
-  const Q_MAP = new Map(QUESTIONS.map((q) => [q.id, q]));
+  const RAW_QUESTIONS = DATA.questions;
+  const RAW_Q_MAP = new Map(RAW_QUESTIONS.map((q) => [q.id, q]));
+  const EXAMS = (DATA.exams || []).map((ex) => ({ ...ex }));
+  let QUESTIONS = [];
+  let Q_MAP = new Map();
 
   // State
   let serverOnline = false;
   let currentMode = "practice"; // practice | exam | drill | flashcard | analytics
   let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
   let communityProblems = loadCommunityProblemsCache(); // { qId: { userId: { type, text, author, emoji, category, updatedAt } } }
+  let questionOverrides = loadQuestionOverridesCache(); // { qId: { hidden, stem, options, correct, allAccepted, appealNote, subject, updatedAt } }
+  let takenNamesMap = loadTakenNamesCache(); // { name: userId }
   let identityNeedsCloudCheck = false;
   let userIdentity = loadOrInitIdentity();
   let progress = loadProgress();
-  let filteredList = [...QUESTIONS];
+  let filteredList = [];
   let currentIndex = 0;
   let optionPermutations = new Map(); // qId -> array of original indices
   let shuffleOptionsEnabled = false;
@@ -181,6 +216,18 @@
   const pendingProblemDirtyQIds = new Set();
   let cloudWriteQueue = Promise.resolve();
   let problemWriteQueue = Promise.resolve();
+  let adminState = {
+    authenticated: false,
+    token: null,
+    rememberDevice: false,
+    expiresAt: 0,
+  };
+  let adminUsersCache = [];
+  let adminActiveTab = "users";
+  let adminOverridesFilter = "all";
+  let adminModerationFilter = "all";
+  let activeAdminEditQId = null;
+  let adminDraftOptions = [];
 
   // Filter state
   const filters = {
@@ -316,8 +363,115 @@
     } catch {}
   }
 
+  function loadQuestionOverridesCache() {
+    try {
+      const raw = localStorage.getItem(QUESTION_OVERRIDES_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveQuestionOverridesCache() {
+    try {
+      localStorage.setItem(QUESTION_OVERRIDES_CACHE_KEY, JSON.stringify(questionOverrides));
+    } catch {}
+  }
+
+  function loadTakenNamesCache() {
+    try {
+      const raw = localStorage.getItem(TAKEN_NAMES_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveTakenNamesCache() {
+    try {
+      localStorage.setItem(TAKEN_NAMES_CACHE_KEY, JSON.stringify(takenNamesMap));
+    } catch {}
+  }
+
+  function normalizeBaseSubjectName(subject) {
+    if (subject === "פתולוגיית ריאות") return "ריאות";
+    if (subject === "פתולוגיית קרדיולוגיה") return "קרדיולוגיה";
+    return subject;
+  }
+
+  function applyOverrideToQuestion(rawQ, ov) {
+    if (!ov || typeof ov !== "object") return rawQ;
+    const subject = typeof ov.subject === "string" && ov.subject.trim() ? ov.subject.trim() : rawQ.subject;
+    const baseSubject = normalizeBaseSubjectName(subject);
+    const options = Array.isArray(ov.options) && ov.options.length >= 2
+      ? ov.options.map((opt, idx) => ({
+          letter: HEBREW_LETTERS[idx] || String(opt?.letter || ""),
+          text: String(opt?.text ?? opt ?? ""),
+        }))
+      : rawQ.options;
+    const rawCorrect = Array.isArray(ov.correct) && ov.correct.length > 0 ? ov.correct : rawQ.correct;
+    const correct = rawCorrect.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < options.length);
+    return {
+      ...rawQ,
+      stem: typeof ov.stem === "string" ? ov.stem : rawQ.stem,
+      options,
+      correct: correct.length > 0 ? correct : [0],
+      allAccepted: ov.allAccepted !== undefined ? Boolean(ov.allAccepted) : rawQ.allAccepted,
+      appealNote: typeof ov.appealNote === "string" ? ov.appealNote : rawQ.appealNote,
+      subject,
+      baseSubject,
+      isOverridden: true,
+    };
+  }
+
+  function rebuildEffectiveQuestions({ render = true } = {}) {
+    const nextQuestions = [];
+    for (const rawQ of RAW_QUESTIONS) {
+      const ov = questionOverrides[rawQ.id];
+      if (ov && ov.hidden) continue;
+      nextQuestions.push(applyOverrideToQuestion(rawQ, ov));
+    }
+    QUESTIONS = nextQuestions;
+    Q_MAP = new Map(QUESTIONS.map((q) => [q.id, q]));
+
+    const countsByExam = new Map();
+    for (const q of QUESTIONS) {
+      countsByExam.set(q.exam, (countsByExam.get(q.exam) || 0) + 1);
+    }
+    EXAMS.forEach((ex) => {
+      ex.expectedCount = countsByExam.get(ex.name) || 0;
+    });
+
+    optionPermutations.clear();
+
+    const statsBadge = el("totalStatsBadge");
+    if (statsBadge) {
+      statsBadge.textContent = `${QUESTIONS.length} שאלות · ${EXAMS.length} מבחנים`;
+    }
+
+    if (render) {
+      renderFilterChips();
+      if (!simState.active) initExamSetup();
+      updateDrillBadge();
+      renderCurrentView();
+    }
+  }
+
+  rebuildEffectiveQuestions({ render: false });
+  filteredList = [...QUESTIONS];
+
   function getTakenAuthorNames() {
     const taken = new Set();
+    if (takenNamesMap && typeof takenNamesMap === "object") {
+      Object.entries(takenNamesMap).forEach(([name, uid]) => {
+        if (userIdentity && uid === userIdentity.userId) return;
+        if (name) taken.add(name);
+      });
+    }
     [communityNotes, communityProblems].forEach((store) => {
       Object.values(store).forEach((byUser) => {
         if (!byUser || typeof byUser !== "object") return;
@@ -333,6 +487,17 @@
       });
     });
     return taken;
+  }
+
+  function generateClientSecret() {
+    try {
+      if (window.crypto && window.crypto.getRandomValues) {
+        const bytes = new Uint8Array(16);
+        window.crypto.getRandomValues(bytes);
+        return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      }
+    } catch {}
+    return "cs_" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 
   function pickRandomIdentity(excludeCurrent = true) {
@@ -356,13 +521,24 @@
         const match = IDENTITY_CATALOG.find((item) => item.name === parsed?.name);
         if (parsed?.userId && match) {
           identityNeedsCloudCheck = false;
-          return {
+          const clientSecret =
+            typeof parsed.clientSecret === "string" && parsed.clientSecret.length >= 8
+              ? parsed.clientSecret
+              : generateClientSecret();
+          const loaded = {
             userId: String(parsed.userId),
             name: match.name,
             emoji: match.emoji,
             category: match.category,
+            clientSecret,
             locked: true,
           };
+          if (!parsed.clientSecret) {
+            try {
+              localStorage.setItem(IDENTITY_KEY, JSON.stringify(loaded));
+            } catch {}
+          }
+          return loaded;
         }
       }
     } catch {}
@@ -372,6 +548,7 @@
       name: picked.name,
       emoji: picked.emoji,
       category: picked.category,
+      clientSecret: generateClientSecret(),
       locked: true,
     };
     identityNeedsCloudCheck = true;
@@ -605,6 +782,14 @@
           delBtn.onclick = () => deleteMyNote(q.id);
 
           headActions.append(editBtn, delBtn);
+        } else if (adminState.authenticated) {
+          const adminDelBtn = document.createElement("button");
+          adminDelBtn.type = "button";
+          adminDelBtn.className = "note-card-action-btn danger admin-del";
+          adminDelBtn.title = "מחק הערה כמנהל";
+          adminDelBtn.textContent = "🗑️ הסר";
+          adminDelBtn.onclick = () => adminDeleteNote(q.id, n.userId);
+          headActions.appendChild(adminDelBtn);
         }
 
         head.append(authorSpan, headActions);
@@ -673,35 +858,108 @@
     saveCommunityNotesCache();
   }
 
-  async function fetchCloudNotesPayload() {
+  async function registerIdentityPing(retried = false) {
+    if (!isCloudApiConfigured()) return false;
     try {
-      const res = await fetch(CLOUD_NOTES_URL, { cache: "no-store" });
+      const res = await fetch(`${CLOUD_API_BASE}/api/identities/ping`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: userIdentity.userId,
+          name: userIdentity.name,
+          emoji: userIdentity.emoji,
+          category: userIdentity.category,
+          clientSecret: userIdentity.clientSecret,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if ((res.status === 409 || data.conflict) && !retried) {
+        if (data.takenNames && typeof data.takenNames === "object") {
+          takenNamesMap = data.takenNames;
+          saveTakenNamesCache();
+        }
+        const fresh = pickRandomIdentity(true);
+        userIdentity = {
+          ...userIdentity,
+          name: fresh.name,
+          emoji: fresh.emoji,
+          category: fresh.category,
+          locked: true,
+        };
+        saveUserIdentity();
+        return registerIdentityPing(true);
+      }
       if (res.ok) {
-        const text = await res.text();
-        if (!text || !text.trim()) return { version: 1, notes: {} };
-        return normalizeCloudPayload(JSON.parse(text));
+        takenNamesMap[userIdentity.name] = userIdentity.userId;
+        saveTakenNamesCache();
+        return true;
       }
     } catch {}
-    if (serverOnline) {
-      const res = await fetch("/api/community-notes", { cache: "no-store" });
-      if (res.ok) return normalizeCloudPayload(await res.json());
-    }
-    throw new Error("Cloud notes unreachable");
+    return false;
   }
 
-  async function pullCloudNotes(showFeedback = false) {
+  async function fetchBootstrapPayload() {
+    if (isCloudApiConfigured()) {
+      try {
+        const res = await fetch(`${CLOUD_API_BASE}/api/bootstrap`, { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          return {
+            source: "cloud",
+            notes: data?.notes && typeof data.notes === "object" ? data.notes : {},
+            problems: data?.problems && typeof data.problems === "object" ? data.problems : {},
+            overrides: data?.overrides && typeof data.overrides === "object" ? data.overrides : {},
+            takenNames: data?.takenNames && typeof data.takenNames === "object" ? data.takenNames : {},
+          };
+        }
+      } catch {}
+    }
+    if (serverOnline) {
+      const [nRes, pRes, oRes] = await Promise.all([
+        fetch("/api/community-notes", { cache: "no-store" }).catch(() => null),
+        fetch("/api/community-problems", { cache: "no-store" }).catch(() => null),
+        fetch("/api/question-overrides", { cache: "no-store" }).catch(() => null),
+      ]);
+      const notes = nRes && nRes.ok ? normalizeCloudPayload(await nRes.json()).notes : communityNotes;
+      const problems = pRes && pRes.ok ? normalizeCloudProblemsPayload(await pRes.json()).problems : communityProblems;
+      const overridesRaw = oRes && oRes.ok ? await oRes.json() : null;
+      const overrides = overridesRaw?.overrides && typeof overridesRaw.overrides === "object"
+        ? overridesRaw.overrides
+        : questionOverrides;
+      return { source: "local", notes, problems, overrides, takenNames: takenNamesMap };
+    }
+    throw new Error("Cloud API unreachable");
+  }
+
+  async function bootstrapCloudState(showFeedback = false) {
     try {
-      const cloudData = await fetchCloudNotesPayload();
-      mergeCloudIntoLocal(cloudData);
+      const data = await fetchBootstrapPayload();
+      const prevOverridesJson = JSON.stringify(questionOverrides);
+
+      mergeCloudIntoLocal({ version: 1, notes: data.notes });
+      mergeCloudProblemsIntoLocal({ version: 1, problems: data.problems });
+
+      if (data.takenNames && typeof data.takenNames === "object") {
+        takenNamesMap = data.takenNames;
+        saveTakenNamesCache();
+      }
+
+      if (data.overrides && typeof data.overrides === "object") {
+        questionOverrides = data.overrides;
+        saveQuestionOverridesCache();
+      }
+
       if (identityNeedsCloudCheck) {
         identityNeedsCloudCheck = false;
-        const hasMyNotes = pendingDirtyQIds.size > 0 || Object.values(communityNotes).some(
-          (byUser) => byUser && byUser[userIdentity.userId]
-        );
-        if (!hasMyNotes && getTakenAuthorNames().has(userIdentity.name)) {
+        const hasMyContent =
+          pendingDirtyQIds.size > 0 ||
+          pendingProblemDirtyQIds.size > 0 ||
+          Object.values(communityNotes).some((byUser) => byUser && byUser[userIdentity.userId]) ||
+          Object.values(communityProblems).some((byUser) => byUser && byUser[userIdentity.userId]);
+        if (!hasMyContent && getTakenAuthorNames().has(userIdentity.name)) {
           const fresh = pickRandomIdentity(true);
           userIdentity = {
-            userId: userIdentity.userId,
+            ...userIdentity,
             name: fresh.name,
             emoji: fresh.emoji,
             category: fresh.category,
@@ -710,25 +968,53 @@
           saveUserIdentity();
         }
       }
-      if (pendingDirtyQIds.size === 0) {
-        noteSyncState = "synced";
-      }
-      if (serverOnline) {
+
+      if (pendingDirtyQIds.size === 0) noteSyncState = "synced";
+      if (pendingProblemDirtyQIds.size === 0) problemSyncState = "synced";
+
+      if (serverOnline && data.source === "cloud") {
         fetch("/api/community-notes", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ version: 1, notes: communityNotes }),
         }).catch(() => {});
+        fetch("/api/community-problems", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: 1, problems: communityProblems }),
+        }).catch(() => {});
+        fetch("/api/question-overrides", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: 1, overrides: questionOverrides }),
+        }).catch(() => {});
       }
-      if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
-        renderNotesSection(filteredList[currentIndex], true);
+
+      const nextOverridesJson = JSON.stringify(questionOverrides);
+      if (prevOverridesJson !== nextOverridesJson) {
+        rebuildEffectiveQuestions({ render: true });
+      } else {
+        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
+          renderNotesSection(filteredList[currentIndex], true);
+        }
+        refreshActiveQuestionProblemViews();
+        updateProblemSyncBadge();
       }
-      if (showFeedback) showToast("🔄 ההערות המשותפות רועננו מהענן!");
+
+      if (showFeedback) showToast("🔄 הנתונים המשותפים רועננו מהענן!");
+      return true;
     } catch {
       if (pendingDirtyQIds.size > 0) noteSyncState = "offline";
+      if (pendingProblemDirtyQIds.size > 0) problemSyncState = "offline";
       updateNoteSyncBadge();
+      updateProblemSyncBadge();
       if (showFeedback) showToast("⚠️ לא ניתן להתחבר לענן כרגע — מציג מטמון מקומי.");
+      return false;
     }
+  }
+
+  async function pullCloudNotes(showFeedback = false) {
+    return bootstrapCloudState(showFeedback);
   }
 
   // Community Problem Reports ("בעיות בשאלה")
@@ -870,6 +1156,14 @@
         delBtn.onclick = () => deleteMyProblemReport(q.id);
 
         meta.append(editBtn, delBtn);
+      } else if (adminState.authenticated) {
+        const adminDelBtn = document.createElement("button");
+        adminDelBtn.type = "button";
+        adminDelBtn.className = "note-card-action-btn danger admin-del";
+        adminDelBtn.title = "הסר דיווח כמנהל";
+        adminDelBtn.textContent = "🗑️ הסר";
+        adminDelBtn.onclick = () => adminDeleteProblem(q.id, p.userId);
+        meta.appendChild(adminDelBtn);
       }
 
       top.append(pill, meta);
@@ -1054,43 +1348,8 @@
     saveCommunityProblemsCache();
   }
 
-  async function fetchCloudProblemsPayload() {
-    try {
-      const res = await fetch(CLOUD_PROBLEMS_URL, { cache: "no-store" });
-      if (res.ok) {
-        const text = await res.text();
-        if (!text || !text.trim()) return { version: 1, problems: {} };
-        return normalizeCloudProblemsPayload(JSON.parse(text));
-      }
-    } catch {}
-    if (serverOnline) {
-      const res = await fetch("/api/community-problems", { cache: "no-store" });
-      if (res.ok) return normalizeCloudProblemsPayload(await res.json());
-    }
-    throw new Error("Cloud problems unreachable");
-  }
-
   async function pullCloudProblems(showFeedback = false) {
-    try {
-      const cloudData = await fetchCloudProblemsPayload();
-      mergeCloudProblemsIntoLocal(cloudData);
-      if (pendingProblemDirtyQIds.size === 0) {
-        problemSyncState = "synced";
-      }
-      if (serverOnline) {
-        fetch("/api/community-problems", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ version: 1, problems: communityProblems }),
-        }).catch(() => {});
-      }
-      refreshActiveQuestionProblemViews();
-      updateProblemSyncBadge();
-      if (showFeedback) showToast("🔄 דיווחי הבעיות רועננו מהענן!");
-    } catch {
-      if (pendingProblemDirtyQIds.size > 0) problemSyncState = "offline";
-      updateProblemSyncBadge();
-    }
+    return bootstrapCloudState(showFeedback);
   }
 
   function enqueueProblemCloudSync() {
@@ -1106,64 +1365,97 @@
           syncSnapshot.set(qId, isValidProblemEntry(entry) ? { ...entry } : null);
         });
 
-        let cloudData = { version: 1, problems: {} };
-        let cloudReachable = false;
-        try {
-          const res = await fetch(CLOUD_PROBLEMS_URL, { cache: "no-store" });
-          if (res.ok) {
-            cloudReachable = true;
-            const text = await res.text();
-            if (text && text.trim()) {
-              cloudData = normalizeCloudProblemsPayload(JSON.parse(text));
+        let anySaved = false;
+        let allSaved = true;
+
+        if (isCloudApiConfigured()) {
+          for (const [qId, entry] of syncSnapshot.entries()) {
+            try {
+              const url = `${CLOUD_API_BASE}/api/problems/${encodeURIComponent(qId)}`;
+              let res;
+              if (isValidProblemEntry(entry)) {
+                res = await fetch(url, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    userId: userIdentity.userId,
+                    clientSecret: userIdentity.clientSecret,
+                    type: entry.type,
+                    text: entry.text,
+                    author: userIdentity.name,
+                    emoji: userIdentity.emoji,
+                    category: userIdentity.category,
+                  }),
+                });
+                if (res.status === 409) {
+                  await registerIdentityPing(false);
+                  if (communityProblems[qId]?.[userIdentity.userId]) {
+                    communityProblems[qId][userIdentity.userId].author = userIdentity.name;
+                    communityProblems[qId][userIdentity.userId].emoji = userIdentity.emoji;
+                    communityProblems[qId][userIdentity.userId].category = userIdentity.category;
+                  }
+                  res = await fetch(url, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      userId: userIdentity.userId,
+                      clientSecret: userIdentity.clientSecret,
+                      type: entry.type,
+                      text: entry.text,
+                      author: userIdentity.name,
+                      emoji: userIdentity.emoji,
+                      category: userIdentity.category,
+                    }),
+                  });
+                }
+              } else {
+                res = await fetch(url, {
+                  method: "DELETE",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    userId: userIdentity.userId,
+                    clientSecret: userIdentity.clientSecret,
+                  }),
+                });
+              }
+
+              if (res.ok) {
+                anySaved = true;
+                const resData = await res.json().catch(() => ({}));
+                if (resData?.problem && communityProblems[qId]?.[userIdentity.userId]) {
+                  communityProblems[qId][userIdentity.userId] = resData.problem;
+                }
+                const currentEntry = communityProblems[qId]?.[userIdentity.userId] || null;
+                const sameType = (entry?.type || "") === (currentEntry?.type || "");
+                const sameText = (entry?.text || "") === (currentEntry?.text || "");
+                if (sameType && sameText) {
+                  pendingProblemDirtyQIds.delete(qId);
+                }
+              } else {
+                allSaved = false;
+              }
+            } catch {
+              allSaved = false;
             }
           }
-        } catch {}
-
-        syncSnapshot.forEach((entry, qId) => {
-          if (!cloudData.problems[qId] || typeof cloudData.problems[qId] !== "object") {
-            cloudData.problems[qId] = {};
-          }
-          if (isValidProblemEntry(entry)) {
-            cloudData.problems[qId][userIdentity.userId] = entry;
-          } else {
-            delete cloudData.problems[qId][userIdentity.userId];
-            if (Object.keys(cloudData.problems[qId]).length === 0) {
-              delete cloudData.problems[qId];
-            }
-          }
-        });
-
-        let cloudSaved = false;
-        if (cloudReachable) {
-          try {
-            const postRes = await fetch(CLOUD_PROBLEMS_URL, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(cloudData),
-            });
-            cloudSaved = postRes.ok;
-          } catch {}
+          saveCommunityProblemsCache();
+        } else {
+          allSaved = false;
         }
 
         if (serverOnline) {
           fetch("/api/community-problems", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cloudData),
+            body: JSON.stringify({ version: 1, problems: communityProblems }),
           }).catch(() => {});
         }
 
-        if (cloudSaved) {
-          syncSnapshot.forEach((sentEntry, qId) => {
-            const currentEntry = communityProblems[qId]?.[userIdentity.userId] || null;
-            const sameType = (sentEntry?.type || "") === (currentEntry?.type || "");
-            const sameText = (sentEntry?.text || "") === (currentEntry?.text || "");
-            if (sameType && sameText) {
-              pendingProblemDirtyQIds.delete(qId);
-            }
-          });
-          mergeCloudProblemsIntoLocal(cloudData);
+        if (allSaved && anySaved) {
           problemSyncState = pendingProblemDirtyQIds.size > 0 ? "saving" : "synced";
+        } else if (!isCloudApiConfigured() && serverOnline) {
+          pendingProblemDirtyQIds.clear();
+          problemSyncState = "synced";
         } else {
           problemSyncState = "offline";
         }
@@ -1191,66 +1483,95 @@
           syncSnapshot.set(qId, entry ? { ...entry } : null);
         });
 
-        let cloudData = { version: 1, notes: {} };
-        let cloudReachable = false;
-        try {
-          const res = await fetch(CLOUD_NOTES_URL, { cache: "no-store" });
-          if (res.ok) {
-            cloudReachable = true;
-            const text = await res.text();
-            if (text && text.trim()) {
-              cloudData = normalizeCloudPayload(JSON.parse(text));
+        let anySaved = false;
+        let allSaved = true;
+
+        if (isCloudApiConfigured()) {
+          for (const [qId, entry] of syncSnapshot.entries()) {
+            try {
+              const url = `${CLOUD_API_BASE}/api/notes/${encodeURIComponent(qId)}`;
+              let res;
+              if (entry && entry.text && entry.text.trim()) {
+                res = await fetch(url, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    userId: userIdentity.userId,
+                    clientSecret: userIdentity.clientSecret,
+                    author: userIdentity.name,
+                    emoji: userIdentity.emoji,
+                    category: userIdentity.category,
+                    text: entry.text,
+                  }),
+                });
+                if (res.status === 409) {
+                  await registerIdentityPing(false);
+                  if (communityNotes[qId]?.[userIdentity.userId]) {
+                    communityNotes[qId][userIdentity.userId].author = userIdentity.name;
+                    communityNotes[qId][userIdentity.userId].emoji = userIdentity.emoji;
+                    communityNotes[qId][userIdentity.userId].category = userIdentity.category;
+                  }
+                  res = await fetch(url, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      userId: userIdentity.userId,
+                      clientSecret: userIdentity.clientSecret,
+                      author: userIdentity.name,
+                      emoji: userIdentity.emoji,
+                      category: userIdentity.category,
+                      text: entry.text,
+                    }),
+                  });
+                }
+              } else {
+                res = await fetch(url, {
+                  method: "DELETE",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    userId: userIdentity.userId,
+                    clientSecret: userIdentity.clientSecret,
+                  }),
+                });
+              }
+
+              if (res.ok) {
+                anySaved = true;
+                const resData = await res.json().catch(() => ({}));
+                if (resData?.note && communityNotes[qId]?.[userIdentity.userId]) {
+                  communityNotes[qId][userIdentity.userId] = resData.note;
+                }
+                const currentEntry = communityNotes[qId]?.[userIdentity.userId] || null;
+                const sameText = (entry?.text || "") === (currentEntry?.text || "");
+                const sameAuthor = (entry?.author || "") === (currentEntry?.author || "");
+                if (sameText && sameAuthor) {
+                  pendingDirtyQIds.delete(qId);
+                }
+              } else {
+                allSaved = false;
+              }
+            } catch {
+              allSaved = false;
             }
           }
-        } catch {}
-
-        // Apply our snapshot onto latest cloud data (merge-safe per questionId + userId)
-        syncSnapshot.forEach((entry, qId) => {
-          if (!cloudData.notes[qId] || typeof cloudData.notes[qId] !== "object") {
-            cloudData.notes[qId] = {};
-          }
-          if (entry && entry.text && entry.text.trim()) {
-            cloudData.notes[qId][userIdentity.userId] = entry;
-          } else {
-            delete cloudData.notes[qId][userIdentity.userId];
-            if (Object.keys(cloudData.notes[qId]).length === 0) {
-              delete cloudData.notes[qId];
-            }
-          }
-        });
-
-        let cloudSaved = false;
-        if (cloudReachable) {
-          try {
-            const postRes = await fetch(CLOUD_NOTES_URL, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(cloudData),
-            });
-            cloudSaved = postRes.ok;
-          } catch {}
+          saveCommunityNotesCache();
+        } else {
+          allSaved = false;
         }
 
         if (serverOnline) {
           fetch("/api/community-notes", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(cloudData),
+            body: JSON.stringify({ version: 1, notes: communityNotes }),
           }).catch(() => {});
         }
 
-        if (cloudSaved) {
-          // Clear only qIds that haven't been modified again while request was in flight
-          syncSnapshot.forEach((sentEntry, qId) => {
-            const currentEntry = communityNotes[qId]?.[userIdentity.userId] || null;
-            const sameText = (sentEntry?.text || "") === (currentEntry?.text || "");
-            const sameAuthor = (sentEntry?.author || "") === (currentEntry?.author || "");
-            if (sameText && sameAuthor) {
-              pendingDirtyQIds.delete(qId);
-            }
-          });
-          mergeCloudIntoLocal(cloudData);
+        if (allSaved && anySaved) {
           noteSyncState = pendingDirtyQIds.size > 0 ? "saving" : "synced";
+        } else if (!isCloudApiConfigured() && serverOnline) {
+          pendingDirtyQIds.clear();
+          noteSyncState = "synced";
         } else {
           noteSyncState = "offline";
         }
@@ -1509,6 +1830,7 @@
     el("btnFlagStar").classList.toggle("active", !!fl.star);
     el("btnFlagUnsure").classList.toggle("active", !!fl.unsure);
     updateProblemFlagButton(el("btnFlagProblem"), el("btnFlagProblemCount"), q);
+    el("adminQuestionActions")?.classList.toggle("hidden", !adminState.authenticated);
 
     el("qPositionText").textContent = `שאלה ${currentIndex + 1} מתוך ${filteredList.length}`;
     el("jumpInput").value = currentIndex + 1;
@@ -2227,7 +2549,7 @@
         const res = await fetch("/api/export-obsidian", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ progress, communityNotes, communityProblems }),
+          body: JSON.stringify({ progress, communityNotes, communityProblems, questionOverrides }),
         });
         const data = await res.json();
         if (res.ok) {
@@ -2418,12 +2740,45 @@
 
     el("btnToggleNotes").onclick = () => toggleNotesDrawer();
     el("btnRefreshNotes").onclick = () => {
-      pullCloudNotes(true);
-      pullCloudProblems(false);
+      bootstrapCloudState(true);
     };
-    el("userIdentityPill").onclick = () => {
-      showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
-    };
+
+    // Discrete admin entry: 5 consecutive clicks within 2s OR 1.2s long-press on identity pill
+    let pillClickTimestamps = [];
+    let pillLongPressTimer = null;
+    let pillLongPressTriggered = false;
+    const identityPillEl = el("userIdentityPill");
+    if (identityPillEl) {
+      identityPillEl.addEventListener("pointerdown", () => {
+        pillLongPressTriggered = false;
+        clearTimeout(pillLongPressTimer);
+        pillLongPressTimer = setTimeout(() => {
+          pillLongPressTriggered = true;
+          pillClickTimestamps = [];
+          openAdminEntry();
+        }, 1200);
+      });
+      ["pointerup", "pointercancel", "pointerleave"].forEach((evt) => {
+        identityPillEl.addEventListener(evt, () => {
+          clearTimeout(pillLongPressTimer);
+        });
+      });
+      identityPillEl.onclick = () => {
+        if (pillLongPressTriggered) {
+          pillLongPressTriggered = false;
+          return;
+        }
+        const now = Date.now();
+        pillClickTimestamps = pillClickTimestamps.filter((ts) => now - ts < 2000);
+        pillClickTimestamps.push(now);
+        if (pillClickTimestamps.length >= 5) {
+          pillClickTimestamps = [];
+          openAdminEntry();
+          return;
+        }
+        showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
+      };
+    }
 
     el("btnCancelEditNote").onclick = () => {
       if (filteredList.length === 0) return;
@@ -2571,16 +2926,87 @@
       }
     };
 
+    // Admin bindings
+    el("btnAdminPanel")?.addEventListener("click", () => openAdminDashboardModal());
+    el("btnAdminEditQ")?.addEventListener("click", () => {
+      if (filteredList.length > 0) openAdminQuestionModal(filteredList[currentIndex].id);
+    });
+    el("btnAdminHideQ")?.addEventListener("click", () => {
+      if (filteredList.length > 0) adminToggleHideQuestion(filteredList[currentIndex].id, true);
+    });
+    el("btnCloseAdminLogin")?.addEventListener("click", closeAdminLoginModal);
+    el("btnCancelAdminLogin")?.addEventListener("click", closeAdminLoginModal);
+    el("adminLoginModal")?.addEventListener("click", (e) => {
+      if (e.target === el("adminLoginModal")) closeAdminLoginModal();
+    });
+    el("adminLoginForm")?.addEventListener("submit", handleAdminLoginSubmit);
+
+    el("btnCloseAdminQuestion")?.addEventListener("click", closeAdminQuestionModal);
+    el("btnCancelAdminQuestion")?.addEventListener("click", closeAdminQuestionModal);
+    el("adminQuestionModal")?.addEventListener("click", (e) => {
+      if (e.target === el("adminQuestionModal")) closeAdminQuestionModal();
+    });
+    el("btnAdminAddOption")?.addEventListener("click", addAdminDraftOption);
+    el("btnAdminSaveQuestion")?.addEventListener("click", saveAdminQuestionOverride);
+    el("btnAdminResetQuestion")?.addEventListener("click", () => {
+      if (activeAdminEditQId) resetAdminQuestionOverride(activeAdminEditQId);
+    });
+    el("btnAdminToggleHideQuestion")?.addEventListener("click", () => {
+      if (!activeAdminEditQId) return;
+      const isHidden = Boolean(questionOverrides[activeAdminEditQId]?.hidden);
+      adminToggleHideQuestion(activeAdminEditQId, !isHidden);
+    });
+
+    el("btnCloseAdminDashboard")?.addEventListener("click", closeAdminDashboardModal);
+    el("adminDashboardModal")?.addEventListener("click", (e) => {
+      if (e.target === el("adminDashboardModal")) closeAdminDashboardModal();
+    });
+    el("btnAdminLogout")?.addEventListener("click", adminLogout);
+    el("btnAdminRefreshUsers")?.addEventListener("click", () => loadAdminUsers(true));
+    el("adminUsersSearch")?.addEventListener("input", renderAdminUsersTab);
+    el("adminOverridesSearch")?.addEventListener("input", renderAdminOverridesTab);
+    el("adminModerationSearch")?.addEventListener("input", renderAdminModerationTab);
+
+    document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => switchAdminTab(btn.dataset.adminTab));
+    });
+    el("adminOverridesFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        el("adminOverridesFilterChips").querySelectorAll(".chip").forEach((x) => x.classList.remove("active"));
+        chip.classList.add("active");
+        adminOverridesFilter = chip.dataset.ovFilter || "all";
+        renderAdminOverridesTab();
+      });
+    });
+    el("adminModerationFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        el("adminModerationFilterChips").querySelectorAll(".chip").forEach((x) => x.classList.remove("active"));
+        chip.classList.add("active");
+        adminModerationFilter = chip.dataset.modFilter || "all";
+        renderAdminModerationTab();
+      });
+    });
+
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         closeLightbox();
         closeProblemModal();
+        closeAdminLoginModal();
+        closeAdminQuestionModal();
+        closeAdminDashboardModal();
         el("backupModal").classList.add("hidden");
         el("shortcutsModal").classList.add("hidden");
         return;
       }
-      if (!el("problemReportModal").classList.contains("hidden")) return;
+      if (
+        !el("problemReportModal").classList.contains("hidden") ||
+        !el("adminLoginModal").classList.contains("hidden") ||
+        !el("adminQuestionModal").classList.contains("hidden") ||
+        !el("adminDashboardModal").classList.contains("hidden")
+      ) {
+        return;
+      }
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (currentMode === "analytics" || currentMode === "exam") return;
@@ -2621,6 +3047,864 @@
     });
   }
 
+  // ============================================================
+  // Admin Auth, Question Overrides & Moderation Dashboard
+  // ============================================================
+
+  function saveAdminToken(token, expiresAt, rememberDevice) {
+    clearAdminTokens();
+    adminState = {
+      authenticated: true,
+      token,
+      rememberDevice: Boolean(rememberDevice),
+      expiresAt: Number(expiresAt) || 0,
+    };
+    try {
+      const payload = JSON.stringify({ token, expiresAt: adminState.expiresAt });
+      if (rememberDevice) localStorage.setItem(ADMIN_TOKEN_LOCAL_KEY, payload);
+      else sessionStorage.setItem(ADMIN_TOKEN_SESSION_KEY, payload);
+    } catch {}
+  }
+
+  function clearAdminTokens() {
+    adminState = { authenticated: false, token: null, rememberDevice: false, expiresAt: 0 };
+    try {
+      localStorage.removeItem(ADMIN_TOKEN_LOCAL_KEY);
+      sessionStorage.removeItem(ADMIN_TOKEN_SESSION_KEY);
+    } catch {}
+  }
+
+  function loadStoredAdminToken() {
+    try {
+      const sessRaw = sessionStorage.getItem(ADMIN_TOKEN_SESSION_KEY);
+      if (sessRaw) {
+        const parsed = JSON.parse(sessRaw);
+        if (parsed?.token) return { token: parsed.token, rememberDevice: false };
+      }
+      const localRaw = localStorage.getItem(ADMIN_TOKEN_LOCAL_KEY);
+      if (localRaw) {
+        const parsed = JSON.parse(localRaw);
+        if (parsed?.token) return { token: parsed.token, rememberDevice: true };
+      }
+    } catch {}
+    return null;
+  }
+
+  function updateAdminUI() {
+    el("btnAdminPanel")?.classList.toggle("hidden", !adminState.authenticated);
+    el("adminQuestionActions")?.classList.toggle("hidden", !adminState.authenticated);
+    if (currentMode !== "exam" && currentMode !== "analytics" && filteredList.length > 0) {
+      const q = filteredList[currentIndex];
+      if (q) {
+        renderProblemBanner(el("qProblemBanner"), q);
+        renderNotesSection(q, true);
+      }
+    } else if (currentMode === "exam" && simState.active) {
+      const simQ = simState.questions[simState.currentIndex];
+      if (simQ) renderProblemBanner(el("simProblemBanner"), simQ);
+    }
+  }
+
+  async function adminFetch(path, options = {}) {
+    if (!isCloudApiConfigured()) {
+      throw new Error("כתובת ה-Worker טרם הוגדרה ב-app.js (CLOUD_API_BASE).");
+    }
+    const headers = {
+      ...(options.headers || {}),
+    };
+    if (options.body && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    if (adminState.token) {
+      headers.Authorization = `Bearer ${adminState.token}`;
+    }
+    const res = await fetch(`${CLOUD_API_BASE}${path}`, {
+      ...options,
+      headers,
+      cache: "no-store",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      clearAdminTokens();
+      updateAdminUI();
+      closeAdminDashboardModal();
+      closeAdminQuestionModal();
+      showToast("🔒 פג תוקף חיבור המנהל — יש להתחבר מחדש.");
+      openAdminLoginModal();
+      throw new Error(data.error || "Unauthorized");
+    }
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  async function initAdminAuth() {
+    let shouldOpenAdmin = false;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("admin") === "1") {
+        shouldOpenAdmin = true;
+        params.delete("admin");
+        const qs = params.toString();
+        const cleanUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+        history.replaceState(null, "", cleanUrl);
+      }
+    } catch {}
+
+    const stored = loadStoredAdminToken();
+    if (stored && isCloudApiConfigured()) {
+      try {
+        const res = await fetch(`${CLOUD_API_BASE}/api/admin/verify`, {
+          headers: { Authorization: `Bearer ${stored.token}` },
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          adminState = {
+            authenticated: true,
+            token: stored.token,
+            rememberDevice: stored.rememberDevice,
+            expiresAt: Number(data.expiresAt) || 0,
+          };
+          updateAdminUI();
+        } else {
+          clearAdminTokens();
+        }
+      } catch {
+        // Network issue: keep token for retry when online, don't unlock admin UI silently
+      }
+    } else if (stored && !isCloudApiConfigured()) {
+      clearAdminTokens();
+    }
+
+    if (shouldOpenAdmin) {
+      openAdminEntry();
+    }
+  }
+
+  function openAdminEntry() {
+    if (adminState.authenticated) openAdminDashboardModal();
+    else openAdminLoginModal();
+  }
+
+  function openAdminLoginModal() {
+    const errEl = el("adminLoginError");
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
+    const pwdEl = el("adminPasswordInput");
+    if (pwdEl) pwdEl.value = "";
+    el("adminLoginModal").classList.remove("hidden");
+    setTimeout(() => pwdEl?.focus(), 30);
+  }
+
+  function closeAdminLoginModal() {
+    el("adminLoginModal")?.classList.add("hidden");
+  }
+
+  async function handleAdminLoginSubmit(e) {
+    e.preventDefault();
+    const errEl = el("adminLoginError");
+    const submitBtn = el("btnSubmitAdminLogin");
+    const password = el("adminPasswordInput").value;
+    const rememberDevice = el("adminRememberDevice").checked;
+
+    errEl.classList.add("hidden");
+    if (!isCloudApiConfigured()) {
+      errEl.textContent = "יש להגדיר את כתובת ה-Worker ב-CLOUD_API_BASE בתוך app.js לאחר הפריסה.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+
+    submitBtn.disabled = true;
+    const origText = submitBtn.textContent;
+    submitBtn.textContent = "מאמת...";
+
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/api/admin/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.token) {
+        throw new Error(data.error || "התחברות נכשלה");
+      }
+      saveAdminToken(data.token, data.expiresAt, rememberDevice);
+      closeAdminLoginModal();
+      updateAdminUI();
+      showToast("🛡️ התחברת בהצלחה כמנהל!");
+    } catch (err) {
+      errEl.textContent = err?.message || "שגיאה בהתחברות";
+      errEl.classList.remove("hidden");
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origText;
+    }
+  }
+
+  function adminLogout() {
+    clearAdminTokens();
+    closeAdminDashboardModal();
+    closeAdminQuestionModal();
+    updateAdminUI();
+    showToast("🚪 התנתקת ממצב מנהל.");
+  }
+
+  // Admin Question Editor
+  function getAllKnownSubjects() {
+    const set = new Set(Object.keys(SUBJECT_EMOJIS));
+    RAW_QUESTIONS.forEach((q) => {
+      if (q.subject) set.add(q.subject);
+    });
+    Object.values(questionOverrides).forEach((ov) => {
+      if (ov?.subject) set.add(ov.subject);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "he"));
+  }
+
+  function renderAdminDraftOptions() {
+    const listEl = el("adminEditOptionsList");
+    listEl.innerHTML = "";
+    adminDraftOptions.forEach((opt, idx) => {
+      const row = document.createElement("div");
+      row.className = "admin-option-row" + (opt.isCorrect ? " is-correct" : "");
+
+      const letter = document.createElement("span");
+      letter.className = "admin-opt-letter";
+      letter.textContent = `${HEBREW_LETTERS[idx] || idx + 1}.`;
+
+      const textarea = document.createElement("textarea");
+      textarea.className = "admin-opt-input";
+      textarea.rows = 2;
+      textarea.value = opt.text;
+      textarea.placeholder = `נוסח מסיח ${HEBREW_LETTERS[idx] || idx + 1}...`;
+      textarea.addEventListener("input", (e) => {
+        adminDraftOptions[idx].text = e.target.value;
+      });
+
+      const correctLabel = document.createElement("label");
+      correctLabel.className = "admin-opt-correct-label";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = Boolean(opt.isCorrect);
+      cb.addEventListener("change", (e) => {
+        adminDraftOptions[idx].isCorrect = e.target.checked;
+        row.classList.toggle("is-correct", e.target.checked);
+      });
+      const cbSpan = document.createElement("span");
+      cbSpan.textContent = "נכונה";
+      correctLabel.append(cb, cbSpan);
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "note-card-action-btn danger admin-opt-del-btn";
+      delBtn.textContent = "🗑️";
+      delBtn.title = "הסר מסיח";
+      delBtn.disabled = adminDraftOptions.length <= 2;
+      delBtn.onclick = () => {
+        if (adminDraftOptions.length <= 2) return;
+        adminDraftOptions.splice(idx, 1);
+        renderAdminDraftOptions();
+      };
+
+      row.append(letter, textarea, correctLabel, delBtn);
+      listEl.appendChild(row);
+    });
+
+    const addBtn = el("btnAdminAddOption");
+    if (addBtn) addBtn.disabled = adminDraftOptions.length >= 6;
+  }
+
+  function addAdminDraftOption() {
+    if (adminDraftOptions.length >= 6) return;
+    adminDraftOptions.push({ text: "", isCorrect: false });
+    renderAdminDraftOptions();
+  }
+
+  function openAdminQuestionModal(qId) {
+    if (!adminState.authenticated) {
+      openAdminLoginModal();
+      return;
+    }
+    const rawQ = RAW_Q_MAP.get(qId);
+    if (!rawQ) return;
+    activeAdminEditQId = qId;
+
+    const ov = questionOverrides[qId];
+    const effective = applyOverrideToQuestion(rawQ, ov);
+
+    el("adminEditQLabel").textContent = `${rawQ.exam} · שאלה ${rawQ.num} · ${rawQ.id}`;
+
+    const subjSelect = el("adminEditSubject");
+    subjSelect.innerHTML = "";
+    getAllKnownSubjects().forEach((subj) => {
+      const opt = document.createElement("option");
+      opt.value = subj;
+      opt.textContent = formatSubject(subj);
+      subjSelect.appendChild(opt);
+    });
+    subjSelect.value = effective.subject;
+
+    el("adminEditStem").value = effective.stem;
+    el("adminEditAllAccepted").checked = Boolean(effective.allAccepted);
+    el("adminEditAppealNote").value = effective.appealNote || "";
+
+    const correctSet = new Set(effective.correct || []);
+    adminDraftOptions = (effective.options || []).map((opt, idx) => ({
+      text: opt.text || "",
+      isCorrect: correctSet.has(idx),
+    }));
+    renderAdminDraftOptions();
+
+    const isHidden = Boolean(ov?.hidden);
+    const hideBtn = el("btnAdminToggleHideQuestion");
+    hideBtn.textContent = isHidden ? "♻️ שחזר שאלה לבנק" : "🗑️ הסר שאלה מהבנק";
+    hideBtn.classList.toggle("btn-danger", !isHidden);
+    hideBtn.classList.toggle("btn-success", isHidden);
+
+    el("btnAdminResetQuestion").classList.toggle("hidden", !ov);
+    el("adminQuestionModal").classList.remove("hidden");
+  }
+
+  function closeAdminQuestionModal() {
+    activeAdminEditQId = null;
+    el("adminQuestionModal")?.classList.add("hidden");
+  }
+
+  async function saveAdminQuestionOverride() {
+    const qId = activeAdminEditQId;
+    if (!qId) return;
+
+    const stem = el("adminEditStem").value.trim();
+    const subject = el("adminEditSubject").value;
+    const allAccepted = el("adminEditAllAccepted").checked;
+    const appealNote = el("adminEditAppealNote").value.trim();
+
+    if (!stem) {
+      showToast("❌ נוסח השאלה לא יכול להיות ריק.");
+      return;
+    }
+    const cleanOptions = adminDraftOptions.map((opt, idx) => ({
+      letter: HEBREW_LETTERS[idx],
+      text: opt.text.trim(),
+    }));
+    if (cleanOptions.length < 2 || cleanOptions.some((o) => !o.text)) {
+      showToast("❌ יש למלא נוסח תקין בכל המסיחים (מינימום 2).");
+      return;
+    }
+    const correct = [];
+    adminDraftOptions.forEach((opt, idx) => {
+      if (opt.isCorrect) correct.push(idx);
+    });
+    if (correct.length === 0) {
+      showToast("❌ יש לסמן לפחות תשובה נכונה אחת.");
+      return;
+    }
+
+    const saveBtn = el("btnAdminSaveQuestion");
+    saveBtn.disabled = true;
+    try {
+      const existingHidden = Boolean(questionOverrides[qId]?.hidden);
+      const data = await adminFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          hidden: existingHidden,
+          stem,
+          options: cleanOptions,
+          correct,
+          allAccepted,
+          appealNote,
+          subject,
+        }),
+      });
+      if (data.override) {
+        questionOverrides[qId] = data.override;
+        saveQuestionOverridesCache();
+        rebuildEffectiveQuestions({ render: true });
+        if (!el("adminDashboardModal").classList.contains("hidden")) {
+          renderAdminOverridesTab();
+        }
+      }
+      closeAdminQuestionModal();
+      showToast("💾 השאלה עודכנה ונשמרה בענן לכולם!");
+    } catch (err) {
+      showToast(`❌ שגיאה בשמירה: ${err.message}`);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
+  async function adminToggleHideQuestion(qId, shouldHide) {
+    const rawQ = RAW_Q_MAP.get(qId);
+    if (!rawQ) return;
+    if (shouldHide && !confirm(`להסיר את שאלה ${rawQ.num} (${rawQ.exam}) מהבנק עבור כל המשתמשים? ניתן לשחזר מלוח הבקרה.`)) {
+      return;
+    }
+    try {
+      const data = await adminFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
+        method: "PUT",
+        body: JSON.stringify({ hidden: Boolean(shouldHide) }),
+      });
+      if (data.override) {
+        questionOverrides[qId] = data.override;
+        saveQuestionOverridesCache();
+        rebuildEffectiveQuestions({ render: true });
+      }
+      if (activeAdminEditQId === qId) closeAdminQuestionModal();
+      if (!el("adminDashboardModal").classList.contains("hidden")) {
+        renderAdminOverridesTab();
+      }
+      showToast(shouldHide ? "🗑️ השאלה הוסרה מהבנק לכולם." : "♻️ השאלה שוחזרה לבנק!");
+    } catch (err) {
+      showToast(`❌ שגיאה בעדכון שאלה: ${err.message}`);
+    }
+  }
+
+  async function resetAdminQuestionOverride(qId) {
+    if (!confirm("לאפס שאלה זו חזרה לנוסח המקורי מ-questions_data.js?")) return;
+    try {
+      await adminFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
+        method: "DELETE",
+      });
+      delete questionOverrides[qId];
+      saveQuestionOverridesCache();
+      rebuildEffectiveQuestions({ render: true });
+      if (activeAdminEditQId === qId) closeAdminQuestionModal();
+      if (!el("adminDashboardModal").classList.contains("hidden")) {
+        renderAdminOverridesTab();
+      }
+      showToast("↩️ השאלה אופסה למקור בהצלחה.");
+    } catch (err) {
+      showToast(`❌ שגיאה באיפוס שאלה: ${err.message}`);
+    }
+  }
+
+  async function adminDeleteNote(qId, targetUserId) {
+    if (!confirm("למחוק את הערת הקהילה של משתמש זה לצמיתות?")) return;
+    try {
+      await adminFetch(`/api/admin/notes/${encodeURIComponent(qId)}/${encodeURIComponent(targetUserId)}`, {
+        method: "DELETE",
+      });
+      if (communityNotes[qId]) {
+        delete communityNotes[qId][targetUserId];
+        if (Object.keys(communityNotes[qId]).length === 0) delete communityNotes[qId];
+      }
+      saveCommunityNotesCache();
+      if (filteredList.length > 0 && filteredList[currentIndex]?.id === qId) {
+        renderNotesSection(filteredList[currentIndex], true);
+      }
+      if (!el("adminDashboardModal").classList.contains("hidden")) {
+        renderAdminModerationTab();
+      }
+      showToast("🗑️ ההערה הוסרה בהצלחה.");
+    } catch (err) {
+      showToast(`❌ שגיאה במחיקת הערה: ${err.message}`);
+    }
+  }
+
+  async function adminDeleteProblem(qId, targetUserId) {
+    if (!confirm("להסיר את דיווח הבעיה של משתמש זה לצמיתות?")) return;
+    try {
+      await adminFetch(`/api/admin/problems/${encodeURIComponent(qId)}/${encodeURIComponent(targetUserId)}`, {
+        method: "DELETE",
+      });
+      if (communityProblems[qId]) {
+        delete communityProblems[qId][targetUserId];
+        if (Object.keys(communityProblems[qId]).length === 0) delete communityProblems[qId];
+      }
+      saveCommunityProblemsCache();
+      refreshActiveQuestionProblemViews();
+      if (!el("adminDashboardModal").classList.contains("hidden")) {
+        renderAdminModerationTab();
+      }
+      showToast("🗑️ הדיווח הוסר בהצלחה.");
+    } catch (err) {
+      showToast(`❌ שגיאה במחיקת דיווח: ${err.message}`);
+    }
+  }
+
+  // Admin Dashboard Modal
+  function openAdminDashboardModal() {
+    if (!adminState.authenticated) {
+      openAdminLoginModal();
+      return;
+    }
+    el("adminDashboardModal").classList.remove("hidden");
+    switchAdminTab(adminActiveTab);
+    loadAdminUsers(false);
+  }
+
+  function closeAdminDashboardModal() {
+    el("adminDashboardModal")?.classList.add("hidden");
+  }
+
+  function switchAdminTab(tab) {
+    adminActiveTab = tab || "users";
+    document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
+      const active = btn.dataset.adminTab === adminActiveTab;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    el("adminTabUsers").classList.toggle("hidden", adminActiveTab !== "users");
+    el("adminTabOverrides").classList.toggle("hidden", adminActiveTab !== "overrides");
+    el("adminTabModeration").classList.toggle("hidden", adminActiveTab !== "moderation");
+
+    if (adminActiveTab === "users") renderAdminUsersTab();
+    else if (adminActiveTab === "overrides") renderAdminOverridesTab();
+    else if (adminActiveTab === "moderation") renderAdminModerationTab();
+  }
+
+  async function loadAdminUsers(showFeedback = false) {
+    if (!adminState.authenticated) return;
+    try {
+      const data = await adminFetch("/api/admin/users");
+      adminUsersCache = Array.isArray(data.users) ? data.users : [];
+      takenNamesMap = {};
+      adminUsersCache.forEach((u) => {
+        if (u.name && u.userId) takenNamesMap[u.name] = u.userId;
+      });
+      saveTakenNamesCache();
+      renderAdminUsersTab();
+      if (showFeedback) showToast("🔄 רשימת המשתמשים רועננה.");
+    } catch (err) {
+      if (showFeedback) showToast(`❌ שגיאה בטעינת משתמשים: ${err.message}`);
+    }
+  }
+
+  async function adminReleaseNickname(userId, name) {
+    if (!confirm(`לשחרר את הכינוי "${name}" (${userId}) כך שיהיה פנוי למשתמש חדש?`)) return;
+    try {
+      await adminFetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+        method: "DELETE",
+      });
+      adminUsersCache = adminUsersCache.filter((u) => u.userId !== userId);
+      if (takenNamesMap[name] === userId) {
+        delete takenNamesMap[name];
+        saveTakenNamesCache();
+      }
+      renderAdminUsersTab();
+      showToast(`🔓 הכינוי "${name}" שוחרר.`);
+    } catch (err) {
+      showToast(`❌ שגיאה בשחרור כינוי: ${err.message}`);
+    }
+  }
+
+  function renderAdminUsersTab() {
+    const now = Date.now();
+    const active24h = adminUsersCache.filter((u) => now - (Number(u.lastSeenAt) || 0) <= 24 * 60 * 60 * 1000).length;
+    const takenNamesSet = new Set(adminUsersCache.map((u) => u.name));
+
+    el("adminUsersKpis").innerHTML = `
+      <div class="kpi-card"><div class="kpi-label">👥 סה״כ משתמשים</div><div class="kpi-value">${adminUsersCache.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🏷️ כינויים תפוסים</div><div class="kpi-value">${takenNamesSet.size} / ${IDENTITY_CATALOG.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🟢 פעילים ב-24 ש׳</div><div class="kpi-value">${active24h}</div></div>
+    `;
+
+    const namesGrid = el("adminNamesGrid");
+    namesGrid.innerHTML = "";
+    IDENTITY_CATALOG.forEach((item) => {
+      const chip = document.createElement("span");
+      const userObj = adminUsersCache.find((u) => u.name === item.name);
+      chip.className = "admin-name-chip" + (userObj ? " taken" : "");
+      chip.textContent = `${item.emoji} ${item.name}`;
+      chip.title = userObj
+        ? `תפוס · פעילות אחרונה: ${formatNoteTime(userObj.lastSeenAt)}`
+        : `פנוי (${item.category})`;
+      namesGrid.appendChild(chip);
+    });
+
+    const term = (el("adminUsersSearch")?.value || "").trim().toLowerCase();
+    const filteredUsers = adminUsersCache.filter((u) => {
+      if (!term) return true;
+      return (
+        String(u.name || "").toLowerCase().includes(term) ||
+        String(u.category || "").toLowerCase().includes(term) ||
+        String(u.userId || "").toLowerCase().includes(term)
+      );
+    });
+
+    const listWrap = el("adminUsersList");
+    if (filteredUsers.length === 0) {
+      listWrap.innerHTML = `<div class="community-notes-empty" style="padding:16px;">לא נמצאו משתמשים תואמים.</div>`;
+      return;
+    }
+
+    const table = document.createElement("table");
+    table.className = "admin-users-table";
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>כינוי</th>
+          <th>קטגוריה</th>
+          <th>כניסה ראשונה</th>
+          <th>פעילות אחרונה</th>
+          <th>הערות / דיווחים</th>
+          <th>פעולות</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+    const tbody = table.querySelector("tbody");
+    filteredUsers.forEach((u) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(u.emoji)} ${escapeHtml(u.name)}</strong><br/><span class="muted" style="font-size:0.72rem;">${escapeHtml(u.userId)}</span></td>
+        <td>${escapeHtml(u.category || "—")}</td>
+        <td>${escapeHtml(formatNoteTime(u.firstSeenAt) || "—")}</td>
+        <td>${escapeHtml(formatNoteTime(u.lastSeenAt) || "—")}</td>
+        <td>💬 ${Number(u.notesCount) || 0} · ⚠️ ${Number(u.problemsCount) || 0}</td>
+        <td></td>
+      `;
+      const actionTd = tr.lastElementChild;
+      const relBtn = document.createElement("button");
+      relBtn.type = "button";
+      relBtn.className = "note-card-action-btn danger";
+      relBtn.textContent = "🔓 שחרר כינוי";
+      relBtn.onclick = () => adminReleaseNickname(u.userId, u.name);
+      actionTd.appendChild(relBtn);
+      tbody.appendChild(tr);
+    });
+
+    listWrap.innerHTML = "";
+    listWrap.appendChild(table);
+  }
+
+  function jumpToQuestionFromAdmin(qId) {
+    const q = Q_MAP.get(qId);
+    if (!q) {
+      showToast("⚠️ השאלה מוסתרת כרגע — שחזר אותה כדי לצפות בה בתרגול.");
+      return;
+    }
+    closeAdminDashboardModal();
+    filters.exams.clear();
+    filters.subjects.clear();
+    filters.status = "all";
+    filters.search = "";
+    el("searchInput").value = "";
+    el("clearSearchBtn").classList.add("hidden");
+    el("statusChips").querySelectorAll(".chip").forEach((x) => x.classList.toggle("active", x.dataset.status === "all"));
+    renderFilterChips();
+    switchMode("practice");
+    applyFilters(qId);
+  }
+
+  function renderAdminOverridesTab() {
+    const term = (el("adminOverridesSearch")?.value || "").trim().toLowerCase();
+    const listWrap = el("adminOverridesList");
+    listWrap.innerHTML = "";
+
+    const entries = Object.entries(questionOverrides)
+      .map(([qId, ov]) => ({ qId, ov, rawQ: RAW_Q_MAP.get(qId) }))
+      .filter(({ qId, ov, rawQ }) => {
+        if (!ov) return false;
+        if (adminOverridesFilter === "hidden" && !ov.hidden) return false;
+        if (adminOverridesFilter === "edited" && ov.hidden) return false;
+        if (!term) return true;
+        const stem = ov.stem || rawQ?.stem || "";
+        const hay = `${qId} ${rawQ?.exam || ""} ${rawQ?.num || ""} ${ov.subject || rawQ?.subject || ""} ${stem}`.toLowerCase();
+        return hay.includes(term);
+      })
+      .sort((a, b) => (b.ov.updatedAt || 0) - (a.ov.updatedAt || 0));
+
+    if (entries.length === 0) {
+      listWrap.innerHTML = `<div class="community-notes-empty" style="padding:16px;">אין שאלות ערוכות או מוסתרות התואמות לסינון.</div>`;
+      return;
+    }
+
+    entries.forEach(({ qId, ov, rawQ }) => {
+      const card = document.createElement("div");
+      card.className = "admin-feed-card" + (ov.hidden ? " is-hidden-q" : "");
+
+      const head = document.createElement("div");
+      head.className = "admin-feed-head";
+
+      const badges = document.createElement("div");
+      badges.className = "admin-feed-badges";
+
+      const badge = document.createElement("span");
+      badge.className = "admin-status-badge" + (ov.hidden ? " hidden-badge" : "");
+      badge.textContent = ov.hidden ? "🗑️ מוסתרת" : "✏️ ערוכה";
+
+      const refSpan = document.createElement("strong");
+      refSpan.textContent = rawQ ? `${rawQ.exam} · שאלה ${rawQ.num}` : qId;
+
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "muted";
+      timeSpan.textContent = formatNoteTime(ov.updatedAt);
+
+      badges.append(badge, refSpan, timeSpan);
+
+      const actions = document.createElement("div");
+      actions.className = "admin-feed-actions";
+
+      if (!ov.hidden) {
+        const jumpBtn = document.createElement("button");
+        jumpBtn.type = "button";
+        jumpBtn.className = "note-card-action-btn";
+        jumpBtn.textContent = "🔍 קפוץ לשאלה";
+        jumpBtn.onclick = () => jumpToQuestionFromAdmin(qId);
+        actions.appendChild(jumpBtn);
+      }
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "note-card-action-btn";
+      editBtn.textContent = "✏️ ערוך";
+      editBtn.onclick = () => openAdminQuestionModal(qId);
+      actions.appendChild(editBtn);
+
+      if (ov.hidden) {
+        const restoreBtn = document.createElement("button");
+        restoreBtn.type = "button";
+        restoreBtn.className = "note-card-action-btn";
+        restoreBtn.textContent = "♻️ שחזר";
+        restoreBtn.onclick = () => adminToggleHideQuestion(qId, false);
+        actions.appendChild(restoreBtn);
+      }
+
+      const resetBtn = document.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.className = "note-card-action-btn danger";
+      resetBtn.textContent = "↩️ אפס למקור";
+      resetBtn.onclick = () => resetAdminQuestionOverride(qId);
+      actions.appendChild(resetBtn);
+
+      head.append(badges, actions);
+
+      const preview = document.createElement("div");
+      preview.className = "admin-feed-text";
+      const stemText = (ov.stem || rawQ?.stem || "").slice(0, 180);
+      preview.textContent = stemText + ((ov.stem || rawQ?.stem || "").length > 180 ? "…" : "");
+
+      card.append(head, preview);
+      listWrap.appendChild(card);
+    });
+  }
+
+  function renderAdminModerationTab() {
+    const term = (el("adminModerationSearch")?.value || "").trim().toLowerCase();
+    const listWrap = el("adminModerationList");
+    listWrap.innerHTML = "";
+
+    const feed = [];
+    if (adminModerationFilter === "all" || adminModerationFilter === "notes") {
+      Object.entries(communityNotes).forEach(([qId, byUser]) => {
+        if (!byUser || typeof byUser !== "object") return;
+        Object.entries(byUser).forEach(([userId, entry]) => {
+          if (!entry || typeof entry.text !== "string" || !entry.text.trim()) return;
+          feed.push({
+            kind: "note",
+            qId,
+            userId,
+            author: entry.author || "אנונימי",
+            emoji: entry.emoji || "💬",
+            text: entry.text.trim(),
+            updatedAt: Number(entry.updatedAt) || 0,
+          });
+        });
+      });
+    }
+
+    if (adminModerationFilter === "all" || adminModerationFilter === "problems") {
+      Object.entries(communityProblems).forEach(([qId, byUser]) => {
+        if (!byUser || typeof byUser !== "object") return;
+        Object.entries(byUser).forEach(([userId, entry]) => {
+          if (!isValidProblemEntry(entry)) return;
+          const info = PROBLEM_TYPES[entry.type] || PROBLEM_TYPES.question_issue;
+          feed.push({
+            kind: "problem",
+            problemType: info,
+            qId,
+            userId,
+            author: entry.author || "אנונימי",
+            emoji: entry.emoji || "⚠️",
+            text: (entry.text || "").trim(),
+            updatedAt: Number(entry.updatedAt) || 0,
+          });
+        });
+      });
+    }
+
+    const filteredFeed = feed
+      .filter((item) => {
+        if (!term) return true;
+        const rawQ = RAW_Q_MAP.get(item.qId);
+        const hay = `${item.author} ${item.text} ${item.qId} ${rawQ?.exam || ""} ${rawQ?.num || ""}`.toLowerCase();
+        return hay.includes(term);
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+
+    if (filteredFeed.length === 0) {
+      listWrap.innerHTML = `<div class="community-notes-empty" style="padding:16px;">לא נמצאו תגובות או דיווחים תואמים.</div>`;
+      return;
+    }
+
+    filteredFeed.forEach((item) => {
+      const rawQ = RAW_Q_MAP.get(item.qId);
+      const card = document.createElement("div");
+      card.className = "admin-feed-card";
+
+      const head = document.createElement("div");
+      head.className = "admin-feed-head";
+
+      const badges = document.createElement("div");
+      badges.className = "admin-feed-badges";
+
+      const kindBadge = document.createElement("span");
+      if (item.kind === "note") {
+        kindBadge.className = "admin-status-badge";
+        kindBadge.textContent = "💬 הערת קהילה";
+      } else {
+        kindBadge.className = `problem-type-pill ${item.problemType.id}`;
+        kindBadge.textContent = `${item.problemType.emoji} ${item.problemType.label}`;
+      }
+
+      const authorStrong = document.createElement("strong");
+      authorStrong.textContent = `${item.emoji} ${item.author}`;
+
+      const qRef = document.createElement("span");
+      qRef.className = "muted";
+      qRef.textContent = rawQ ? `· ${rawQ.exam} · שאלה ${rawQ.num}` : `· ${item.qId}`;
+
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "muted";
+      timeSpan.textContent = formatNoteTime(item.updatedAt);
+
+      badges.append(kindBadge, authorStrong, qRef, timeSpan);
+
+      const actions = document.createElement("div");
+      actions.className = "admin-feed-actions";
+
+      const jumpBtn = document.createElement("button");
+      jumpBtn.type = "button";
+      jumpBtn.className = "note-card-action-btn";
+      jumpBtn.textContent = "🔍 קפוץ לשאלה";
+      jumpBtn.onclick = () => jumpToQuestionFromAdmin(item.qId);
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "note-card-action-btn danger admin-del";
+      delBtn.textContent = "🗑️ הסר";
+      delBtn.onclick = () => {
+        if (item.kind === "note") adminDeleteNote(item.qId, item.userId);
+        else adminDeleteProblem(item.qId, item.userId);
+      };
+
+      actions.append(jumpBtn, delBtn);
+      head.append(badges, actions);
+
+      const textDiv = document.createElement("div");
+      textDiv.className = "admin-feed-text";
+      textDiv.textContent = item.text || "(ללא פירוט טקסטואלי)";
+
+      card.append(head, textDiv);
+      listWrap.appendChild(card);
+    });
+  }
+
   // Init
   initTheme();
   initLightbox();
@@ -2631,10 +3915,11 @@
   bindEvents();
   applyFilters();
   checkServer();
-  pullCloudNotes(false);
-  pullCloudProblems(false);
+  bootstrapCloudState(false).finally(() => {
+    registerIdentityPing(false);
+  });
+  initAdminAuth();
   setInterval(() => {
-    pullCloudNotes(false);
-    pullCloudProblems(false);
+    bootstrapCloudState(false);
   }, 45000);
 })();

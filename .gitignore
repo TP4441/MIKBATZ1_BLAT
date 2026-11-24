@@ -10,6 +10,10 @@ questions_data.json
 user_progress.json
 community_notes.json
 community_problems.json
+question_overrides.json
+worker/.dev.vars
+worker/.wrangler/
+worker/node_modules/
 __pycache__/
 *.pyc
 .DS_Store
