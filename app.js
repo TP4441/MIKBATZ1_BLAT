@@ -1462,8 +1462,7 @@
     listEl.innerHTML = sorted
       .map((u) => {
         const isMe = u.userId === userIdentity.userId;
-        const catTitle = u.category ? ` title="${escapeHtml(u.category)}"` : "";
-        return `<li class="online-user-item${isMe ? " is-me" : ""}"${catTitle}>
+        return `<li class="online-user-item${isMe ? " is-me" : ""}">
           <span class="online-user-main">
             <span class="online-user-emoji" aria-hidden="true">${escapeHtml(u.emoji)}</span>
             <span class="online-user-name">${escapeHtml(u.name)}</span>
@@ -3530,7 +3529,6 @@
                       <strong>${escapeHtml(entry.name)}</strong>
                       ${isMe ? `<span class="lb-me-badge">את/ה</span>` : ""}
                     </div>
-                    ${entry.category ? `<span class="podium-user-cat">${escapeHtml(entry.category)}</span>` : ""}
                   </div>
                 </div>
                 <div class="podium-score-block tabular-text">

@@ -3611,11 +3611,6 @@ kbd {
   white-space: nowrap;
 }
 
-.podium-user-cat {
-  font-size: 0.76rem;
-  color: var(--text-muted);
-}
-
 .podium-score-block {
   display: flex;
   flex-direction: column;
