@@ -626,6 +626,79 @@ async function handleOnlineUsers(env) {
   });
 }
 
+async function handleLeaderboard(env, sortBy = "answers") {
+  const now = Date.now();
+  const { results } = await env.DB
+    .prepare(
+      `SELECT
+         i.user_id AS userId,
+         i.name,
+         i.emoji,
+         i.category,
+         i.last_seen_at AS lastSeenAt,
+         up.progress_json AS progressJson,
+         COALESCE(n.cnt, 0) AS notesCount
+       FROM identities i
+       LEFT JOIN user_progress up
+         ON i.user_id = up.user_id
+       LEFT JOIN (
+         SELECT user_id, COUNT(*) AS cnt
+         FROM community_notes
+         WHERE TRIM(text) != ''
+         GROUP BY user_id
+       ) n
+         ON i.user_id = n.user_id
+       WHERE i.name != ''`
+    )
+    .all();
+
+  const entries = [];
+  for (const r of results || []) {
+    const parsed = r.progressJson ? parseJsonSafe(r.progressJson, null) : null;
+    const solvedCount = parsed?.attempts && typeof parsed.attempts === "object"
+      ? Object.keys(parsed.attempts).length
+      : 0;
+    const notesCount = Number(r.notesCount) || 0;
+    if (solvedCount <= 0 && notesCount <= 0) continue;
+    const lastSeenAt = Number(r.lastSeenAt) || 0;
+    entries.push({
+      userId: r.userId,
+      name: r.name,
+      emoji: String(r.emoji || "👤").trim(),
+      category: String(r.category || "").trim(),
+      solvedCount,
+      notesCount,
+      lastSeenAt,
+      isOnline: now - lastSeenAt <= ONLINE_WINDOW_MS,
+    });
+  }
+
+  entries.sort((a, b) => {
+    if (sortBy === "notes") {
+      return (
+        b.notesCount - a.notesCount ||
+        b.solvedCount - a.solvedCount ||
+        b.lastSeenAt - a.lastSeenAt ||
+        a.name.localeCompare(b.name, "he")
+      );
+    }
+    return (
+      b.solvedCount - a.solvedCount ||
+      b.notesCount - a.notesCount ||
+      b.lastSeenAt - a.lastSeenAt ||
+      a.name.localeCompare(b.name, "he")
+    );
+  });
+
+  return jsonResponse({
+    ok: true,
+    sort: sortBy === "notes" ? "notes" : "answers",
+    entries,
+    totalParticipants: entries.length,
+    serverTime: now,
+  });
+}
+
 async function handleIdentityPing(request, env) {
   const body = await readJsonBody(request);
   if (!body) return errorResponse("Invalid JSON", 400);
@@ -1717,6 +1790,11 @@ export default {
 
       if (method === "GET" && path === "/api/online") {
         return await handleOnlineUsers(env);
+      }
+
+      if (method === "GET" && path === "/api/leaderboard") {
+        const sortParam = url.searchParams.get("sort") === "notes" ? "notes" : "answers";
+        return await handleLeaderboard(env, sortParam);
       }
 
       if (method === "POST" && path === "/api/identities/ping") {

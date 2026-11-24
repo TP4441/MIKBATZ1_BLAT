@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261124e" />
+  <link rel="stylesheet" href="styles.css?v=20261124f" />
 </head>
 <body>
   <header class="topbar">
@@ -172,6 +172,17 @@
             <rect x="17" y="5" width="3" height="13" rx="1" />
           </svg>
           <span>אנליטיקה</span>
+        </button>
+        <button type="button" class="tab-btn" data-mode="leaderboard">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" />
+            <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" />
+            <path d="M4 22h16" />
+            <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+            <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+            <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
+          </svg>
+          <span>לידרבורד</span>
         </button>
       </nav>
     </div>
@@ -500,6 +511,51 @@
         <div class="matrix-scroll">
           <table class="readiness-matrix" id="readinessMatrix"></table>
         </div>
+      </div>
+    </section>
+
+    <!-- Leaderboard View -->
+    <section id="leaderboardView" class="leaderboard-view hidden" aria-label="לידרבורד">
+      <div class="card leaderboard-toolbar-card">
+        <div class="leaderboard-head">
+          <div class="leaderboard-title-group">
+            <h2>🏆 לידרבורד</h2>
+            <p class="muted">דירוג אנונימי של המשתתפים לפי כמות תשובות שנענו או הערות ששותפו עם הקהילה.</p>
+          </div>
+          <div class="leaderboard-actions">
+            <div class="leaderboard-sort-tabs" role="tablist" aria-label="שיטת מיון בלידרבורד">
+              <button type="button" class="leaderboard-sort-btn active" id="btnLbSortAnswers" data-lb-sort="answers" role="tab" aria-selected="true">
+                <span aria-hidden="true">📝</span>
+                <span>לפי תשובות</span>
+              </button>
+              <button type="button" class="leaderboard-sort-btn" id="btnLbSortNotes" data-lb-sort="notes" role="tab" aria-selected="false">
+                <span aria-hidden="true">💬</span>
+                <span>לפי הערות</span>
+              </button>
+            </div>
+            <button type="button" class="btn-secondary btn-sm hidden" id="btnLbJumpToMe" title="גלול למיקום שלך בטבלה">🎯 המיקום שלי</button>
+            <button type="button" class="btn-secondary btn-sm leaderboard-refresh-btn" id="btnRefreshLeaderboard" title="רענן דירוג מהענן" aria-label="רענן לידרבורד">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                <path d="M16 16h5v5" />
+              </svg>
+              <span>רענן</span>
+            </button>
+          </div>
+        </div>
+        <div class="leaderboard-my-strip" id="leaderboardMySummary"></div>
+      </div>
+
+      <div class="leaderboard-podium hidden" id="leaderboardPodium" aria-label="שלושת המקומות הראשונים"></div>
+
+      <div class="card leaderboard-table-card" id="leaderboardTableCard">
+        <div class="leaderboard-table-head">
+          <h3 id="leaderboardListTitle">דירוג מלא</h3>
+          <span class="muted tabular-text" id="leaderboardTotalMeta"></span>
+        </div>
+        <div id="leaderboardListMount"></div>
       </div>
     </section>
   </main>
@@ -878,6 +934,6 @@
 
   <script src="questions_data.js"></script>
   <script src="qr.js?v=20261124d"></script>
-  <script src="app.js?v=20261124e"></script>
+  <script src="app.js?v=20261124f"></script>
 </body>
 </html>

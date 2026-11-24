@@ -42,7 +42,12 @@ async function run() {
     assert.equal(onlineRes.status, 200);
     assert.equal(onlineRes.data.ok, true);
     assert.ok(Array.isArray(onlineRes.data.onlineUsers));
-    console.log("✓ Health, bootstrap & online endpoint OK");
+
+    const lbInitRes = await req("/api/leaderboard");
+    assert.equal(lbInitRes.status, 200);
+    assert.equal(lbInitRes.data.ok, true);
+    assert.ok(Array.isArray(lbInitRes.data.entries));
+    console.log("✓ Health, bootstrap, online & leaderboard endpoint OK");
   }
 
   // 2. Admin auth guards (no token / forged token)
@@ -714,6 +719,43 @@ async function run() {
     assert.equal(lockedSync.status, 429, "10th failed sync attempt should trigger 429 rate limit");
 
     console.log("✓ Cross-device sync, merge, guest release, rotate, revoke & rate-limit OK");
+  }
+
+  // 8b. Leaderboard sorting (by answers vs by notes) and privacy checks
+  {
+    const lbAns = await req("/api/leaderboard?sort=answers");
+    assert.equal(lbAns.status, 200);
+    assert.equal(lbAns.data.ok, true);
+    assert.equal(lbAns.data.sort, "answers");
+    assert.ok(Array.isArray(lbAns.data.entries));
+    const entryA = lbAns.data.entries.find((e) => e.userId === studentA.userId);
+    const entryLegacy = lbAns.data.entries.find((e) => e.userId === "u_legacy_1");
+    assert.ok(entryA, "Student A should appear on leaderboard");
+    assert.equal(entryA.solvedCount, 3);
+    assert.equal(entryA.notesCount, 4);
+    assert.equal(entryA.clientSecret, undefined);
+    assert.equal(entryA.client_secret_hash, undefined);
+    assert.equal(entryA.sync_code_hash, undefined);
+    assert.equal(entryA.progressJson, undefined);
+    assert.ok(entryLegacy, "Legacy note author should appear on leaderboard");
+    assert.equal(entryLegacy.solvedCount, 0);
+    assert.equal(entryLegacy.notesCount, 1);
+    // In answers sort, Student A (3 solved) must come before Legacy (0 solved)
+    assert.ok(
+      lbAns.data.entries.findIndex((e) => e.userId === studentA.userId) <
+      lbAns.data.entries.findIndex((e) => e.userId === "u_legacy_1")
+    );
+
+    const lbNotes = await req("/api/leaderboard?sort=notes");
+    assert.equal(lbNotes.status, 200);
+    assert.equal(lbNotes.data.sort, "notes");
+    for (let idx = 1; idx < lbNotes.data.entries.length; idx++) {
+      assert.ok(
+        lbNotes.data.entries[idx - 1].notesCount >= lbNotes.data.entries[idx].notesCount,
+        "Notes sort must be non-increasing by notesCount"
+      );
+    }
+    console.log("✓ Leaderboard answers/notes sorting & privacy checks OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts

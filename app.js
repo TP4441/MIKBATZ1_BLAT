@@ -298,7 +298,7 @@
 
   // State
   let serverOnline = false;
-  let currentMode = "practice"; // practice | exam | drill | flashcard | analytics
+  let currentMode = "practice"; // practice | exam | drill | flashcard | analytics | leaderboard
   let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
   let communityProblems = loadCommunityProblemsCache(); // { qId: { userId: { type, text, author, emoji, category, updatedAt } } }
   let questionOverrides = loadQuestionOverridesCache(); // { qId: { hidden, stem, options, correct, allAccepted, appealNote, subject, updatedAt } }
@@ -317,6 +317,12 @@
   let onlineUsersLoaded = false;
   let onlineUsersLoading = false;
   let onlineUsersServerTimeOffset = 0;
+  let leaderboardEntries = [];
+  let leaderboardLoaded = false;
+  let leaderboardLoading = false;
+  let leaderboardError = false;
+  let leaderboardSort = "answers"; // "answers" | "notes"
+  let leaderboardLastFetchedAt = 0;
   let identityRegisteredInCloud = false;
   let filteredList = [];
   let currentIndex = 0;
@@ -1637,7 +1643,7 @@
       if (prevOverridesJson !== nextOverridesJson) {
         rebuildEffectiveQuestions({ render: true });
       } else {
-        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
+        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
           renderNotesSection(filteredList[currentIndex], true);
         }
         refreshActiveQuestionProblemViews();
@@ -1875,7 +1881,7 @@
       }
       return;
     }
-    if (currentMode !== "analytics" && filteredList.length > 0) {
+    if (currentMode !== "analytics" && currentMode !== "leaderboard" && filteredList.length > 0) {
       const q = filteredList[currentIndex];
       if (q) {
         renderProblemBanner(el("qProblemBanner"), q);
@@ -2225,7 +2231,7 @@
           noteSyncState = "offline";
         }
 
-        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics") {
+        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
           renderNotesSection(filteredList[currentIndex], true);
         } else {
           updateNoteSyncBadge();
@@ -2436,7 +2442,7 @@
   }
 
   function renderQuestion() {
-    if (currentMode === "exam" || currentMode === "analytics") return;
+    if (currentMode === "exam" || currentMode === "analytics" || currentMode === "leaderboard") return;
 
     const card = el("questionCard");
     const empty = el("emptyState");
@@ -3189,6 +3195,433 @@
     });
   }
 
+  // Leaderboard
+  function getMyLocalNotesCount() {
+    const notedQIds = new Set();
+    Object.entries(communityNotes || {}).forEach(([qId, byUser]) => {
+      const entry = byUser?.[userIdentity.userId];
+      if (entry && typeof entry.text === "string" && entry.text.trim()) {
+        notedQIds.add(qId);
+      }
+    });
+    Object.entries(progress.notes || {}).forEach(([qId, text]) => {
+      if (typeof text === "string" && text.trim()) {
+        notedQIds.add(qId);
+      }
+    });
+    return notedQIds.size;
+  }
+
+  function getMergedLeaderboardEntries() {
+    const onlineSet = new Set((onlineUsersList || []).map((u) => u.userId));
+    const localSolved = Object.keys(progress.attempts || {}).length;
+    const localNotes = getMyLocalNotesCount();
+    const byId = new Map();
+
+    (leaderboardEntries || []).forEach((item) => {
+      if (!item || !item.userId || !item.name) return;
+      const isMe = item.userId === userIdentity.userId;
+      const solvedCount = isMe
+        ? (cloudProgressDirty ? localSolved : Math.max(Number(item.solvedCount) || 0, localSolved))
+        : (Number(item.solvedCount) || 0);
+      const notesCount = isMe
+        ? Math.max(Number(item.notesCount) || 0, localNotes)
+        : (Number(item.notesCount) || 0);
+      byId.set(item.userId, {
+        userId: item.userId,
+        name: isMe ? userIdentity.name : item.name,
+        emoji: isMe ? userIdentity.emoji : (item.emoji || "👤"),
+        category: isMe ? userIdentity.category : (item.category || ""),
+        solvedCount,
+        notesCount,
+        lastSeenAt: Number(item.lastSeenAt) || 0,
+        isOnline: isMe || Boolean(item.isOnline) || onlineSet.has(item.userId),
+      });
+    });
+
+    if (!byId.has(userIdentity.userId) && (localSolved > 0 || localNotes > 0)) {
+      byId.set(userIdentity.userId, {
+        userId: userIdentity.userId,
+        name: userIdentity.name,
+        emoji: userIdentity.emoji,
+        category: userIdentity.category,
+        solvedCount: localSolved,
+        notesCount: localNotes,
+        lastSeenAt: Date.now(),
+        isOnline: true,
+      });
+    }
+
+    return Array.from(byId.values());
+  }
+
+  function getMedalForRank(rank) {
+    if (rank === 1) return { emoji: "🥇", label: "מקום 1", cls: "rank-gold" };
+    if (rank === 2) return { emoji: "🥈", label: "מקום 2", cls: "rank-silver" };
+    if (rank === 3) return { emoji: "🥉", label: "מקום 3", cls: "rank-bronze" };
+    return null;
+  }
+
+  async function fetchLeaderboard({ force = false, showFeedback = false } = {}) {
+    if (!isCloudApiConfigured()) {
+      leaderboardError = true;
+      renderLeaderboard();
+      return false;
+    }
+    if (leaderboardLoading) return false;
+    if (!force && leaderboardLoaded && Date.now() - leaderboardLastFetchedAt < 15000) {
+      renderLeaderboard();
+      return true;
+    }
+
+    leaderboardLoading = true;
+    leaderboardError = false;
+    renderLeaderboard();
+
+    try {
+      if (cloudProgressDirty) {
+        await pushCloudProgress().catch(() => {});
+      }
+      if (!identityRegisteredInCloud && !identityNeedsCloudCheck) {
+        await registerIdentityPing(false).catch(() => {});
+      }
+      const res = await fetch(`${CLOUD_API_BASE}/api/leaderboard`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data?.ok || !Array.isArray(data.entries)) {
+        throw new Error("Invalid leaderboard payload");
+      }
+      leaderboardEntries = data.entries;
+      leaderboardLoaded = true;
+      leaderboardError = false;
+      leaderboardLastFetchedAt = Date.now();
+      if (showFeedback) showToast("🏆 הדירוג עודכן מהענן!");
+      return true;
+    } catch {
+      leaderboardError = true;
+      if (showFeedback) showToast("⚠️ לא ניתן לרענן את הלידרבורד כרגע.");
+      return false;
+    } finally {
+      leaderboardLoading = false;
+      if (currentMode === "leaderboard") {
+        renderLeaderboard();
+      }
+    }
+  }
+
+  function openLeaderboardView() {
+    renderLeaderboard();
+    fetchLeaderboard({ force: !leaderboardLoaded });
+  }
+
+  function setLeaderboardSort(sortBy) {
+    const next = sortBy === "notes" ? "notes" : "answers";
+    if (leaderboardSort === next) return;
+    leaderboardSort = next;
+    renderLeaderboard();
+  }
+
+  function renderLeaderboard() {
+    const viewEl = el("leaderboardView");
+    if (!viewEl) return;
+
+    const sortAnswersBtn = el("btnLbSortAnswers");
+    const sortNotesBtn = el("btnLbSortNotes");
+    const refreshBtn = el("btnRefreshLeaderboard");
+    const jumpMeBtn = el("btnLbJumpToMe");
+    const myStripEl = el("leaderboardMySummary");
+    const podiumEl = el("leaderboardPodium");
+    const listTitleEl = el("leaderboardListTitle");
+    const totalMetaEl = el("leaderboardTotalMeta");
+    const listMountEl = el("leaderboardListMount");
+
+    const isNotesSort = leaderboardSort === "notes";
+    if (sortAnswersBtn) {
+      sortAnswersBtn.classList.toggle("active", !isNotesSort);
+      sortAnswersBtn.setAttribute("aria-selected", isNotesSort ? "false" : "true");
+    }
+    if (sortNotesBtn) {
+      sortNotesBtn.classList.toggle("active", isNotesSort);
+      sortNotesBtn.setAttribute("aria-selected", isNotesSort ? "true" : "false");
+    }
+    if (refreshBtn) {
+      refreshBtn.classList.toggle("is-spinning", leaderboardLoading);
+      refreshBtn.disabled = leaderboardLoading;
+    }
+
+    const localSolved = Object.keys(progress.attempts || {}).length;
+    const localNotes = getMyLocalNotesCount();
+    const totalQuestions = Math.max(1, QUESTIONS.length);
+
+    if (leaderboardLoading && !leaderboardLoaded) {
+      if (myStripEl) {
+        myStripEl.innerHTML = `
+          <div class="lb-my-identity">
+            <span class="lb-my-emoji" aria-hidden="true">${escapeHtml(userIdentity.emoji)}</span>
+            <div>
+              <strong>${escapeHtml(userIdentity.name)}</strong>
+              <span class="lb-my-rank-pill">טוען מיקום...</span>
+            </div>
+          </div>
+          <div class="lb-my-metrics tabular-text">
+            <span><strong>${localSolved}</strong> תשובות</span>
+            <span class="lb-my-sep" aria-hidden="true">·</span>
+            <span><strong>${localNotes}</strong> הערות</span>
+          </div>
+        `;
+      }
+      if (jumpMeBtn) jumpMeBtn.classList.add("hidden");
+      if (podiumEl) {
+        podiumEl.classList.remove("hidden");
+        podiumEl.innerHTML = [1, 2, 3]
+          .map(
+            (n) => `
+          <div class="podium-card podium-slot-${n} lb-skeleton-card" aria-hidden="true">
+            <div class="lb-skel lb-skel-pill"></div>
+            <div class="lb-skel lb-skel-title"></div>
+            <div class="lb-skel lb-skel-stat"></div>
+            <div class="lb-skel lb-skel-bar"></div>
+          </div>`
+          )
+          .join("");
+      }
+      if (totalMetaEl) totalMetaEl.textContent = "טוען נתונים...";
+      if (listMountEl) {
+        listMountEl.innerHTML = `<div class="lb-skeleton-list" aria-hidden="true">${Array.from({ length: 6 }, () => `<div class="lb-skel lb-skel-row"></div>`).join("")}</div>`;
+      }
+      return;
+    }
+
+    if (leaderboardError && !leaderboardLoaded) {
+      if (myStripEl) {
+        myStripEl.innerHTML = `
+          <div class="lb-my-identity">
+            <span class="lb-my-emoji" aria-hidden="true">${escapeHtml(userIdentity.emoji)}</span>
+            <div>
+              <strong>${escapeHtml(userIdentity.name)}</strong>
+              <span class="lb-my-rank-pill">מצב לא מקוון</span>
+            </div>
+          </div>
+          <div class="lb-my-metrics tabular-text">
+            <span><strong>${localSolved}</strong> תשובות</span>
+            <span class="lb-my-sep" aria-hidden="true">·</span>
+            <span><strong>${localNotes}</strong> הערות</span>
+          </div>
+        `;
+      }
+      if (jumpMeBtn) jumpMeBtn.classList.add("hidden");
+      if (podiumEl) {
+        podiumEl.classList.add("hidden");
+        podiumEl.innerHTML = "";
+      }
+      if (totalMetaEl) totalMetaEl.textContent = "";
+      if (listMountEl) {
+        listMountEl.innerHTML = `
+          <div class="lb-empty-state">
+            <p class="muted">לא ניתן לטעון כרגע את נתוני הלידרבורד מהענן.</p>
+            <button type="button" class="btn-primary btn-sm" id="btnLbRetryLoad">🔄 נסה שוב</button>
+          </div>
+        `;
+        el("btnLbRetryLoad")?.addEventListener("click", () => fetchLeaderboard({ force: true, showFeedback: true }));
+      }
+      return;
+    }
+
+    const merged = getMergedLeaderboardEntries();
+    const ranked = merged
+      .filter((entry) => (isNotesSort ? entry.notesCount > 0 : entry.solvedCount > 0))
+      .sort((a, b) => {
+        if (isNotesSort) {
+          return (
+            b.notesCount - a.notesCount ||
+            b.solvedCount - a.solvedCount ||
+            b.lastSeenAt - a.lastSeenAt ||
+            a.name.localeCompare(b.name, "he")
+          );
+        }
+        return (
+          b.solvedCount - a.solvedCount ||
+          b.notesCount - a.notesCount ||
+          b.lastSeenAt - a.lastSeenAt ||
+          a.name.localeCompare(b.name, "he")
+        );
+      });
+
+    const myIndex = ranked.findIndex((e) => e.userId === userIdentity.userId);
+    const myRank = myIndex >= 0 ? myIndex + 1 : null;
+    const myMedal = myRank ? getMedalForRank(myRank) : null;
+    const myEntry = myIndex >= 0 ? ranked[myIndex] : null;
+    const mySolvedDisplay = myEntry ? myEntry.solvedCount : localSolved;
+    const myNotesDisplay = myEntry ? myEntry.notesCount : localNotes;
+
+    if (myStripEl) {
+      let rankBadgeText = "";
+      if (myMedal) {
+        rankBadgeText = `${myMedal.emoji} ${myMedal.label} מתוך ${ranked.length}`;
+      } else if (myRank) {
+        rankBadgeText = `מקום #${myRank} מתוך ${ranked.length}`;
+      } else {
+        rankBadgeText = isNotesSort
+          ? "כתוב הערה ראשונה כדי להיכנס לדירוג"
+          : "פתור שאלה ראשונה כדי להיכנס לדירוג";
+      }
+      myStripEl.innerHTML = `
+        <div class="lb-my-identity">
+          <span class="lb-my-emoji" aria-hidden="true">${escapeHtml(userIdentity.emoji)}</span>
+          <div class="lb-my-text">
+            <div class="lb-my-name-row">
+              <strong>${escapeHtml(userIdentity.name)}</strong>
+              <span class="lb-me-badge">את/ה</span>
+            </div>
+            <span class="lb-my-rank-pill tabular-text${myMedal ? ` ${myMedal.cls}` : ""}">${escapeHtml(rankBadgeText)}</span>
+          </div>
+        </div>
+        <div class="lb-my-metrics tabular-text">
+          <div class="lb-my-metric${!isNotesSort ? " is-primary" : ""}">
+            <span class="lb-my-metric-val">${mySolvedDisplay}</span>
+            <span class="lb-my-metric-lbl">תשובות</span>
+          </div>
+          <div class="lb-my-metric-divider" aria-hidden="true"></div>
+          <div class="lb-my-metric${isNotesSort ? " is-primary" : ""}">
+            <span class="lb-my-metric-val">${myNotesDisplay}</span>
+            <span class="lb-my-metric-lbl">הערות</span>
+          </div>
+        </div>
+      `;
+    }
+
+    if (jumpMeBtn) {
+      jumpMeBtn.classList.toggle("hidden", !myRank || ranked.length <= 5);
+    }
+
+    // Top 3 Podium
+    const topThree = ranked.slice(0, 3);
+    if (podiumEl) {
+      if (topThree.length === 0) {
+        podiumEl.classList.add("hidden");
+        podiumEl.innerHTML = "";
+      } else {
+        podiumEl.classList.remove("hidden");
+        podiumEl.innerHTML = topThree
+          .map((entry, idx) => {
+            const rank = idx + 1;
+            const medal = getMedalForRank(rank);
+            const isMe = entry.userId === userIdentity.userId;
+            const primaryValue = isNotesSort ? entry.notesCount : entry.solvedCount;
+            const primaryUnit = isNotesSort ? (primaryValue === 1 ? "הערה" : "הערות") : (primaryValue === 1 ? "תשובה" : "תשובות");
+            const secondaryText = isNotesSort
+              ? `${entry.solvedCount} תשובות`
+              : `${entry.notesCount} הערות · ${Math.round((entry.solvedCount / totalQuestions) * 100)}% מהבנק`;
+            const pct = Math.min(100, Math.round((entry.solvedCount / totalQuestions) * 100));
+
+            return `
+              <article class="podium-card podium-slot-${rank} ${medal.cls}${isMe ? " is-me" : ""}">
+                <div class="podium-top">
+                  <span class="podium-medal-badge ${medal.cls}">
+                    <span class="podium-medal-emoji" aria-hidden="true">${medal.emoji}</span>
+                    <span>${medal.label}</span>
+                  </span>
+                  ${entry.isOnline ? `<span class="lb-online-tag" title="פעיל/ה עכשיו"><span class="online-user-dot" aria-hidden="true"></span>מחובר/ת</span>` : ""}
+                </div>
+                <div class="podium-user">
+                  <span class="podium-user-emoji" aria-hidden="true">${escapeHtml(entry.emoji)}</span>
+                  <div class="podium-user-names">
+                    <div class="podium-user-name-line">
+                      <strong>${escapeHtml(entry.name)}</strong>
+                      ${isMe ? `<span class="lb-me-badge">את/ה</span>` : ""}
+                    </div>
+                    ${entry.category ? `<span class="podium-user-cat">${escapeHtml(entry.category)}</span>` : ""}
+                  </div>
+                </div>
+                <div class="podium-score-block tabular-text">
+                  <div class="podium-score-main">
+                    <span class="podium-score-num">${primaryValue}</span>
+                    <span class="podium-score-unit">${primaryUnit}</span>
+                  </div>
+                  <div class="podium-score-sub">${escapeHtml(secondaryText)}</div>
+                  ${!isNotesSort ? `<div class="lb-mini-bar-bg" aria-hidden="true"><div class="lb-mini-bar-fill" style="width:${pct}%"></div></div>` : ""}
+                </div>
+              </article>
+            `;
+          })
+          .join("");
+      }
+    }
+
+    if (listTitleEl) {
+      listTitleEl.textContent = isNotesSort ? "דירוג לפי תרומת הערות" : "דירוג לפי שאלות שנפתרו";
+    }
+    if (totalMetaEl) {
+      totalMetaEl.textContent = ranked.length > 0 ? `${ranked.length} משתתפים בדירוג` : "";
+    }
+
+    if (!listMountEl) return;
+
+    if (ranked.length === 0) {
+      listMountEl.innerHTML = `
+        <div class="lb-empty-state">
+          <p class="muted">${isNotesSort ? "עדיין לא פורסמו הערות בדירוג." : "עדיין אין שאלות פתורות בדירוג."}</p>
+          <button type="button" class="btn-primary btn-sm" id="btnLbGoPractice">📖 עבור לתרגול</button>
+        </div>
+      `;
+      el("btnLbGoPractice")?.addEventListener("click", () => switchMode("practice"));
+      return;
+    }
+
+    const rowsHtml = ranked
+      .map((entry, idx) => {
+        const rank = idx + 1;
+        const medal = getMedalForRank(rank);
+        const isMe = entry.userId === userIdentity.userId;
+        const pct = Math.min(100, Math.round((entry.solvedCount / totalQuestions) * 100));
+        const rankCell = medal
+          ? `<span class="lb-rank-medal" title="${medal.label}" aria-label="${medal.label}">${medal.emoji}</span>`
+          : `<span class="lb-rank-num tabular-text">${rank}</span>`;
+
+        return `
+          <tr class="lb-row${isMe ? " is-me" : ""}${medal ? ` ${medal.cls}` : ""}"${isMe ? ' id="lbMyRow"' : ""}>
+            <td class="lb-col-rank">${rankCell}</td>
+            <td class="lb-col-user">
+              <div class="lb-user-cell">
+                <span class="lb-user-emoji" aria-hidden="true">${escapeHtml(entry.emoji)}</span>
+                <div class="lb-user-info">
+                  <span class="lb-user-name">${escapeHtml(entry.name)}</span>
+                  ${isMe ? `<span class="lb-me-badge">את/ה</span>` : ""}
+                  ${entry.isOnline ? `<span class="online-user-dot" title="פעיל/ה עכשיו" aria-label="מחובר/ת עכשיו"></span>` : ""}
+                </div>
+              </div>
+            </td>
+            <td class="lb-col-metric tabular-text${!isNotesSort ? " is-sorted-col" : ""}">
+              <div class="lb-metric-cell">
+                <strong>${entry.solvedCount}</strong>
+                <span class="lb-metric-sub">${pct}%</span>
+              </div>
+            </td>
+            <td class="lb-col-metric tabular-text${isNotesSort ? " is-sorted-col" : ""}">
+              <strong>${entry.notesCount}</strong>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    listMountEl.innerHTML = `
+      <div class="lb-table-scroll">
+        <table class="lb-table">
+          <thead>
+            <tr>
+              <th class="lb-col-rank">דירוג</th>
+              <th class="lb-col-user">משתתף</th>
+              <th class="lb-col-metric${!isNotesSort ? " is-sorted-col" : ""}">📝 תשובות</th>
+              <th class="lb-col-metric${isNotesSort ? " is-sorted-col" : ""}">💬 הערות</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
   // Export to Obsidian Mistakes Notebook
   async function exportToObsidian() {
     const wrongOrNoted = QUESTIONS.filter((q) => {
@@ -3264,13 +3697,16 @@
     el("studyView").classList.toggle("hidden", !isStudy);
     el("examView").classList.toggle("hidden", mode !== "exam");
     el("analyticsView").classList.toggle("hidden", mode !== "analytics");
+    el("leaderboardView")?.classList.toggle("hidden", mode !== "leaderboard");
 
     if (isStudy) applyFilters();
     else if (mode === "analytics") renderAnalytics();
+    else if (mode === "leaderboard") openLeaderboardView();
   }
 
   function renderCurrentView() {
     if (currentMode === "analytics") renderAnalytics();
+    else if (currentMode === "leaderboard") renderLeaderboard();
     else if (currentMode !== "exam") applyFilters(filteredList[currentIndex]?.id);
   }
 
@@ -3286,6 +3722,18 @@
   function bindEvents() {
     document.querySelectorAll("#modeTabs .tab-btn").forEach((btn) => {
       btn.onclick = () => switchMode(btn.dataset.mode);
+    });
+
+    el("btnLbSortAnswers")?.addEventListener("click", () => setLeaderboardSort("answers"));
+    el("btnLbSortNotes")?.addEventListener("click", () => setLeaderboardSort("notes"));
+    el("btnRefreshLeaderboard")?.addEventListener("click", () => fetchLeaderboard({ force: true, showFeedback: true }));
+    el("btnLbJumpToMe")?.addEventListener("click", () => {
+      const myRow = el("lbMyRow");
+      if (!myRow) return;
+      myRow.scrollIntoView({ behavior: "smooth", block: "center" });
+      myRow.classList.remove("lb-row-flash");
+      void myRow.offsetWidth;
+      myRow.classList.add("lb-row-flash");
     });
 
     el("btnTheme").onclick = toggleTheme;
@@ -3798,7 +4246,7 @@
       }
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (currentMode === "analytics" || currentMode === "exam") return;
+      if (currentMode === "analytics" || currentMode === "leaderboard" || currentMode === "exam") return;
       if (filteredList.length === 0) return;
 
       const q = filteredList[currentIndex];
@@ -3882,7 +4330,7 @@
   function updateAdminUI() {
     el("btnAdminPanel")?.classList.toggle("hidden", !adminState.authenticated);
     el("adminQuestionActions")?.classList.toggle("hidden", !adminState.authenticated);
-    if (currentMode !== "exam" && currentMode !== "analytics" && filteredList.length > 0) {
+    if (currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard" && filteredList.length > 0) {
       const q = filteredList[currentIndex];
       if (q) {
         renderProblemBanner(el("qProblemBanner"), q);
@@ -4941,6 +5389,8 @@
       const activeTag = document.activeElement?.id;
       if (currentMode === "analytics") {
         renderAnalytics();
+      } else if (currentMode === "leaderboard") {
+        renderLeaderboard();
       } else if (currentMode !== "exam") {
         if (activeTag === "qNoteInput") {
           // Avoid interrupting an active note draft; refresh on next navigation
@@ -5413,13 +5863,13 @@
       },
       {
         target: "#modeTabs",
-        title: "🧭 5 מצבי לימוד",
+        title: "🧭 6 מצבי לימוד",
         html: `
           <ul class="tour-points">
             <li><strong>תרגול:</strong> פתרון חופשי עם משוב מיידי והערות.</li>
             <li><strong>סימולציית מבחן:</strong> תנאי מבחן אמיתיים עם טיימר ומפת שאלות.</li>
             <li><strong>תיקון טעויות:</strong> חזרה ממוקדת עד <strong>2 הצלחות ברצף</strong> לכל שאלה.</li>
-            <li><strong>כרטיסיות ואנליטיקה:</strong> שינון מהיר ומעקב מוכנות לפי שנה ומקצוע.</li>
+            <li><strong>כרטיסיות, אנליטיקה ולידרבורד:</strong> שינון מהיר, מעקב מוכנות ודירוג משתתפים.</li>
           </ul>
         `,
       },
