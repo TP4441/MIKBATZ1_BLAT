@@ -1,6 +1,11 @@
 const TOKEN_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
 const RATE_LIMIT_LOCK_MS = 10 * 60 * 1000; // 10 minutes
+const SYNC_RATE_LIMIT_MAX_ATTEMPTS = 10;
+const SYNC_RATE_LIMIT_LOCK_MS = 10 * 60 * 1000; // 10 minutes
+const SYNC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
+const MAX_PROGRESS_JSON_BYTES = 1500 * 1024;
 const VALID_PROBLEM_TYPES = new Set(["question_issue", "distractor_issue", "out_of_material"]);
 
 const CORS_HEADERS = {
@@ -199,6 +204,275 @@ async function getTakenNamesMap(db) {
   return takenNames;
 }
 
+function normalizeSyncCode(raw) {
+  if (typeof raw !== "string") return null;
+  let str = raw.trim();
+  const hashMatch = str.match(/#sync=([^&\s]+)/i);
+  if (hashMatch) str = hashMatch[1];
+  const clean = str.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return SYNC_CODE_REGEX.test(clean) ? clean : null;
+}
+
+function summarizeProgress(prog) {
+  const safe = prog && typeof prog === "object" ? prog : {};
+  const solvedCount = safe.attempts && typeof safe.attempts === "object" ? Object.keys(safe.attempts).length : 0;
+  const notesCount = safe.notes && typeof safe.notes === "object"
+    ? Object.values(safe.notes).filter((t) => typeof t === "string" && t.trim()).length
+    : 0;
+  const flagsCount = safe.flags && typeof safe.flags === "object"
+    ? Object.values(safe.flags).filter((f) => f && (f.star || f.unsure || f.problem)).length
+    : 0;
+  return { solvedCount, notesCount, flagsCount };
+}
+
+function mergeProgressPayloads(base, incoming) {
+  const b = base && typeof base === "object" ? base : {};
+  const i = incoming && typeof incoming === "object" ? incoming : {};
+  const resetAt = Math.max(Number(b.resetAt) || 0, Number(i.resetAt) || 0);
+
+  const merged = {
+    identity: i.identity || b.identity || null,
+    attempts: {},
+    clearedAttempts: {},
+    flags: {},
+    flagUpdatedAt: {},
+    notes: {},
+    noteUpdatedAt: {},
+    struck: {},
+    struckUpdatedAt: {},
+    drillStreak: {},
+    drillStreakUpdatedAt: {},
+    dailyStats: {},
+    dailyStatsByDevice: {},
+    dailyStatsUpdatedAt: 0,
+    resetAt,
+  };
+
+  // 1. Attempts + clearedAttempts tombstones
+  const attemptIds = new Set([
+    ...Object.keys(b.attempts || {}),
+    ...Object.keys(i.attempts || {}),
+    ...Object.keys(b.clearedAttempts || {}),
+    ...Object.keys(i.clearedAttempts || {}),
+  ]);
+  for (const qId of attemptIds) {
+    const bAtt = b.attempts?.[qId];
+    const iAtt = i.attempts?.[qId];
+    const bAttTs = bAtt && typeof bAtt === "object" && bAtt.selected !== undefined ? Number(bAtt.ts) || 1 : 0;
+    const iAttTs = iAtt && typeof iAtt === "object" && iAtt.selected !== undefined ? Number(iAtt.ts) || 1 : 0;
+    const bestAtt = iAttTs >= bAttTs ? (iAttTs > 0 ? { ...iAtt, ts: iAttTs } : null) : { ...bAtt, ts: bAttTs };
+    const bestAttTs = bestAtt ? bestAtt.ts : 0;
+
+    const bClr = Number(b.clearedAttempts?.[qId]) || 0;
+    const iClr = Number(i.clearedAttempts?.[qId]) || 0;
+    const maxItemClr = Math.max(bClr, iClr);
+    const effectiveClr = Math.max(resetAt, maxItemClr);
+
+    if (bestAtt && bestAttTs > effectiveClr) {
+      merged.attempts[qId] = bestAtt;
+    } else if (maxItemClr > resetAt) {
+      merged.clearedAttempts[qId] = maxItemClr;
+    }
+  }
+
+  // 2. Flags (star, unsure, problem) per-flag timestamp
+  const flagKeys = ["star", "unsure", "problem"];
+  const flagQIds = new Set([
+    ...Object.keys(b.flags || {}),
+    ...Object.keys(i.flags || {}),
+    ...Object.keys(b.flagUpdatedAt || {}),
+    ...Object.keys(i.flagUpdatedAt || {}),
+  ]);
+  for (const qId of flagQIds) {
+    const outFlags = {};
+    const outTs = {};
+    for (const fk of flagKeys) {
+      const bVal = Boolean(b.flags?.[qId]?.[fk]);
+      const bRawTs = Number(b.flagUpdatedAt?.[qId]?.[fk]) || 0;
+      const bTs = bRawTs > 0 ? bRawTs : bVal ? 1 : 0;
+
+      const iVal = Boolean(i.flags?.[qId]?.[fk]);
+      const iRawTs = Number(i.flagUpdatedAt?.[qId]?.[fk]) || 0;
+      const iTs = iRawTs > 0 ? iRawTs : iVal ? 1 : 0;
+
+      const winTs = Math.max(bTs, iTs);
+      if (winTs <= resetAt) continue;
+      const winVal = iTs >= bTs ? iVal : bVal;
+      if (winVal) outFlags[fk] = true;
+      outTs[fk] = winTs;
+    }
+    if (Object.keys(outFlags).length > 0) merged.flags[qId] = outFlags;
+    if (Object.keys(outTs).length > 0) merged.flagUpdatedAt[qId] = outTs;
+  }
+
+  // 3. Struck options per question
+  const struckQIds = new Set([
+    ...Object.keys(b.struck || {}),
+    ...Object.keys(i.struck || {}),
+    ...Object.keys(b.struckUpdatedAt || {}),
+    ...Object.keys(i.struckUpdatedAt || {}),
+  ]);
+  for (const qId of struckQIds) {
+    const bArr = Array.isArray(b.struck?.[qId]) ? b.struck[qId] : null;
+    const bRawTs = Number(b.struckUpdatedAt?.[qId]) || 0;
+    const bTs = bRawTs > 0 ? bRawTs : bArr && bArr.length > 0 ? 1 : 0;
+
+    const iArr = Array.isArray(i.struck?.[qId]) ? i.struck[qId] : null;
+    const iRawTs = Number(i.struckUpdatedAt?.[qId]) || 0;
+    const iTs = iRawTs > 0 ? iRawTs : iArr && iArr.length > 0 ? 1 : 0;
+
+    const winTs = Math.max(bTs, iTs);
+    if (winTs <= resetAt) continue;
+    const winArr = iTs >= bTs ? iArr : bArr;
+    if (winArr && winArr.length > 0) {
+      merged.struck[qId] = Array.from(new Set(winArr));
+    }
+    merged.struckUpdatedAt[qId] = winTs;
+  }
+
+  // 4. Drill streak per question
+  const streakQIds = new Set([
+    ...Object.keys(b.drillStreak || {}),
+    ...Object.keys(i.drillStreak || {}),
+    ...Object.keys(b.drillStreakUpdatedAt || {}),
+    ...Object.keys(i.drillStreakUpdatedAt || {}),
+  ]);
+  for (const qId of streakQIds) {
+    const bVal = Number(b.drillStreak?.[qId]) || 0;
+    const bRawTs = Number(b.drillStreakUpdatedAt?.[qId]) || 0;
+    const bTs = bRawTs > 0 ? bRawTs : bVal > 0 ? 1 : 0;
+
+    const iVal = Number(i.drillStreak?.[qId]) || 0;
+    const iRawTs = Number(i.drillStreakUpdatedAt?.[qId]) || 0;
+    const iTs = iRawTs > 0 ? iRawTs : iVal > 0 ? 1 : 0;
+
+    const winTs = Math.max(bTs, iTs);
+    if (winTs <= resetAt) continue;
+    const winVal = iTs >= bTs ? iVal : bVal;
+    if (winVal > 0) merged.drillStreak[qId] = winVal;
+    merged.drillStreakUpdatedAt[qId] = winTs;
+  }
+
+  // 5. Personal notes per question
+  const noteQIds = new Set([
+    ...Object.keys(b.notes || {}),
+    ...Object.keys(i.notes || {}),
+    ...Object.keys(b.noteUpdatedAt || {}),
+    ...Object.keys(i.noteUpdatedAt || {}),
+  ]);
+  for (const qId of noteQIds) {
+    const bVal = typeof b.notes?.[qId] === "string" ? b.notes[qId] : "";
+    const bRawTs = Number(b.noteUpdatedAt?.[qId]) || 0;
+    const bTs = bRawTs > 0 ? bRawTs : bVal.trim() ? 1 : 0;
+
+    const iVal = typeof i.notes?.[qId] === "string" ? i.notes[qId] : "";
+    const iRawTs = Number(i.noteUpdatedAt?.[qId]) || 0;
+    const iTs = iRawTs > 0 ? iRawTs : iVal.trim() ? 1 : 0;
+
+    const winTs = Math.max(bTs, iTs);
+    if (winTs <= resetAt) continue;
+    const winVal = iTs >= bTs ? iVal : bVal;
+    if (winVal.trim()) merged.notes[qId] = winVal;
+    merged.noteUpdatedAt[qId] = winTs;
+  }
+
+  // 6. Daily stats per device -> summed into dailyStats
+  const getSideDailyByDevice = (side) => {
+    const rawByDev = side.dailyStatsByDevice && typeof side.dailyStatsByDevice === "object"
+      ? side.dailyStatsByDevice
+      : {};
+    const hasByDev = Object.keys(rawByDev).length > 0;
+    const rawDaily = side.dailyStats && typeof side.dailyStats === "object" ? side.dailyStats : {};
+    const hasDaily = Object.keys(rawDaily).length > 0;
+    const sideTs = Number(side.dailyStatsUpdatedAt) || (hasByDev || hasDaily ? 1 : 0);
+    if (sideTs <= resetAt) return { byDev: {}, ts: 0 };
+    if (hasByDev) return { byDev: rawByDev, ts: sideTs };
+    if (hasDaily) return { byDev: { _legacy: rawDaily }, ts: sideTs };
+    return { byDev: {}, ts: sideTs };
+  };
+
+  const bDaily = getSideDailyByDevice(b);
+  const iDaily = getSideDailyByDevice(i);
+  merged.dailyStatsUpdatedAt = Math.max(bDaily.ts, iDaily.ts);
+
+  for (const devMap of [bDaily.byDev, iDaily.byDev]) {
+    for (const [devId, byDate] of Object.entries(devMap)) {
+      if (!byDate || typeof byDate !== "object") continue;
+      if (!merged.dailyStatsByDevice[devId]) merged.dailyStatsByDevice[devId] = {};
+      for (const [dateKey, entry] of Object.entries(byDate)) {
+        if (!entry || typeof entry !== "object") continue;
+        const ans = Math.max(0, Number(entry.answered) || 0);
+        const cor = Math.max(0, Math.min(ans, Number(entry.correct) || 0));
+        const cur = merged.dailyStatsByDevice[devId][dateKey] || { answered: 0, correct: 0 };
+        merged.dailyStatsByDevice[devId][dateKey] = {
+          answered: Math.max(cur.answered, ans),
+          correct: Math.max(cur.correct, cor),
+        };
+      }
+    }
+  }
+
+  for (const byDate of Object.values(merged.dailyStatsByDevice)) {
+    for (const [dateKey, entry] of Object.entries(byDate)) {
+      if (!merged.dailyStats[dateKey]) {
+        merged.dailyStats[dateKey] = { answered: 0, correct: 0 };
+      }
+      merged.dailyStats[dateKey].answered += entry.answered;
+      merged.dailyStats[dateKey].correct += entry.correct;
+    }
+  }
+
+  return merged;
+}
+
+async function verifyExistingClientSecret(db, userId, clientSecret) {
+  if (!userId || typeof userId !== "string" || userId.length > 80) {
+    return { ok: false, status: 400, error: "Invalid userId" };
+  }
+  if (!clientSecret || typeof clientSecret !== "string" || clientSecret.length < 8 || clientSecret.length > 256) {
+    return { ok: false, status: 403, error: "Missing or invalid clientSecret" };
+  }
+
+  const secretHash = await sha256Hex(clientSecret);
+  const existing = await db
+    .prepare("SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash FROM identities WHERE user_id = ?")
+    .bind(userId)
+    .first();
+
+  if (!existing) {
+    return { ok: false, status: 404, error: "Identity not found" };
+  }
+
+  const now = Date.now();
+  if (existing.client_secret_hash && existing.client_secret_hash === secretHash) {
+    await db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run();
+    return { ok: true, secretHash, identity: existing };
+  }
+
+  const deviceRow = await db
+    .prepare("SELECT secret_hash FROM user_device_secrets WHERE secret_hash = ? AND user_id = ?")
+    .bind(secretHash, userId)
+    .first();
+
+  if (deviceRow) {
+    await Promise.all([
+      db.prepare("UPDATE user_device_secrets SET last_seen_at = ? WHERE secret_hash = ?").bind(now, secretHash).run(),
+      db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run(),
+    ]);
+    return { ok: true, secretHash, identity: existing };
+  }
+
+  if (!existing.client_secret_hash) {
+    await db
+      .prepare("UPDATE identities SET client_secret_hash = ?, last_seen_at = ? WHERE user_id = ?")
+      .bind(secretHash, now, userId)
+      .run();
+    return { ok: true, secretHash, identity: existing };
+  }
+
+  return { ok: false, status: 403, error: "Forbidden: clientSecret mismatch" };
+}
+
 async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo = null) {
   if (!userId || typeof userId !== "string" || userId.length > 80) {
     return { ok: false, status: 400, error: "Invalid userId" };
@@ -209,27 +483,42 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
 
   const secretHash = await sha256Hex(clientSecret);
   const existing = await db
-    .prepare("SELECT user_id, name, client_secret_hash FROM identities WHERE user_id = ?")
+    .prepare("SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash FROM identities WHERE user_id = ?")
     .bind(userId)
     .first();
 
   const now = Date.now();
   if (existing) {
-    if (existing.client_secret_hash && existing.client_secret_hash !== secretHash) {
-      return { ok: false, status: 403, error: "Forbidden: clientSecret mismatch" };
+    if (existing.client_secret_hash && existing.client_secret_hash === secretHash) {
+      await db
+        .prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?")
+        .bind(now, userId)
+        .run();
+      return { ok: true, secretHash, identity: existing };
     }
+
+    const deviceRow = await db
+      .prepare("SELECT secret_hash FROM user_device_secrets WHERE secret_hash = ? AND user_id = ?")
+      .bind(secretHash, userId)
+      .first();
+
+    if (deviceRow) {
+      await Promise.all([
+        db.prepare("UPDATE user_device_secrets SET last_seen_at = ? WHERE secret_hash = ?").bind(now, secretHash).run(),
+        db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run(),
+      ]);
+      return { ok: true, secretHash, identity: existing };
+    }
+
     if (!existing.client_secret_hash) {
       await db
         .prepare("UPDATE identities SET client_secret_hash = ?, last_seen_at = ? WHERE user_id = ?")
         .bind(secretHash, now, userId)
         .run();
-    } else {
-      await db
-        .prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?")
-        .bind(now, userId)
-        .run();
+      return { ok: true, secretHash, identity: existing };
     }
-    return { ok: true, secretHash };
+
+    return { ok: false, status: 403, error: "Forbidden: clientSecret mismatch" };
   }
 
   // First time seeing this userId — create identity row if info is provided
@@ -251,8 +540,13 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
       )
       .bind(userId, name, emoji, category, secretHash, now, now)
       .run();
+    const created = await db
+      .prepare("SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash FROM identities WHERE user_id = ?")
+      .bind(userId)
+      .first();
+    return { ok: true, secretHash, identity: created };
   }
-  return { ok: true, secretHash };
+  return { ok: true, secretHash, identity: null };
 }
 
 async function handleBootstrap(env) {
@@ -321,8 +615,16 @@ async function handleIdentityPing(request, env) {
     .bind(userId)
     .first();
 
+  let matchedDeviceSecret = false;
   if (existing && existing.client_secret_hash && existing.client_secret_hash !== secretHash) {
-    return errorResponse("Forbidden: clientSecret mismatch", 403);
+    const devRow = await env.DB
+      .prepare("SELECT secret_hash FROM user_device_secrets WHERE secret_hash = ? AND user_id = ?")
+      .bind(secretHash, userId)
+      .first();
+    if (!devRow) {
+      return errorResponse("Forbidden: clientSecret mismatch", 403);
+    }
+    matchedDeviceSecret = true;
   }
 
   const conflictRow = await env.DB
@@ -345,6 +647,12 @@ async function handleIdentityPing(request, env) {
       )
       .bind(name, emoji, category, secretHash, now, userId)
       .run();
+    if (matchedDeviceSecret) {
+      await env.DB
+        .prepare("UPDATE user_device_secrets SET last_seen_at = ? WHERE secret_hash = ?")
+        .bind(now, secretHash)
+        .run();
+    }
   } else {
     await env.DB
       .prepare(
@@ -524,6 +832,525 @@ async function handleDeleteProblem(request, env, qId) {
   return jsonResponse({ ok: true, deleted: Boolean(existing) });
 }
 
+async function checkSyncRateLimit(db, ipHash, now) {
+  const rateRow = await db
+    .prepare("SELECT attempts, locked_until FROM sync_rate_limit WHERE ip_hash = ?")
+    .bind(ipHash)
+    .first();
+  if (rateRow && Number(rateRow.locked_until) > now) {
+    const retryAfterSec = Math.ceil((Number(rateRow.locked_until) - now) / 1000);
+    return { locked: true, retryAfterSec, rateRow };
+  }
+  return { locked: false, rateRow };
+}
+
+async function recordSyncRateFailure(db, ipHash, rateRow, now) {
+  const prevAttempts = rateRow && Number(rateRow.locked_until) === 0 ? Number(rateRow.attempts) : 0;
+  const nextAttempts = prevAttempts + 1;
+  const lockedUntil = nextAttempts >= SYNC_RATE_LIMIT_MAX_ATTEMPTS ? now + SYNC_RATE_LIMIT_LOCK_MS : 0;
+  await db
+    .prepare(
+      `INSERT INTO sync_rate_limit (ip_hash, attempts, locked_until)
+       VALUES (?, ?, ?)
+       ON CONFLICT(ip_hash) DO UPDATE SET
+         attempts = excluded.attempts,
+         locked_until = excluded.locked_until`
+    )
+    .bind(ipHash, lockedUntil > 0 ? 0 : nextAttempts, lockedUntil)
+    .run();
+  if (lockedUntil > 0) {
+    return { locked: true, retryAfterSec: Math.ceil(SYNC_RATE_LIMIT_LOCK_MS / 1000) };
+  }
+  return { locked: false };
+}
+
+async function clearSyncRateLimit(db, ipHash) {
+  await db.prepare("DELETE FROM sync_rate_limit WHERE ip_hash = ?").bind(ipHash).run();
+}
+
+async function handleGetProgress(request, env) {
+  const userId = String(request.headers.get("X-User-Id") || "").trim();
+  const clientSecret = String(request.headers.get("X-Client-Secret") || "");
+
+  const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
+  if (!auth.ok) {
+    if (auth.status === 404) {
+      return jsonResponse({ ok: true, progress: null, updatedAt: 0, version: 1 });
+    }
+    return errorResponse(auth.error, auth.status);
+  }
+
+  const row = await env.DB
+    .prepare("SELECT progress_json, updated_at, version FROM user_progress WHERE user_id = ?")
+    .bind(userId)
+    .first();
+
+  if (!row) {
+    return jsonResponse({ ok: true, progress: null, updatedAt: 0, version: 1 });
+  }
+
+  const parsed = parseJsonSafe(row.progress_json, {});
+  return jsonResponse({
+    ok: true,
+    progress: parsed,
+    updatedAt: Number(row.updated_at) || 0,
+    version: Number(row.version) || 1,
+  });
+}
+
+async function handlePutProgress(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || request.headers.get("X-User-Id") || "").trim();
+  const clientSecret = String(body.clientSecret || request.headers.get("X-Client-Secret") || "");
+  const incomingProgress = body.progress;
+  const replace = Boolean(body.replace);
+
+  if (!incomingProgress || typeof incomingProgress !== "object" || Array.isArray(incomingProgress)) {
+    return errorResponse("Missing or invalid progress object", 400);
+  }
+
+  const identInfo = body.identity || incomingProgress.identity || null;
+  const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret, identInfo);
+  if (!auth.ok) {
+    if (auth.conflict) {
+      const takenNames = await getTakenNamesMap(env.DB);
+      return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
+    }
+    return errorResponse(auth.error, auth.status);
+  }
+
+  const existingRow = await env.DB
+    .prepare("SELECT progress_json, version FROM user_progress WHERE user_id = ?")
+    .bind(userId)
+    .first();
+
+  const serverProgress = !replace && existingRow ? parseJsonSafe(existingRow.progress_json, {}) : {};
+  const merged = mergeProgressPayloads(serverProgress, incomingProgress);
+  if (auth.identity) {
+    merged.identity = {
+      userId: auth.identity.user_id,
+      name: auth.identity.name,
+      emoji: auth.identity.emoji,
+      category: auth.identity.category,
+    };
+  }
+
+  const serialized = JSON.stringify(merged);
+  if (serialized.length > MAX_PROGRESS_JSON_BYTES) {
+    return errorResponse("Progress payload too large", 413);
+  }
+
+  const now = Date.now();
+  const nextVersion = (Number(existingRow?.version) || 0) + 1;
+  await env.DB
+    .prepare(
+      `INSERT INTO user_progress (user_id, progress_json, updated_at, version)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         progress_json = excluded.progress_json,
+         updated_at = excluded.updated_at,
+         version = excluded.version`
+    )
+    .bind(userId, serialized, now, nextVersion)
+    .run();
+
+  return jsonResponse({
+    ok: true,
+    progress: merged,
+    updatedAt: now,
+    version: nextVersion,
+  });
+}
+
+async function handleSyncRegisterCode(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || "").trim();
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+  const normalizedCode = normalizeSyncCode(body.syncCode);
+  if (!normalizedCode) {
+    return errorResponse("Invalid sync code format", 400);
+  }
+
+  const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret, {
+    name: body.name,
+    emoji: body.emoji,
+    category: body.category,
+  });
+  if (!auth.ok) {
+    if (auth.conflict) {
+      const takenNames = await getTakenNamesMap(env.DB);
+      return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
+    }
+    return errorResponse(auth.error, auth.status);
+  }
+
+  if (!auth.identity) {
+    return errorResponse("Identity must exist or provide name/emoji to register sync code", 400);
+  }
+
+  const syncCodeHash = await sha256Hex(normalizedCode);
+
+  if (auth.identity.sync_code_hash) {
+    if (auth.identity.sync_code_hash === syncCodeHash) {
+      return jsonResponse({ ok: true, registered: true });
+    }
+    return errorResponse("Sync code already registered; use rotate-code", 409, { alreadyRegistered: true });
+  }
+
+  const collision = await env.DB
+    .prepare("SELECT user_id FROM identities WHERE sync_code_hash = ? AND user_id != ?")
+    .bind(syncCodeHash, userId)
+    .first();
+  if (collision) {
+    return errorResponse("Sync code already in use", 409, { codeConflict: true });
+  }
+
+  const now = Date.now();
+  await env.DB
+    .prepare("UPDATE identities SET sync_code_hash = ?, last_seen_at = ? WHERE user_id = ?")
+    .bind(syncCodeHash, now, userId)
+    .run();
+
+  return jsonResponse({ ok: true, registered: true });
+}
+
+async function handleSyncRotateCode(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || "").trim();
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+  const normalizedCode = normalizeSyncCode(body.newSyncCode);
+  if (!normalizedCode) {
+    return errorResponse("Invalid newSyncCode format", 400);
+  }
+
+  const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
+  if (!auth.ok) return errorResponse(auth.error, auth.status);
+
+  const newHash = await sha256Hex(normalizedCode);
+  const collision = await env.DB
+    .prepare("SELECT user_id FROM identities WHERE sync_code_hash = ? AND user_id != ?")
+    .bind(newHash, userId)
+    .first();
+  if (collision) {
+    return errorResponse("Sync code already in use", 409, { codeConflict: true });
+  }
+
+  const now = Date.now();
+  await env.DB
+    .prepare("UPDATE identities SET sync_code_hash = ?, last_seen_at = ? WHERE user_id = ?")
+    .bind(newHash, now, userId)
+    .run();
+
+  return jsonResponse({ ok: true, rotated: true });
+}
+
+async function handleSyncRevokeOtherDevices(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || "").trim();
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+
+  const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
+  if (!auth.ok) return errorResponse(auth.error, auth.status);
+
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE identities SET client_secret_hash = ?, last_seen_at = ? WHERE user_id = ?").bind(
+      auth.secretHash,
+      now,
+      userId
+    ),
+    env.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(userId),
+  ]);
+
+  return jsonResponse({ ok: true, revoked: true });
+}
+
+async function handleSyncPreview(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const ipHash = await sha256Hex(`sync:${getClientIp(request)}`);
+  const now = Date.now();
+  const limitState = await checkSyncRateLimit(env.DB, ipHash, now);
+  if (limitState.locked) {
+    return errorResponse(
+      `יותר מדי ניסיונות כושלים. נסה שוב בעוד ${limitState.retryAfterSec} שניות.`,
+      429,
+      { retryAfterSec: limitState.retryAfterSec }
+    );
+  }
+
+  const normalizedCode = normalizeSyncCode(body.syncCode);
+  if (!normalizedCode) {
+    const fail = await recordSyncRateFailure(env.DB, ipHash, limitState.rateRow, now);
+    if (fail.locked) {
+      return errorResponse("יותר מדי ניסיונות שגויים. הגישה ננעלה זמנית ל-10 דקות.", 429, {
+        retryAfterSec: fail.retryAfterSec,
+      });
+    }
+    return errorResponse("קוד סנכרון לא תקין", 400);
+  }
+
+  const syncCodeHash = await sha256Hex(normalizedCode);
+  const target = await env.DB
+    .prepare("SELECT user_id, name, emoji, category FROM identities WHERE sync_code_hash = ?")
+    .bind(syncCodeHash)
+    .first();
+
+  if (!target) {
+    const fail = await recordSyncRateFailure(env.DB, ipHash, limitState.rateRow, now);
+    if (fail.locked) {
+      return errorResponse("יותר מדי ניסיונות שגויים. הגישה ננעלה זמנית ל-10 דקות.", 429, {
+        retryAfterSec: fail.retryAfterSec,
+      });
+    }
+    return errorResponse("קוד סנכרון לא נמצא", 404);
+  }
+
+  await clearSyncRateLimit(env.DB, ipHash);
+
+  const progRow = await env.DB
+    .prepare("SELECT progress_json, updated_at FROM user_progress WHERE user_id = ?")
+    .bind(target.user_id)
+    .first();
+
+  const parsed = progRow ? parseJsonSafe(progRow.progress_json, {}) : {};
+  const summary = summarizeProgress(parsed);
+
+  return jsonResponse({
+    ok: true,
+    identity: {
+      userId: target.user_id,
+      name: target.name,
+      emoji: target.emoji,
+      category: target.category,
+    },
+    summary: {
+      ...summary,
+      updatedAt: Number(progRow?.updated_at) || 0,
+    },
+  });
+}
+
+async function handleSyncLink(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const ipHash = await sha256Hex(`sync:${getClientIp(request)}`);
+  const now = Date.now();
+  const limitState = await checkSyncRateLimit(env.DB, ipHash, now);
+  if (limitState.locked) {
+    return errorResponse(
+      `יותר מדי ניסיונות כושלים. נסה שוב בעוד ${limitState.retryAfterSec} שניות.`,
+      429,
+      { retryAfterSec: limitState.retryAfterSec }
+    );
+  }
+
+  const newClientSecret = typeof body.newClientSecret === "string" ? body.newClientSecret : "";
+  if (!newClientSecret || newClientSecret.length < 8 || newClientSecret.length > 256) {
+    return errorResponse("Missing or invalid newClientSecret", 400);
+  }
+
+  const mode = body.mode === "replace" ? "replace" : "merge";
+  const deviceLabel = String(body.deviceLabel || "").trim().slice(0, 64);
+
+  const normalizedCode = normalizeSyncCode(body.syncCode);
+  if (!normalizedCode) {
+    const fail = await recordSyncRateFailure(env.DB, ipHash, limitState.rateRow, now);
+    if (fail.locked) {
+      return errorResponse("יותר מדי ניסיונות שגויים. הגישה ננעלה זמנית ל-10 דקות.", 429, {
+        retryAfterSec: fail.retryAfterSec,
+      });
+    }
+    return errorResponse("קוד סנכרון לא תקין", 400);
+  }
+
+  const syncCodeHash = await sha256Hex(normalizedCode);
+  const target = await env.DB
+    .prepare("SELECT user_id, name, emoji, category FROM identities WHERE sync_code_hash = ?")
+    .bind(syncCodeHash)
+    .first();
+
+  if (!target) {
+    const fail = await recordSyncRateFailure(env.DB, ipHash, limitState.rateRow, now);
+    if (fail.locked) {
+      return errorResponse("יותר מדי ניסיונות שגויים. הגישה ננעלה זמנית ל-10 דקות.", 429, {
+        retryAfterSec: fail.retryAfterSec,
+      });
+    }
+    return errorResponse("קוד סנכרון לא נמצא", 404);
+  }
+
+  await clearSyncRateLimit(env.DB, ipHash);
+
+  const newSecretHash = await sha256Hex(newClientSecret);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO user_device_secrets (secret_hash, user_id, device_label, created_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(secret_hash) DO UPDATE SET
+         user_id = excluded.user_id,
+         device_label = excluded.device_label,
+         last_seen_at = excluded.last_seen_at`
+    ).bind(newSecretHash, target.user_id, deviceLabel, now, now),
+    env.DB.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, target.user_id),
+  ]);
+
+  // Merge or fetch progress
+  const existingRow = await env.DB
+    .prepare("SELECT progress_json, updated_at, version FROM user_progress WHERE user_id = ?")
+    .bind(target.user_id)
+    .first();
+
+  const serverProgress = existingRow ? parseJsonSafe(existingRow.progress_json, {}) : {};
+  let finalProgress;
+  let finalUpdatedAt = Number(existingRow?.updated_at) || now;
+  let finalVersion = Number(existingRow?.version) || 1;
+
+  if (mode === "replace") {
+    finalProgress = mergeProgressPayloads({}, serverProgress);
+    finalProgress.identity = {
+      userId: target.user_id,
+      name: target.name,
+      emoji: target.emoji,
+      category: target.category,
+    };
+  } else {
+    const incomingLocal = body.localProgress && typeof body.localProgress === "object" ? body.localProgress : {};
+    finalProgress = mergeProgressPayloads(serverProgress, incomingLocal);
+    finalProgress.identity = {
+      userId: target.user_id,
+      name: target.name,
+      emoji: target.emoji,
+      category: target.category,
+    };
+    const serialized = JSON.stringify(finalProgress);
+    if (serialized.length > MAX_PROGRESS_JSON_BYTES) {
+      return errorResponse("Progress payload too large", 413);
+    }
+    finalUpdatedAt = now;
+    finalVersion = (Number(existingRow?.version) || 0) + 1;
+    await env.DB
+      .prepare(
+        `INSERT INTO user_progress (user_id, progress_json, updated_at, version)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           progress_json = excluded.progress_json,
+           updated_at = excluded.updated_at,
+           version = excluded.version`
+      )
+      .bind(target.user_id, serialized, finalUpdatedAt, finalVersion)
+      .run();
+  }
+
+  // Transfer or release temporary guest identity if provided
+  let guestReleased = false;
+  const guestUserId = String(body.guestUserId || "").trim();
+  const guestClientSecret = typeof body.guestClientSecret === "string" ? body.guestClientSecret : "";
+  if (guestUserId && guestUserId !== target.user_id && guestClientSecret) {
+    const guestAuth = await verifyExistingClientSecret(env.DB, guestUserId, guestClientSecret);
+    if (guestAuth.ok) {
+      if (mode === "merge") {
+        const [guestNotesRes, targetNotesRes, guestProbsRes, targetProbsRes] = await Promise.all([
+          env.DB.prepare("SELECT q_id, text, updated_at FROM community_notes WHERE user_id = ?").bind(guestUserId).all(),
+          env.DB.prepare("SELECT q_id FROM community_notes WHERE user_id = ?").bind(target.user_id).all(),
+          env.DB.prepare("SELECT q_id, type, text, updated_at FROM community_problems WHERE user_id = ?").bind(guestUserId).all(),
+          env.DB.prepare("SELECT q_id FROM community_problems WHERE user_id = ?").bind(target.user_id).all(),
+        ]);
+
+        const targetNoteQIds = new Set((targetNotesRes.results || []).map((r) => r.q_id));
+        const targetProbQIds = new Set((targetProbsRes.results || []).map((r) => r.q_id));
+        const stmts = [];
+
+        for (const gn of guestNotesRes.results || []) {
+          if (!targetNoteQIds.has(gn.q_id)) {
+            stmts.push(
+              env.DB
+                .prepare(
+                  `INSERT INTO community_notes (q_id, user_id, author, emoji, category, text, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)`
+                )
+                .bind(gn.q_id, target.user_id, target.name, target.emoji, target.category, gn.text, gn.updated_at)
+            );
+          }
+          stmts.push(
+            env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(gn.q_id, guestUserId)
+          );
+        }
+
+        for (const gp of guestProbsRes.results || []) {
+          if (!targetProbQIds.has(gp.q_id)) {
+            stmts.push(
+              env.DB
+                .prepare(
+                  `INSERT INTO community_problems (q_id, user_id, type, text, author, emoji, category, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+                )
+                .bind(
+                  gp.q_id,
+                  target.user_id,
+                  gp.type,
+                  gp.text,
+                  target.name,
+                  target.emoji,
+                  target.category,
+                  gp.updated_at
+                )
+            );
+          }
+          stmts.push(
+            env.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(gp.q_id, guestUserId)
+          );
+        }
+
+        if (stmts.length > 0) {
+          const CHUNK_SIZE = 50;
+          for (let idx = 0; idx < stmts.length; idx += CHUNK_SIZE) {
+            await env.DB.batch(stmts.slice(idx, idx + CHUNK_SIZE));
+          }
+        }
+      }
+
+      const [remNotes, remProbs] = await Promise.all([
+        env.DB.prepare("SELECT COUNT(*) AS cnt FROM community_notes WHERE user_id = ?").bind(guestUserId).first(),
+        env.DB.prepare("SELECT COUNT(*) AS cnt FROM community_problems WHERE user_id = ?").bind(guestUserId).first(),
+      ]);
+      const remainingCount = (Number(remNotes?.cnt) || 0) + (Number(remProbs?.cnt) || 0);
+      if (remainingCount === 0) {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(guestUserId),
+          env.DB.prepare("DELETE FROM user_progress WHERE user_id = ?").bind(guestUserId),
+          env.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(guestUserId),
+        ]);
+        guestReleased = true;
+      }
+    }
+  }
+
+  return jsonResponse({
+    ok: true,
+    identity: {
+      userId: target.user_id,
+      name: target.name,
+      emoji: target.emoji,
+      category: target.category,
+    },
+    progress: finalProgress,
+    updatedAt: finalUpdatedAt,
+    version: finalVersion,
+    guestReleased,
+  });
+}
+
 async function handleAdminLogin(request, env) {
   if (!env.ADMIN_PASSWORD || !String(env.ADMIN_PASSWORD).trim()) {
     return errorResponse("ADMIN_PASSWORD is not configured on server", 503);
@@ -590,9 +1417,13 @@ async function handleAdminUsers(env) {
          i.category,
          i.first_seen_at AS firstSeenAt,
          i.last_seen_at AS lastSeenAt,
+         CASE WHEN i.sync_code_hash IS NOT NULL AND i.sync_code_hash != '' THEN 1 ELSE 0 END AS hasSyncCode,
+         up.progress_json AS progressJson,
          COALESCE(n.cnt, 0) AS notesCount,
          COALESCE(p.cnt, 0) AS problemsCount
        FROM identities i
+       LEFT JOIN user_progress up
+         ON i.user_id = up.user_id
        LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_notes GROUP BY user_id) n
          ON i.user_id = n.user_id
        LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_problems GROUP BY user_id) p
@@ -601,7 +1432,26 @@ async function handleAdminUsers(env) {
     )
     .all();
 
-  return jsonResponse({ ok: true, users: results || [] });
+  const users = (results || []).map((r) => {
+    const parsed = r.progressJson ? parseJsonSafe(r.progressJson, null) : null;
+    const solvedCount = parsed?.attempts && typeof parsed.attempts === "object"
+      ? Object.keys(parsed.attempts).length
+      : 0;
+    return {
+      userId: r.userId,
+      name: r.name,
+      emoji: r.emoji,
+      category: r.category,
+      firstSeenAt: r.firstSeenAt,
+      lastSeenAt: r.lastSeenAt,
+      notesCount: Number(r.notesCount) || 0,
+      problemsCount: Number(r.problemsCount) || 0,
+      hasSyncCode: Boolean(r.hasSyncCode),
+      solvedCount,
+    };
+  });
+
+  return jsonResponse({ ok: true, users });
 }
 
 async function handleAdminPutOverride(request, env, qId) {
@@ -834,6 +1684,27 @@ export default {
         return await handleIdentityPing(request, env);
       }
 
+      if (path === "/api/progress") {
+        if (method === "GET") return await handleGetProgress(request, env);
+        if (method === "PUT") return await handlePutProgress(request, env);
+      }
+
+      if (method === "POST" && path === "/api/sync/register-code") {
+        return await handleSyncRegisterCode(request, env);
+      }
+      if (method === "POST" && path === "/api/sync/rotate-code") {
+        return await handleSyncRotateCode(request, env);
+      }
+      if (method === "POST" && path === "/api/sync/revoke-other-devices") {
+        return await handleSyncRevokeOtherDevices(request, env);
+      }
+      if (method === "POST" && path === "/api/sync/preview") {
+        return await handleSyncPreview(request, env);
+      }
+      if (method === "POST" && path === "/api/sync/link") {
+        return await handleSyncLink(request, env);
+      }
+
       const noteMatch = path.match(/^\/api\/notes\/([^/]+)$/);
       if (noteMatch) {
         const qId = decodeURIComponent(noteMatch[1]);
@@ -870,7 +1741,11 @@ export default {
         const adminUserMatch = path.match(/^\/api\/admin\/users\/([^/]+)$/);
         if (adminUserMatch && method === "DELETE") {
           const userId = decodeURIComponent(adminUserMatch[1]);
-          await env.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(userId).run();
+          await env.DB.batch([
+            env.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(userId),
+            env.DB.prepare("DELETE FROM user_progress WHERE user_id = ?").bind(userId),
+          ]);
           return jsonResponse({ ok: true, releasedUserId: userId });
         }
 
@@ -917,3 +1792,5 @@ export default {
     }
   },
 };
+
+export { mergeProgressPayloads, normalizeSyncCode };

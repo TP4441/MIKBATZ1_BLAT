@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261124a" />
+  <link rel="stylesheet" href="styles.css?v=20261124c" />
 </head>
 <body>
   <header class="topbar">
@@ -40,10 +40,11 @@
             <span aria-hidden="true">🛡️</span>
             <span class="btn-label-desktop">מנהל</span>
           </button>
-          <span class="sync-pill offline" id="syncPill" title="מצב שמירת התקדמות">
+          <button type="button" class="sync-pill offline" id="btnSyncModal" title="סנכרון אוטומטי והעברה בין מכשירים" aria-label="סנכרון בין מכשירים">
             <span class="dot" aria-hidden="true"></span>
+            <span class="sync-mobile-ico" aria-hidden="true">☁️</span>
             <span id="syncText" class="sync-text-label">שמירה בדפדפן</span>
-          </span>
+          </button>
           <button type="button" class="icon-btn" id="btnExportObsidian" title="ייצוא שאלות שטעית בהן והערות למחברת טעויות ב-Obsidian" aria-label="ייצוא טעויות ל-Obsidian">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19v20H6.5a2.5 2.5 0 0 1 0-5H19" />
@@ -473,13 +474,92 @@
       </div>
       <p class="muted">ההתקדמות שלך נשמרת אוטומטית בדפדפן (וגם בדיסק כשמפעילים דרך <code>server.py</code>). ניתן לייצא או לייבא קובץ JSON לגיבוי.</p>
       <div class="modal-actions-col">
-        <button type="button" class="btn-primary" id="btnDownloadBackup">הורד גיבוי JSON</button>
+        <button type="button" class="btn-primary" id="btnOpenSyncFromBackup">☁️ סנכרון אוטומטי בין מכשירים (קוד אישי / QR)</button>
+        <div class="sync-backup-divider" aria-hidden="true"></div>
+        <button type="button" class="btn-secondary" id="btnDownloadBackup">הורד גיבוי JSON</button>
         <label class="btn-secondary file-upload-btn">
           ייבא גיבוי JSON
           <input type="file" id="importBackupInput" accept=".json" hidden />
         </label>
         <button type="button" class="btn-danger btn-sm" id="btnResetProgress" style="margin-top: 8px;">אפס את כל ההתקדמות</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Cross-Device Sync Modal -->
+  <div class="modal-overlay hidden" id="syncModal" role="dialog" aria-modal="true" aria-labelledby="syncModalTitle">
+    <div class="modal-box card sync-modal-box">
+      <div class="modal-header">
+        <h2 id="syncModalTitle">☁️ סנכרון והעברה בין מכשירים</h2>
+        <button type="button" class="icon-btn icon-only" id="btnCloseSyncModal" aria-label="סגור חלון">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <section class="sync-section" aria-label="הפרופיל והקוד שלי">
+        <div class="sync-profile-card">
+          <div class="sync-profile-top">
+            <strong class="sync-profile-identity" id="syncProfileIdentity">🍎 תפוח · פירות</strong>
+            <span class="sync-profile-status" id="syncProfileStatus">שמירה בדפדפן</span>
+          </div>
+          <div class="muted sync-profile-stats" id="syncProfileStats">0 שאלות פתורות · 0 הערות</div>
+        </div>
+
+        <div class="sync-code-box-wrap">
+          <label class="sync-field-label" for="syncCodeDisplay">קוד הסנכרון האישי שלך (שמור למעבר לאייפד, טלפון או מחשב אחר):</label>
+          <div class="sync-code-row">
+            <code class="sync-code-display" id="syncCodeDisplay" dir="ltr">---- ---- ----</code>
+            <button type="button" class="btn-primary btn-sm" id="btnCopySyncCode">📋 העתק קוד</button>
+          </div>
+        </div>
+
+        <div class="sync-share-actions">
+          <button type="button" class="btn-secondary btn-sm" id="btnCopyMagicLink">🔗 העתק קישור קסם</button>
+          <button type="button" class="btn-secondary btn-sm" id="btnToggleQr">📱 הצג QR לסריקה</button>
+        </div>
+
+        <div class="sync-qr-wrap hidden" id="syncQrWrap">
+          <div class="sync-qr-frame" id="syncQrContainer"></div>
+          <p class="muted sync-qr-caption">סרוק את הקוד במצלמה באייפד או בטלפון כדי לעבור מיידית עם כל ההתקדמות והכינוי שלך.</p>
+        </div>
+
+        <details class="sync-advanced-details" id="syncAdvancedDetails">
+          <summary>⚙️ פעולות מתקדמות (סנכרון ידני, החלפת קוד, ניתוק מכשירים)</summary>
+          <div class="sync-advanced-body">
+            <p class="muted sync-advanced-note">הפקת קוד חדש מבטלת קודים וקישורי קסם קודמים. מכשירים שכבר מחוברים ממשיכים לעבוד עד לניתוק.</p>
+            <div class="sync-advanced-actions">
+              <button type="button" class="btn-secondary btn-sm" id="btnSyncNow">🔄 סנכרן עכשיו</button>
+              <button type="button" class="btn-secondary btn-sm" id="btnRotateSyncCode">🔑 הפק קוד חדש</button>
+              <button type="button" class="btn-danger btn-sm" id="btnRevokeOtherDevices">🧹 נתק מכשירים אחרים</button>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <div class="sync-section-divider" aria-hidden="true"></div>
+
+      <section class="sync-section sync-connect-section" aria-label="חיבור למכשיר קיים">
+        <h3 class="sync-connect-title">🔗 חיבור למכשיר קיים</h3>
+        <p class="muted">הדבק קוד סנכרון או קישור קסם ממכשיר אחר כדי לטעון או למזג את ההתקדמות שלך.</p>
+        <div class="sync-connect-input-row">
+          <input type="text" id="syncConnectInput" dir="ltr" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XXXX או קישור קסם..." aria-label="קוד סנכרון או קישור קסם" />
+          <button type="button" class="btn-primary" id="btnPreviewSyncLink">🔍 בדוק והתחבר</button>
+        </div>
+        <div class="admin-form-error hidden" id="syncConnectError" role="alert"></div>
+
+        <div class="sync-preview-card hidden" id="syncPreviewCard">
+          <div class="sync-preview-head">
+            <strong id="syncPreviewTarget"></strong>
+            <span class="sync-preview-compare" id="syncPreviewCompare"></span>
+          </div>
+          <p class="muted sync-preview-hint" id="syncPreviewHint"></p>
+          <div class="sync-preview-actions">
+            <button type="button" class="btn-primary" id="btnConfirmSyncMerge">🔀 מזג משני המכשירים (מומלץ)</button>
+            <button type="button" class="btn-secondary" id="btnConfirmSyncReplace">☁️ החלף בהתקדמות מהענן בלבד</button>
+            <button type="button" class="btn-ghost btn-sm" id="btnCancelSyncPreview">ביטול</button>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 
@@ -707,6 +787,7 @@
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <script src="questions_data.js"></script>
-  <script src="app.js?v=20261124b"></script>
+  <script src="qr.js?v=20261124c"></script>
+  <script src="app.js?v=20261124c"></script>
 </body>
 </html>

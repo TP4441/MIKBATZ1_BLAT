@@ -4,6 +4,9 @@
   const STORAGE_KEY = "med_exam_cluster1_progress_v1";
   const THEME_KEY = "med_exam_theme_v1";
   const IDENTITY_KEY = "med_exam_user_identity_v1";
+  const DEVICE_ID_KEY = "med_exam_device_id_v1";
+  const SYNC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
   const COMMUNITY_NOTES_CACHE_KEY = "med_exam_community_notes_cache_v1";
   const COMMUNITY_PROBLEMS_CACHE_KEY = "med_exam_community_problems_cache_v1";
   const QUESTION_OVERRIDES_CACHE_KEY = "med_exam_question_overrides_cache_v1";
@@ -300,8 +303,15 @@
   let questionOverrides = loadQuestionOverridesCache(); // { qId: { hidden, stem, options, correct, allAccepted, appealNote, subject, updatedAt } }
   let takenNamesMap = loadTakenNamesCache(); // { name: userId }
   let identityNeedsCloudCheck = false;
+  let deviceId = loadOrInitDeviceId();
   let userIdentity = loadOrInitIdentity();
   let progress = loadProgress();
+  let cloudProgressSyncState = isCloudApiConfigured() ? "idle" : "offline";
+  let cloudProgressDirty = false;
+  let cloudProgressPushTimer = null;
+  let cloudProgressSyncPromise = null;
+  let lastVisibilityPullAt = Date.now();
+  let pendingSyncPreview = null;
   let filteredList = [];
   let currentIndex = 0;
   let optionPermutations = new Map(); // qId -> array of original indices
@@ -372,26 +382,301 @@
         ? { userId: userIdentity.userId, name: userIdentity.name, emoji: userIdentity.emoji, category: userIdentity.category }
         : null,
       attempts: {}, // qId -> { selected: number, isCorrect: boolean, ts: number }
+      clearedAttempts: {}, // qId -> ts
       flags: {},    // qId -> { star?: bool, unsure?: bool, problem?: bool }
+      flagUpdatedAt: {}, // qId -> { star?: ts, unsure?: ts, problem?: ts }
       notes: {},    // qId -> string
+      noteUpdatedAt: {}, // qId -> ts
       struck: {},   // qId -> number[]
+      struckUpdatedAt: {}, // qId -> ts
       drillStreak: {}, // qId -> number (0..2)
+      drillStreakUpdatedAt: {}, // qId -> ts
       dailyStats: {},  // YYYY-MM-DD -> { answered: number, correct: number }
+      dailyStatsByDevice: {}, // deviceId -> { YYYY-MM-DD -> { answered, correct } }
+      dailyStatsUpdatedAt: 0,
+      resetAt: 0,
     };
+  }
+
+  function loadOrInitDeviceId() {
+    try {
+      const existing = localStorage.getItem(DEVICE_ID_KEY);
+      if (existing && typeof existing === "string" && existing.length >= 6) return existing;
+      const created = "d_" + generateRandomHex(8);
+      localStorage.setItem(DEVICE_ID_KEY, created);
+      return created;
+    } catch {
+      return "d_" + Math.random().toString(36).slice(2, 10);
+    }
+  }
+
+  function generateRandomHex(byteLen = 16) {
+    try {
+      if (window.crypto && window.crypto.getRandomValues) {
+        const bytes = new Uint8Array(byteLen);
+        window.crypto.getRandomValues(bytes);
+        return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      }
+    } catch {}
+    let out = "";
+    while (out.length < byteLen * 2) {
+      out += Math.random().toString(16).slice(2);
+    }
+    return out.slice(0, byteLen * 2);
+  }
+
+  function normalizeSyncCode(raw) {
+    if (typeof raw !== "string") return null;
+    let str = raw.trim();
+    const hashMatch = str.match(/#sync=([^&\s]+)/i);
+    if (hashMatch) str = hashMatch[1];
+    const clean = str.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return SYNC_CODE_REGEX.test(clean) ? clean : null;
+  }
+
+  function formatSyncCode(raw) {
+    const clean = normalizeSyncCode(raw);
+    if (!clean) return "";
+    return `${clean.slice(0, 4)}-${clean.slice(4, 8)}-${clean.slice(8, 12)}`;
+  }
+
+  function generateSyncCode() {
+    let chars = "";
+    try {
+      if (window.crypto && window.crypto.getRandomValues) {
+        const bytes = new Uint8Array(12);
+        window.crypto.getRandomValues(bytes);
+        for (let i = 0; i < 12; i++) {
+          chars += SYNC_ALPHABET[bytes[i] % SYNC_ALPHABET.length];
+        }
+        return formatSyncCode(chars);
+      }
+    } catch {}
+    for (let i = 0; i < 12; i++) {
+      chars += SYNC_ALPHABET[Math.floor(Math.random() * SYNC_ALPHABET.length)];
+    }
+    return formatSyncCode(chars);
+  }
+
+  function mergeProgressPayloads(base, incoming) {
+    const b = base && typeof base === "object" ? base : {};
+    const i = incoming && typeof incoming === "object" ? incoming : {};
+    const resetAt = Math.max(Number(b.resetAt) || 0, Number(i.resetAt) || 0);
+
+    const merged = {
+      identity: i.identity || b.identity || null,
+      attempts: {},
+      clearedAttempts: {},
+      flags: {},
+      flagUpdatedAt: {},
+      notes: {},
+      noteUpdatedAt: {},
+      struck: {},
+      struckUpdatedAt: {},
+      drillStreak: {},
+      drillStreakUpdatedAt: {},
+      dailyStats: {},
+      dailyStatsByDevice: {},
+      dailyStatsUpdatedAt: 0,
+      resetAt,
+    };
+
+    const attemptIds = new Set([
+      ...Object.keys(b.attempts || {}),
+      ...Object.keys(i.attempts || {}),
+      ...Object.keys(b.clearedAttempts || {}),
+      ...Object.keys(i.clearedAttempts || {}),
+    ]);
+    for (const qId of attemptIds) {
+      const bAtt = b.attempts?.[qId];
+      const iAtt = i.attempts?.[qId];
+      const bAttTs = bAtt && typeof bAtt === "object" && bAtt.selected !== undefined ? Number(bAtt.ts) || 1 : 0;
+      const iAttTs = iAtt && typeof iAtt === "object" && iAtt.selected !== undefined ? Number(iAtt.ts) || 1 : 0;
+      const bestAtt = iAttTs >= bAttTs ? (iAttTs > 0 ? { ...iAtt, ts: iAttTs } : null) : { ...bAtt, ts: bAttTs };
+      const bestAttTs = bestAtt ? bestAtt.ts : 0;
+
+      const bClr = Number(b.clearedAttempts?.[qId]) || 0;
+      const iClr = Number(i.clearedAttempts?.[qId]) || 0;
+      const maxItemClr = Math.max(bClr, iClr);
+      const effectiveClr = Math.max(resetAt, maxItemClr);
+
+      if (bestAtt && bestAttTs > effectiveClr) {
+        merged.attempts[qId] = bestAtt;
+      } else if (maxItemClr > resetAt) {
+        merged.clearedAttempts[qId] = maxItemClr;
+      }
+    }
+
+    const flagKeys = ["star", "unsure", "problem"];
+    const flagQIds = new Set([
+      ...Object.keys(b.flags || {}),
+      ...Object.keys(i.flags || {}),
+      ...Object.keys(b.flagUpdatedAt || {}),
+      ...Object.keys(i.flagUpdatedAt || {}),
+    ]);
+    for (const qId of flagQIds) {
+      const outFlags = {};
+      const outTs = {};
+      for (const fk of flagKeys) {
+        const bVal = Boolean(b.flags?.[qId]?.[fk]);
+        const bRawTs = Number(b.flagUpdatedAt?.[qId]?.[fk]) || 0;
+        const bTs = bRawTs > 0 ? bRawTs : bVal ? 1 : 0;
+
+        const iVal = Boolean(i.flags?.[qId]?.[fk]);
+        const iRawTs = Number(i.flagUpdatedAt?.[qId]?.[fk]) || 0;
+        const iTs = iRawTs > 0 ? iRawTs : iVal ? 1 : 0;
+
+        const winTs = Math.max(bTs, iTs);
+        if (winTs <= resetAt) continue;
+        const winVal = iTs >= bTs ? iVal : bVal;
+        if (winVal) outFlags[fk] = true;
+        outTs[fk] = winTs;
+      }
+      if (Object.keys(outFlags).length > 0) merged.flags[qId] = outFlags;
+      if (Object.keys(outTs).length > 0) merged.flagUpdatedAt[qId] = outTs;
+    }
+
+    const struckQIds = new Set([
+      ...Object.keys(b.struck || {}),
+      ...Object.keys(i.struck || {}),
+      ...Object.keys(b.struckUpdatedAt || {}),
+      ...Object.keys(i.struckUpdatedAt || {}),
+    ]);
+    for (const qId of struckQIds) {
+      const bArr = Array.isArray(b.struck?.[qId]) ? b.struck[qId] : null;
+      const bRawTs = Number(b.struckUpdatedAt?.[qId]) || 0;
+      const bTs = bRawTs > 0 ? bRawTs : bArr && bArr.length > 0 ? 1 : 0;
+
+      const iArr = Array.isArray(i.struck?.[qId]) ? i.struck[qId] : null;
+      const iRawTs = Number(i.struckUpdatedAt?.[qId]) || 0;
+      const iTs = iRawTs > 0 ? iRawTs : iArr && iArr.length > 0 ? 1 : 0;
+
+      const winTs = Math.max(bTs, iTs);
+      if (winTs <= resetAt) continue;
+      const winArr = iTs >= bTs ? iArr : bArr;
+      if (winArr && winArr.length > 0) {
+        merged.struck[qId] = Array.from(new Set(winArr));
+      }
+      merged.struckUpdatedAt[qId] = winTs;
+    }
+
+    const streakQIds = new Set([
+      ...Object.keys(b.drillStreak || {}),
+      ...Object.keys(i.drillStreak || {}),
+      ...Object.keys(b.drillStreakUpdatedAt || {}),
+      ...Object.keys(i.drillStreakUpdatedAt || {}),
+    ]);
+    for (const qId of streakQIds) {
+      const bVal = Number(b.drillStreak?.[qId]) || 0;
+      const bRawTs = Number(b.drillStreakUpdatedAt?.[qId]) || 0;
+      const bTs = bRawTs > 0 ? bRawTs : bVal > 0 ? 1 : 0;
+
+      const iVal = Number(i.drillStreak?.[qId]) || 0;
+      const iRawTs = Number(i.drillStreakUpdatedAt?.[qId]) || 0;
+      const iTs = iRawTs > 0 ? iRawTs : iVal > 0 ? 1 : 0;
+
+      const winTs = Math.max(bTs, iTs);
+      if (winTs <= resetAt) continue;
+      const winVal = iTs >= bTs ? iVal : bVal;
+      if (winVal > 0) merged.drillStreak[qId] = winVal;
+      merged.drillStreakUpdatedAt[qId] = winTs;
+    }
+
+    const noteQIds = new Set([
+      ...Object.keys(b.notes || {}),
+      ...Object.keys(i.notes || {}),
+      ...Object.keys(b.noteUpdatedAt || {}),
+      ...Object.keys(i.noteUpdatedAt || {}),
+    ]);
+    for (const qId of noteQIds) {
+      const bVal = typeof b.notes?.[qId] === "string" ? b.notes[qId] : "";
+      const bRawTs = Number(b.noteUpdatedAt?.[qId]) || 0;
+      const bTs = bRawTs > 0 ? bRawTs : bVal.trim() ? 1 : 0;
+
+      const iVal = typeof i.notes?.[qId] === "string" ? i.notes[qId] : "";
+      const iRawTs = Number(i.noteUpdatedAt?.[qId]) || 0;
+      const iTs = iRawTs > 0 ? iRawTs : iVal.trim() ? 1 : 0;
+
+      const winTs = Math.max(bTs, iTs);
+      if (winTs <= resetAt) continue;
+      const winVal = iTs >= bTs ? iVal : bVal;
+      if (winVal.trim()) merged.notes[qId] = winVal;
+      merged.noteUpdatedAt[qId] = winTs;
+    }
+
+    const getSideDailyByDevice = (side) => {
+      const rawByDev = side.dailyStatsByDevice && typeof side.dailyStatsByDevice === "object"
+        ? side.dailyStatsByDevice
+        : {};
+      const hasByDev = Object.keys(rawByDev).length > 0;
+      const rawDaily = side.dailyStats && typeof side.dailyStats === "object" ? side.dailyStats : {};
+      const hasDaily = Object.keys(rawDaily).length > 0;
+      const sideTs = Number(side.dailyStatsUpdatedAt) || (hasByDev || hasDaily ? 1 : 0);
+      if (sideTs <= resetAt) return { byDev: {}, ts: 0 };
+      if (hasByDev) return { byDev: rawByDev, ts: sideTs };
+      if (hasDaily) return { byDev: { _legacy: rawDaily }, ts: sideTs };
+      return { byDev: {}, ts: sideTs };
+    };
+
+    const bDaily = getSideDailyByDevice(b);
+    const iDaily = getSideDailyByDevice(i);
+    merged.dailyStatsUpdatedAt = Math.max(bDaily.ts, iDaily.ts);
+
+    for (const devMap of [bDaily.byDev, iDaily.byDev]) {
+      for (const [devId, byDate] of Object.entries(devMap)) {
+        if (!byDate || typeof byDate !== "object") continue;
+        if (!merged.dailyStatsByDevice[devId]) merged.dailyStatsByDevice[devId] = {};
+        for (const [dateKey, entry] of Object.entries(byDate)) {
+          if (!entry || typeof entry !== "object") continue;
+          const ans = Math.max(0, Number(entry.answered) || 0);
+          const cor = Math.max(0, Math.min(ans, Number(entry.correct) || 0));
+          const cur = merged.dailyStatsByDevice[devId][dateKey] || { answered: 0, correct: 0 };
+          merged.dailyStatsByDevice[devId][dateKey] = {
+            answered: Math.max(cur.answered, ans),
+            correct: Math.max(cur.correct, cor),
+          };
+        }
+      }
+    }
+
+    for (const byDate of Object.values(merged.dailyStatsByDevice)) {
+      for (const [dateKey, entry] of Object.entries(byDate)) {
+        if (!merged.dailyStats[dateKey]) {
+          merged.dailyStats[dateKey] = { answered: 0, correct: 0 };
+        }
+        merged.dailyStats[dateKey].answered += entry.answered;
+        merged.dailyStats[dateKey].correct += entry.correct;
+      }
+    }
+
+    return merged;
   }
 
   function loadProgress() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return defaultProgress();
-      return { ...defaultProgress(), ...JSON.parse(raw) };
+      const parsed = JSON.parse(raw);
+      const loaded = mergeProgressPayloads({}, parsed);
+      if (
+        Object.keys(loaded.dailyStatsByDevice).length === 0 &&
+        Object.keys(loaded.dailyStats).length > 0
+      ) {
+        loaded.dailyStatsByDevice[deviceId] = { ...loaded.dailyStats };
+        loaded.dailyStatsUpdatedAt = loaded.dailyStatsUpdatedAt || Date.now();
+      } else if (loaded.dailyStatsByDevice._legacy) {
+        // Attribute migrated pre-sync daily stats on this device to this deviceId
+        loaded.dailyStatsByDevice[deviceId] = { ...loaded.dailyStatsByDevice._legacy };
+        delete loaded.dailyStatsByDevice._legacy;
+      }
+      return { ...defaultProgress(), ...loaded };
     } catch {
       return defaultProgress();
     }
   }
 
   let saveTimeout = null;
-  function saveProgress() {
+  function saveProgress({ syncCloud = true, immediateCloud = false } = {}) {
     progress.identity = {
       userId: userIdentity.userId,
       name: userIdentity.name,
@@ -410,6 +695,9 @@
         }).catch(() => {});
       }, 400);
     }
+    if (syncCloud && isCloudApiConfigured()) {
+      scheduleCloudProgressPush({ immediate: immediateCloud });
+    }
   }
 
   function todayKey() {
@@ -418,9 +706,30 @@
 
   function recordDaily(isCorrect) {
     const k = todayKey();
-    if (!progress.dailyStats[k]) progress.dailyStats[k] = { answered: 0, correct: 0 };
-    progress.dailyStats[k].answered += 1;
-    if (isCorrect) progress.dailyStats[k].correct += 1;
+    if (!progress.dailyStatsByDevice || typeof progress.dailyStatsByDevice !== "object") {
+      progress.dailyStatsByDevice = {};
+    }
+    if (!progress.dailyStatsByDevice[deviceId]) {
+      progress.dailyStatsByDevice[deviceId] = {};
+    }
+    if (!progress.dailyStatsByDevice[deviceId][k]) {
+      progress.dailyStatsByDevice[deviceId][k] = { answered: 0, correct: 0 };
+    }
+    progress.dailyStatsByDevice[deviceId][k].answered += 1;
+    if (isCorrect) progress.dailyStatsByDevice[deviceId][k].correct += 1;
+
+    let totalAnswered = 0;
+    let totalCorrect = 0;
+    for (const byDate of Object.values(progress.dailyStatsByDevice)) {
+      const entry = byDate?.[k];
+      if (entry) {
+        totalAnswered += Number(entry.answered) || 0;
+        totalCorrect += Number(entry.correct) || 0;
+      }
+    }
+    if (!progress.dailyStats) progress.dailyStats = {};
+    progress.dailyStats[k] = { answered: totalAnswered, correct: totalCorrect };
+    progress.dailyStatsUpdatedAt = Date.now();
   }
 
   function showToast(msg) {
@@ -629,15 +938,20 @@
             typeof parsed.clientSecret === "string" && parsed.clientSecret.length >= 8
               ? parsed.clientSecret
               : generateClientSecret();
+          const validSyncCode = formatSyncCode(parsed.syncCode);
+          const syncCode = validSyncCode || generateSyncCode();
+          const syncCodeRegistered = Boolean(validSyncCode && parsed.syncCodeRegistered);
           const loaded = {
             userId: String(parsed.userId),
             name: match.name,
             emoji: match.emoji,
             category: match.category,
             clientSecret,
+            syncCode,
+            syncCodeRegistered,
             locked: true,
           };
-          if (!parsed.clientSecret) {
+          if (!parsed.clientSecret || !validSyncCode) {
             try {
               localStorage.setItem(IDENTITY_KEY, JSON.stringify(loaded));
             } catch {}
@@ -653,6 +967,8 @@
       emoji: picked.emoji,
       category: picked.category,
       clientSecret: generateClientSecret(),
+      syncCode: generateSyncCode(),
+      syncCodeRegistered: false,
       locked: true,
     };
     identityNeedsCloudCheck = true;
@@ -778,6 +1094,8 @@
     editingNoteQIds.delete(qId);
     delete noteDrafts[qId];
     delete progress.notes[qId];
+    if (!progress.noteUpdatedAt) progress.noteUpdatedAt = {};
+    progress.noteUpdatedAt[qId] = Date.now();
     saveProgress();
 
     if (communityNotes[qId]) {
@@ -1362,7 +1680,10 @@
 
     identityNeedsCloudCheck = false;
     if (!progress.flags[qId]) progress.flags[qId] = {};
+    if (!progress.flagUpdatedAt) progress.flagUpdatedAt = {};
+    if (!progress.flagUpdatedAt[qId]) progress.flagUpdatedAt[qId] = {};
     progress.flags[qId].problem = true;
+    progress.flagUpdatedAt[qId].problem = Date.now();
     saveProgress();
 
     if (!communityProblems[qId] || typeof communityProblems[qId] !== "object") {
@@ -1395,6 +1716,9 @@
     if (!qId) return;
     if (progress.flags[qId]) {
       progress.flags[qId].problem = false;
+      if (!progress.flagUpdatedAt) progress.flagUpdatedAt = {};
+      if (!progress.flagUpdatedAt[qId]) progress.flagUpdatedAt[qId] = {};
+      progress.flagUpdatedAt[qId].problem = Date.now();
       saveProgress();
     }
     if (communityProblems[qId]) {
@@ -1716,15 +2040,13 @@
       const res = await fetch("/api/health");
       if (res.ok) {
         serverOnline = true;
-        el("syncPill").classList.remove("offline");
-        el("syncPill").classList.add("online");
-        el("syncText").textContent = "מחובר לשרת (סנכרון חי)";
+        updateSyncStatusUI();
         // Load server progress if newer/non-empty
         const pRes = await fetch("/api/progress");
         if (pRes.ok) {
           const srvProg = await pRes.json();
           if (srvProg && Object.keys(srvProg.attempts || {}).length > Object.keys(progress.attempts || {}).length) {
-            progress = { ...defaultProgress(), ...srvProg };
+            progress = { ...defaultProgress(), ...mergeProgressPayloads(progress, srvProg) };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
             renderCurrentView();
           }
@@ -1732,6 +2054,7 @@
       }
     } catch {
       serverOnline = false;
+      updateSyncStatusUI();
     }
   }
 
@@ -2075,16 +2398,19 @@
   }
 
   function handleAnswer(q, origIdx) {
+    const now = Date.now();
     const isCorrect = q.correct.includes(origIdx);
     const firstTime = !progress.attempts[q.id];
 
     progress.attempts[q.id] = {
       selected: origIdx,
       isCorrect,
-      ts: Date.now(),
+      ts: now,
     };
+    if (progress.clearedAttempts) delete progress.clearedAttempts[q.id];
 
     if (currentMode === "drill") {
+      if (!progress.drillStreakUpdatedAt) progress.drillStreakUpdatedAt = {};
       if (isCorrect) {
         progress.drillStreak[q.id] = (progress.drillStreak[q.id] || 0) + 1;
         if (progress.drillStreak[q.id] >= 2) {
@@ -2093,6 +2419,7 @@
       } else {
         progress.drillStreak[q.id] = 0;
       }
+      progress.drillStreakUpdatedAt[q.id] = now;
     }
 
     if (firstTime || currentMode === "drill") {
@@ -2110,6 +2437,8 @@
     if (arr.has(origIdx)) arr.delete(origIdx);
     else arr.add(origIdx);
     progress.struck[qId] = Array.from(arr);
+    if (!progress.struckUpdatedAt) progress.struckUpdatedAt = {};
+    progress.struckUpdatedAt[qId] = Date.now();
     saveProgress();
     renderQuestion();
   }
@@ -2117,8 +2446,12 @@
   function toggleFlag(flagName) {
     if (filteredList.length === 0) return;
     const q = filteredList[currentIndex];
+    const now = Date.now();
     if (!progress.flags[q.id]) progress.flags[q.id] = {};
+    if (!progress.flagUpdatedAt) progress.flagUpdatedAt = {};
+    if (!progress.flagUpdatedAt[q.id]) progress.flagUpdatedAt[q.id] = {};
     progress.flags[q.id][flagName] = !progress.flags[q.id][flagName];
+    progress.flagUpdatedAt[q.id][flagName] = now;
     saveProgress();
     renderQuestion();
   }
@@ -2143,11 +2476,13 @@
   function rateFlashcard(knew) {
     if (filteredList.length === 0) return;
     const q = filteredList[currentIndex];
+    const now = Date.now();
     progress.attempts[q.id] = {
       selected: knew ? q.correct[0] : -1,
       isCorrect: knew,
-      ts: Date.now(),
+      ts: now,
     };
+    if (progress.clearedAttempts) delete progress.clearedAttempts[q.id];
     sessionAnswered += 1;
     if (knew) sessionCorrect += 1;
     recordDaily(knew);
@@ -2497,6 +2832,7 @@
 
       if (chosen !== undefined) {
         progress.attempts[q.id] = { selected: chosen, isCorrect: isOk, ts: Date.now() };
+        if (progress.clearedAttempts) delete progress.clearedAttempts[q.id];
         recordDaily(isOk);
       }
     });
@@ -2838,6 +3174,8 @@
       if (filteredList.length === 0) return;
       const q = filteredList[currentIndex];
       delete progress.attempts[q.id];
+      if (!progress.clearedAttempts) progress.clearedAttempts = {};
+      progress.clearedAttempts[q.id] = Date.now();
       saveProgress();
       renderQuestion();
     };
@@ -2880,7 +3218,7 @@
           openAdminEntry();
           return;
         }
-        showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
+        showToast(`🔒 הכינוי שלך: ${userIdentity.emoji} ${userIdentity.name} · לחץ על כפתור הסנכרון למעבר בין מכשירים`);
       };
     }
 
@@ -2908,6 +3246,8 @@
 
       identityNeedsCloudCheck = false;
       progress.notes[q.id] = rawText;
+      if (!progress.noteUpdatedAt) progress.noteUpdatedAt = {};
+      progress.noteUpdatedAt[q.id] = Date.now();
       saveProgress();
 
       if (!communityNotes[q.id] || typeof communityNotes[q.id] !== "object") {
@@ -2990,6 +3330,64 @@
     // Modals
     el("btnBackupMenu").onclick = () => el("backupModal").classList.remove("hidden");
     el("btnCloseBackup").onclick = () => el("backupModal").classList.add("hidden");
+    el("btnOpenSyncFromBackup")?.addEventListener("click", () => {
+      el("backupModal").classList.add("hidden");
+      openSyncModal();
+    });
+    el("btnSyncModal")?.addEventListener("click", () => openSyncModal());
+    el("btnCloseSyncModal")?.addEventListener("click", () => closeSyncModal());
+    el("syncModal")?.addEventListener("click", (e) => {
+      if (e.target === el("syncModal")) closeSyncModal();
+    });
+    el("btnCopySyncCode")?.addEventListener("click", () => {
+      if (!userIdentity.syncCode) return;
+      copyTextToClipboard(userIdentity.syncCode, "📋 קוד הסנכרון הועתק!");
+    });
+    el("btnCopyMagicLink")?.addEventListener("click", () => {
+      if (!userIdentity.syncCode) return;
+      copyTextToClipboard(buildMagicLink(userIdentity.syncCode), "🔗 קישור הקסם הועתק!");
+    });
+    el("btnToggleQr")?.addEventListener("click", () => {
+      const wrap = el("syncQrWrap");
+      if (!wrap) return;
+      const willShow = wrap.classList.contains("hidden");
+      wrap.classList.toggle("hidden", !willShow);
+      el("btnToggleQr").textContent = willShow ? "📱 הסתר QR" : "📱 הצג QR לסריקה";
+      if (willShow) renderSyncQrCode();
+    });
+    el("btnSyncNow")?.addEventListener("click", async () => {
+      await syncNowManual();
+    });
+    el("btnRotateSyncCode")?.addEventListener("click", async () => {
+      await rotateSyncCodeFlow();
+    });
+    el("btnRevokeOtherDevices")?.addEventListener("click", async () => {
+      await revokeOtherDevicesFlow();
+    });
+    el("btnPreviewSyncLink")?.addEventListener("click", async () => {
+      await previewConnectSyncCode();
+    });
+    el("syncConnectInput")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        previewConnectSyncCode();
+      }
+    });
+    el("btnConfirmSyncMerge")?.addEventListener("click", async () => {
+      if (pendingSyncPreview?.syncCode) {
+        await completeSyncLink(pendingSyncPreview.syncCode, "merge");
+      }
+    });
+    el("btnConfirmSyncReplace")?.addEventListener("click", async () => {
+      if (pendingSyncPreview?.syncCode) {
+        await completeSyncLink(pendingSyncPreview.syncCode, "replace");
+      }
+    });
+    el("btnCancelSyncPreview")?.addEventListener("click", () => {
+      pendingSyncPreview = null;
+      el("syncPreviewCard")?.classList.add("hidden");
+    });
+
     el("btnShortcuts").onclick = () => el("shortcutsModal").classList.remove("hidden");
     el("btnCloseShortcuts").onclick = () => el("shortcutsModal").classList.add("hidden");
 
@@ -3008,11 +3406,22 @@
       reader.onload = () => {
         try {
           const parsed = JSON.parse(reader.result);
-          progress = { ...defaultProgress(), ...parsed };
-          saveProgress();
+          const normalized = mergeProgressPayloads({}, parsed);
+          if (
+            Object.keys(normalized.dailyStatsByDevice).length === 0 &&
+            Object.keys(normalized.dailyStats).length > 0
+          ) {
+            normalized.dailyStatsByDevice[deviceId] = { ...normalized.dailyStats };
+            normalized.dailyStatsUpdatedAt = normalized.dailyStatsUpdatedAt || Date.now();
+          } else if (normalized.dailyStatsByDevice._legacy) {
+            normalized.dailyStatsByDevice[deviceId] = { ...normalized.dailyStatsByDevice._legacy };
+            delete normalized.dailyStatsByDevice._legacy;
+          }
+          progress = { ...defaultProgress(), ...normalized };
+          saveProgress({ syncCloud: true, immediateCloud: true });
           renderCurrentView();
           el("backupModal").classList.add("hidden");
-          showToast("✅ הגיבוי שוחזר בהצלחה!");
+          showToast("✅ הגיבוי שוחזר ויסתנכרן עם הענן!");
         } catch {
           showToast("❌ קובץ גיבוי לא תקין");
         }
@@ -3023,7 +3432,8 @@
     el("btnResetProgress").onclick = () => {
       if (confirm("בטוח שברצונך למחוק את כל ההתקדמות, הסימונים וההערות?")) {
         progress = defaultProgress();
-        saveProgress();
+        progress.resetAt = Date.now();
+        saveProgress({ syncCloud: true, immediateCloud: true });
         renderCurrentView();
         el("backupModal").classList.add("hidden");
         showToast("ההתקדמות אופסה.");
@@ -3096,6 +3506,7 @@
       if (e.key === "Escape") {
         closeLightbox();
         closeProblemModal();
+        closeSyncModal();
         closeAdminLoginModal();
         closeAdminQuestionModal();
         closeAdminDashboardModal();
@@ -3105,6 +3516,7 @@
       }
       if (
         !el("problemReportModal").classList.contains("hidden") ||
+        !el("syncModal")?.classList.contains("hidden") ||
         !el("adminLoginModal").classList.contains("hidden") ||
         !el("adminQuestionModal").classList.contains("hidden") ||
         !el("adminDashboardModal").classList.contains("hidden")
@@ -3754,12 +4166,13 @@
     const tbody = table.querySelector("tbody");
     filteredUsers.forEach((u) => {
       const tr = document.createElement("tr");
+      const syncTag = u.hasSyncCode ? " · ☁️ מסונכרן" : "";
       tr.innerHTML = `
-        <td><strong>${escapeHtml(u.emoji)} ${escapeHtml(u.name)}</strong><br/><span class="muted" style="font-size:0.72rem;">${escapeHtml(u.userId)}</span></td>
+        <td><strong>${escapeHtml(u.emoji)} ${escapeHtml(u.name)}</strong><br/><span class="muted" style="font-size:0.72rem;">${escapeHtml(u.userId)}${syncTag}</span></td>
         <td>${escapeHtml(u.category || "—")}</td>
         <td>${escapeHtml(formatNoteTime(u.firstSeenAt) || "—")}</td>
         <td>${escapeHtml(formatNoteTime(u.lastSeenAt) || "—")}</td>
-        <td>💬 ${Number(u.notesCount) || 0} · ⚠️ ${Number(u.problemsCount) || 0}</td>
+        <td>📝 ${Number(u.solvedCount) || 0} פתורות · 💬 ${Number(u.notesCount) || 0} · ⚠️ ${Number(u.problemsCount) || 0}</td>
         <td></td>
       `;
       const actionTd = tr.lastElementChild;
@@ -4009,21 +4422,719 @@
     });
   }
 
+  // ============================================================
+  // Cross-Device Progress & Identity Cloud Sync
+  // ============================================================
+
+  function getDeviceLabel() {
+    const ua = navigator.userAgent || "";
+    if (/iPad|Macintosh.*Mobile/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
+      return "iPad";
+    }
+    if (/iPhone/i.test(ua)) return "iPhone";
+    if (/Android/i.test(ua)) return "Android";
+    if (/Windows/i.test(ua)) return "Windows";
+    if (/Mac/i.test(ua)) return "Mac";
+    return "Browser";
+  }
+
+  function buildMagicLink(syncCode) {
+    const formatted = formatSyncCode(syncCode) || syncCode;
+    return `${window.location.origin}${window.location.pathname}${window.location.search}#sync=${formatted}`;
+  }
+
+  function countSolvedQuestions(prog = progress) {
+    return prog?.attempts && typeof prog.attempts === "object" ? Object.keys(prog.attempts).length : 0;
+  }
+
+  function hasSubstantialLocalProgress(prog = progress) {
+    if (countSolvedQuestions(prog) > 0) return true;
+    if (Object.values(prog?.flags || {}).some((f) => f && (f.star || f.unsure || f.problem))) return true;
+    if (Object.values(prog?.notes || {}).some((t) => typeof t === "string" && t.trim())) return true;
+    if (Object.values(prog?.struck || {}).some((a) => Array.isArray(a) && a.length > 0)) return true;
+    if (Object.values(prog?.drillStreak || {}).some((n) => Number(n) > 0)) return true;
+    if (Object.values(communityNotes || {}).some((byU) => byU && byU[userIdentity.userId])) return true;
+    if (Object.values(communityProblems || {}).some((byU) => byU && byU[userIdentity.userId])) return true;
+    return false;
+  }
+
+  function updateSyncStatusUI() {
+    const pill = el("btnSyncModal");
+    const textEl = el("syncText");
+    const modalStatus = el("syncProfileStatus");
+    let cls = "offline";
+    let label = "שמירה בדפדפן";
+
+    if (isCloudApiConfigured()) {
+      if (cloudProgressSyncState === "syncing") {
+        cls = "syncing";
+        label = "מסנכרן...";
+      } else if (cloudProgressSyncState === "synced") {
+        cls = "online";
+        label = "מסונכרן בענן";
+      } else if (cloudProgressSyncState === "error") {
+        cls = "error";
+        label = "ממתין לסנכרון";
+      } else {
+        cls = "offline";
+        label = "שמירה בדפדפן";
+      }
+    } else if (serverOnline) {
+      cls = "online";
+      label = "מחובר לשרת (סנכרון חי)";
+    }
+
+    if (pill) {
+      pill.classList.remove("offline", "online", "syncing", "error");
+      pill.classList.add(cls);
+    }
+    if (textEl) textEl.textContent = label;
+    if (modalStatus) {
+      modalStatus.classList.remove("online", "error");
+      if (cls === "online") modalStatus.classList.add("online");
+      else if (cls === "error") modalStatus.classList.add("error");
+      modalStatus.textContent = label;
+    }
+  }
+
+  function renderSyncQrCode() {
+    const container = el("syncQrContainer");
+    if (!container || !userIdentity.syncCode) return;
+    if (window.QrSvg && typeof window.QrSvg.renderSvg === "function") {
+      try {
+        container.innerHTML = window.QrSvg.renderSvg(buildMagicLink(userIdentity.syncCode), { size: 196 });
+      } catch {
+        container.textContent = "לא ניתן ליצור QR עבור כתובת זו";
+      }
+    }
+  }
+
+  function renderSyncModal() {
+    const identEl = el("syncProfileIdentity");
+    if (identEl) {
+      identEl.textContent = `${userIdentity.emoji} ${userIdentity.name}${userIdentity.category ? ` · ${userIdentity.category}` : ""}`;
+    }
+    const statsEl = el("syncProfileStats");
+    if (statsEl) {
+      const solved = countSolvedQuestions(progress);
+      const myNotesCount = Object.values(communityNotes || {}).filter((byU) => byU && byU[userIdentity.userId]).length;
+      statsEl.textContent = `${solved} שאלות פתורות · ${myNotesCount} הערות קהילה`;
+    }
+    const codeEl = el("syncCodeDisplay");
+    if (codeEl) {
+      codeEl.textContent = userIdentity.syncCode || "---- ---- ----";
+    }
+    const qrWrap = el("syncQrWrap");
+    if (qrWrap && !qrWrap.classList.contains("hidden")) {
+      renderSyncQrCode();
+    }
+    const previewCard = el("syncPreviewCard");
+    if (previewCard) {
+      if (pendingSyncPreview) {
+        el("syncPreviewTarget").textContent = `${pendingSyncPreview.identity.emoji} ${pendingSyncPreview.identity.name}${pendingSyncPreview.identity.category ? ` · ${pendingSyncPreview.identity.category}` : ""}`;
+        const localSolved = countSolvedQuestions(progress);
+        const cloudSolved = Number(pendingSyncPreview.summary?.solvedCount) || 0;
+        el("syncPreviewCompare").textContent = `בענן: ${cloudSolved} שאלות · במכשיר זה: ${localSolved} שאלות`;
+        el("syncPreviewHint").textContent = "במכשיר זה קיימת התקדמות קודמת. מומלץ למזג כדי לא לאבד שאלות שפתרת.";
+        previewCard.classList.remove("hidden");
+      } else {
+        previewCard.classList.add("hidden");
+      }
+    }
+    updateSyncStatusUI();
+  }
+
+  function openSyncModal() {
+    const errEl = el("syncConnectError");
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
+    renderSyncModal();
+    el("syncModal")?.classList.remove("hidden");
+    if (isCloudApiConfigured()) {
+      ensureSyncCodeRegistered();
+    }
+  }
+
+  function closeSyncModal() {
+    el("syncModal")?.classList.add("hidden");
+  }
+
+  async function copyTextToClipboard(text, successMsg) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        showToast(successMsg);
+        return;
+      }
+    } catch {}
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      showToast(successMsg);
+    } catch {
+      showToast("⚠️ לא ניתן להעתיק אוטומטית — סמן והעתק ידנית.");
+    }
+  }
+
+  async function ensureSyncCodeRegistered(retried = false) {
+    if (!isCloudApiConfigured()) return false;
+    if (!userIdentity.syncCode) {
+      userIdentity.syncCode = generateSyncCode();
+      userIdentity.syncCodeRegistered = false;
+      saveUserIdentity();
+    }
+    if (userIdentity.syncCodeRegistered) return true;
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/api/sync/register-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: userIdentity.userId,
+          clientSecret: userIdentity.clientSecret,
+          syncCode: userIdentity.syncCode,
+          name: userIdentity.name,
+          emoji: userIdentity.emoji,
+          category: userIdentity.category,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && !retried) {
+        if (data.conflict) {
+          if (data.takenNames && typeof data.takenNames === "object") {
+            takenNamesMap = data.takenNames;
+            saveTakenNamesCache();
+          }
+          const fresh = pickRandomIdentity(true);
+          userIdentity = { ...userIdentity, name: fresh.name, emoji: fresh.emoji, category: fresh.category };
+          saveUserIdentity();
+          return ensureSyncCodeRegistered(true);
+        }
+        if (data.codeConflict) {
+          userIdentity.syncCode = generateSyncCode();
+          userIdentity.syncCodeRegistered = false;
+          saveUserIdentity();
+          return ensureSyncCodeRegistered(true);
+        }
+        if (data.alreadyRegistered) {
+          return false;
+        }
+      }
+      if (res.ok) {
+        userIdentity.syncCodeRegistered = true;
+        saveUserIdentity();
+        takenNamesMap[userIdentity.name] = userIdentity.userId;
+        saveTakenNamesCache();
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
+  function applyMergedCloudProgress(serverProgress, { rerender = true } = {}) {
+    if (!serverProgress || typeof serverProgress !== "object") return false;
+    const beforeJson = JSON.stringify(progress);
+    const merged = mergeProgressPayloads(progress, serverProgress);
+    merged.identity = {
+      userId: userIdentity.userId,
+      name: userIdentity.name,
+      emoji: userIdentity.emoji,
+      category: userIdentity.category,
+    };
+    const afterJson = JSON.stringify(merged);
+    if (beforeJson === afterJson) return false;
+    progress = merged;
+    try {
+      localStorage.setItem(STORAGE_KEY, afterJson);
+    } catch {}
+    updateDrillBadge();
+    if (rerender && !simState.active) {
+      const activeTag = document.activeElement?.id;
+      if (currentMode === "analytics") {
+        renderAnalytics();
+      } else if (currentMode !== "exam") {
+        if (activeTag === "qNoteInput") {
+          // Avoid interrupting an active note draft; refresh on next navigation
+          updateDrillBadge();
+        } else {
+          applyFilters(filteredList[currentIndex]?.id);
+        }
+      }
+    }
+    if (!el("syncModal")?.classList.contains("hidden")) {
+      renderSyncModal();
+    }
+    return true;
+  }
+
+  function scheduleCloudProgressPush({ immediate = false, keepalive = false } = {}) {
+    cloudProgressDirty = true;
+    if (!isCloudApiConfigured()) return;
+    if (cloudProgressPushTimer) {
+      clearTimeout(cloudProgressPushTimer);
+      cloudProgressPushTimer = null;
+    }
+    if (immediate) {
+      pushCloudProgress({ keepalive });
+    } else {
+      cloudProgressPushTimer = setTimeout(() => {
+        cloudProgressPushTimer = null;
+        pushCloudProgress();
+      }, 2000);
+    }
+  }
+
+  async function pushCloudProgress({ keepalive = false, replace = false, retried = false } = {}) {
+    if (!isCloudApiConfigured()) return false;
+    if (cloudProgressSyncPromise && !keepalive) {
+      await cloudProgressSyncPromise.catch(() => {});
+      if (!cloudProgressDirty) return true;
+    }
+
+    const snapshotJson = JSON.stringify(progress);
+    cloudProgressSyncState = "syncing";
+    updateSyncStatusUI();
+
+    const runPush = async () => {
+      try {
+        const res = await fetch(`${CLOUD_API_BASE}/api/progress`, {
+          method: "PUT",
+          keepalive: Boolean(keepalive),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: userIdentity.userId,
+            clientSecret: userIdentity.clientSecret,
+            identity: {
+              name: userIdentity.name,
+              emoji: userIdentity.emoji,
+              category: userIdentity.category,
+            },
+            progress,
+            replace,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 409 && data.conflict && !retried) {
+          await registerIdentityPing(false);
+          return await pushCloudProgress({ keepalive, replace, retried: true });
+        }
+        if (!res.ok) {
+          cloudProgressSyncState = "error";
+          updateSyncStatusUI();
+          return false;
+        }
+        if (data.progress) {
+          const changedLocallyDuringFlight = JSON.stringify(progress) !== snapshotJson;
+          applyMergedCloudProgress(data.progress, { rerender: true });
+          if (!changedLocallyDuringFlight) {
+            cloudProgressDirty = false;
+          } else {
+            scheduleCloudProgressPush({ immediate: false });
+          }
+        } else {
+          cloudProgressDirty = false;
+        }
+        cloudProgressSyncState = "synced";
+        updateSyncStatusUI();
+        return true;
+      } catch {
+        cloudProgressSyncState = "error";
+        updateSyncStatusUI();
+        return false;
+      }
+    };
+
+    if (keepalive) {
+      return runPush();
+    }
+    cloudProgressSyncPromise = runPush().finally(() => {
+      cloudProgressSyncPromise = null;
+    });
+    return cloudProgressSyncPromise;
+  }
+
+  async function pullCloudProgress({ silent = true } = {}) {
+    if (!isCloudApiConfigured()) return false;
+    if (cloudProgressDirty) {
+      return pushCloudProgress();
+    }
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/api/progress`, {
+        method: "GET",
+        headers: {
+          "X-User-Id": userIdentity.userId,
+          "X-Client-Secret": userIdentity.clientSecret,
+        },
+        cache: "no-store",
+      });
+      if (res.status === 403) {
+        cloudProgressSyncState = "error";
+        updateSyncStatusUI();
+        if (!silent) showToast("⚠️ חיבור המכשיר בוטל ממכשיר אחר.");
+        return false;
+      }
+      if (!res.ok) {
+        cloudProgressSyncState = "error";
+        updateSyncStatusUI();
+        return false;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (data.progress) {
+        applyMergedCloudProgress(data.progress, { rerender: true });
+        cloudProgressSyncState = "synced";
+        updateSyncStatusUI();
+      } else if (hasSubstantialLocalProgress(progress)) {
+        await pushCloudProgress();
+      } else {
+        cloudProgressSyncState = "synced";
+        updateSyncStatusUI();
+      }
+      return true;
+    } catch {
+      cloudProgressSyncState = "offline";
+      updateSyncStatusUI();
+      return false;
+    }
+  }
+
+  async function syncNowManual() {
+    if (!isCloudApiConfigured()) {
+      showToast("⚠️ סנכרון הענן אינו זמין כרגע.");
+      return;
+    }
+    cloudProgressSyncState = "syncing";
+    updateSyncStatusUI();
+    await registerIdentityPing(false);
+    await ensureSyncCodeRegistered();
+    const okProg = cloudProgressDirty ? await pushCloudProgress() : await pullCloudProgress({ silent: false });
+    const okBoot = await bootstrapCloudState(false);
+    renderSyncModal();
+    if (okProg && okBoot) {
+      showToast("☁️ ההתקדמות וההערות סונכרנו בהצלחה!");
+    } else {
+      showToast("⚠️ הסנכרון לא הושלם — בדוק חיבור לאינטרנט.");
+    }
+  }
+
+  async function rotateSyncCodeFlow() {
+    if (!isCloudApiConfigured()) {
+      showToast("⚠️ סנכרון הענן אינו זמין כרגע.");
+      return;
+    }
+    if (!confirm("להפיק קוד סנכרון חדש? הקוד וקישורי הקסם הקודמים יפסיקו לעבוד (מכשירים שכבר מחוברים ימשיכו לפעול).")) {
+      return;
+    }
+    await registerIdentityPing(false);
+    await ensureSyncCodeRegistered();
+    const nextCode = generateSyncCode();
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/api/sync/rotate-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: userIdentity.userId,
+          clientSecret: userIdentity.clientSecret,
+          newSyncCode: nextCode,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "הפקת קוד חדש נכשלה");
+      }
+      userIdentity.syncCode = nextCode;
+      userIdentity.syncCodeRegistered = true;
+      saveUserIdentity();
+      renderSyncModal();
+      showToast("🔑 הופק קוד סנכרון חדש!");
+    } catch (err) {
+      showToast(`❌ ${err.message}`);
+    }
+  }
+
+  async function revokeOtherDevicesFlow() {
+    if (!isCloudApiConfigured()) {
+      showToast("⚠️ סנכרון הענן אינו זמין כרגע.");
+      return;
+    }
+    if (!confirm("לנתק את כל שאר המכשירים המחוברים לפרופיל זה? מכשיר זה יישאר מחובר.")) {
+      return;
+    }
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/api/sync/revoke-other-devices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: userIdentity.userId,
+          clientSecret: userIdentity.clientSecret,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "ניתוק מכשירים נכשל");
+      }
+      showToast("🧹 כל שאר המכשירים נותקו מפרופיל זה.");
+    } catch (err) {
+      showToast(`❌ ${err.message}`);
+    }
+  }
+
+  async function fetchSyncPreview(syncCode) {
+    const res = await fetch(`${CLOUD_API_BASE}/api/sync/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ syncCode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.identity) {
+      throw new Error(data.error || "לא ניתן לאמת את קוד הסנכרון");
+    }
+    return { syncCode: formatSyncCode(syncCode), ...data };
+  }
+
+  async function previewConnectSyncCode() {
+    const errEl = el("syncConnectError");
+    const btn = el("btnPreviewSyncLink");
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
+
+    if (!isCloudApiConfigured()) {
+      if (errEl) {
+        errEl.textContent = "שירות הסנכרון בענן אינו מוגדר.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    const rawInput = el("syncConnectInput")?.value || "";
+    const normalized = normalizeSyncCode(rawInput);
+    if (!normalized) {
+      if (errEl) {
+        errEl.textContent = "פורמט קוד לא תקין. יש להזין קוד בן 12 תווים (לדוגמה ABCD-EFGH-JKLM) או קישור קסם.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    if (normalizeSyncCode(userIdentity.syncCode || "") === normalized) {
+      if (errEl) {
+        errEl.textContent = "מכשיר זה כבר מחובר לפרופיל של הקוד הזה.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    if (btn) btn.disabled = true;
+    try {
+      const preview = await fetchSyncPreview(normalized);
+      if (preview.identity.userId === userIdentity.userId) {
+        showToast("מכשיר זה כבר מחובר לפרופיל זה.");
+        return;
+      }
+      if (!hasSubstantialLocalProgress(progress)) {
+        await completeSyncLink(preview.syncCode, "replace");
+        return;
+      }
+      pendingSyncPreview = preview;
+      renderSyncModal();
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err?.message || "שגיאה בבדיקת הקוד";
+        errEl.classList.remove("hidden");
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function completeSyncLink(syncCode, mode) {
+    const errEl = el("syncConnectError");
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
+    const mergeBtn = el("btnConfirmSyncMerge");
+    const replaceBtn = el("btnConfirmSyncReplace");
+    if (mergeBtn) mergeBtn.disabled = true;
+    if (replaceBtn) replaceBtn.disabled = true;
+
+    const newClientSecret = generateClientSecret();
+    const guestUserId = userIdentity.userId;
+    const guestClientSecret = userIdentity.clientSecret;
+
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/api/sync/link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          syncCode,
+          newClientSecret,
+          deviceLabel: getDeviceLabel(),
+          mode,
+          localProgress: mode === "merge" ? progress : undefined,
+          guestUserId,
+          guestClientSecret,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.identity) {
+        throw new Error(data.error || "החיבור נכשל");
+      }
+
+      userIdentity = {
+        userId: data.identity.userId,
+        name: data.identity.name,
+        emoji: data.identity.emoji,
+        category: data.identity.category,
+        clientSecret: newClientSecret,
+        syncCode: formatSyncCode(syncCode),
+        syncCodeRegistered: true,
+        locked: true,
+      };
+      identityNeedsCloudCheck = false;
+      saveUserIdentity();
+
+      const nextProgress = mergeProgressPayloads({}, data.progress || {});
+      nextProgress.identity = {
+        userId: userIdentity.userId,
+        name: userIdentity.name,
+        emoji: userIdentity.emoji,
+        category: userIdentity.category,
+      };
+      progress = { ...defaultProgress(), ...nextProgress };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+      } catch {}
+
+      pendingSyncPreview = null;
+      cloudProgressDirty = false;
+      cloudProgressSyncState = "synced";
+      const inputEl = el("syncConnectInput");
+      if (inputEl) inputEl.value = "";
+
+      updateIdentityUI();
+      updateDrillBadge();
+      updateSyncStatusUI();
+      await bootstrapCloudState(false);
+      renderCurrentView();
+      renderSyncModal();
+      showToast(`✅ התחברת לפרופיל ${userIdentity.emoji} ${userIdentity.name}!`);
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err?.message || "שגיאה בחיבור הפרופיל";
+        errEl.classList.remove("hidden");
+      } else {
+        showToast(`❌ ${err?.message || "שגיאה בחיבור הפרופיל"}`);
+      }
+    } finally {
+      if (mergeBtn) mergeBtn.disabled = false;
+      if (replaceBtn) replaceBtn.disabled = false;
+    }
+  }
+
+  function extractMagicSyncCodeFromHash() {
+    try {
+      const hash = window.location.hash || "";
+      const match = hash.match(/sync=([^&]+)/i);
+      if (!match) return null;
+      const normalized = normalizeSyncCode(decodeURIComponent(match[1]));
+      const cleanUrl = window.location.pathname + window.location.search;
+      history.replaceState(null, "", cleanUrl);
+      return normalized;
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleMagicSyncOnStartup(magicCode) {
+    if (!magicCode || !isCloudApiConfigured()) return false;
+    if (normalizeSyncCode(userIdentity.syncCode || "") === magicCode) {
+      showToast(`☁️ מכשיר זה כבר מחובר לפרופיל ${userIdentity.emoji} ${userIdentity.name}`);
+      return false;
+    }
+    try {
+      const preview = await fetchSyncPreview(magicCode);
+      if (preview.identity.userId === userIdentity.userId) {
+        showToast(`☁️ מכשיר זה כבר מחובר לפרופיל ${userIdentity.emoji} ${userIdentity.name}`);
+        return false;
+      }
+      if (!hasSubstantialLocalProgress(progress)) {
+        await completeSyncLink(preview.syncCode, "replace");
+        return true;
+      }
+      pendingSyncPreview = preview;
+      openSyncModal();
+      return true;
+    } catch (err) {
+      showToast(`❌ קישור הסנכרון לא תקין: ${err?.message || "שגיאה"}`);
+      return false;
+    }
+  }
+
   // Init
+  const initialMagicSyncCode = extractMagicSyncCodeFromHash();
   initTheme();
   initLightbox();
   updateIdentityUI();
+  updateSyncStatusUI();
   renderFilterChips();
   initExamSetup();
   updateDrillBadge();
   bindEvents();
   applyFilters();
   checkServer();
-  bootstrapCloudState(false).finally(() => {
-    registerIdentityPing(false);
-  });
+
+  (async () => {
+    await bootstrapCloudState(false);
+    const linkedMagic = initialMagicSyncCode ? await handleMagicSyncOnStartup(initialMagicSyncCode) : false;
+    if (!linkedMagic) {
+      await registerIdentityPing(false);
+      await ensureSyncCodeRegistered();
+      await pullCloudProgress({ silent: true });
+    }
+  })();
+
   initAdminAuth();
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      if (cloudProgressDirty || cloudProgressPushTimer) {
+        if (cloudProgressPushTimer) {
+          clearTimeout(cloudProgressPushTimer);
+          cloudProgressPushTimer = null;
+        }
+        pushCloudProgress({ keepalive: true });
+      }
+    } else if (document.visibilityState === "visible") {
+      const now = Date.now();
+      if (now - lastVisibilityPullAt > 10000) {
+        lastVisibilityPullAt = now;
+        bootstrapCloudState(false);
+        pullCloudProgress({ silent: true });
+      }
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    if (cloudProgressDirty || cloudProgressPushTimer) {
+      if (cloudProgressPushTimer) {
+        clearTimeout(cloudProgressPushTimer);
+        cloudProgressPushTimer = null;
+      }
+      pushCloudProgress({ keepalive: true });
+    }
+  });
+
   setInterval(() => {
     bootstrapCloudState(false);
+    pullCloudProgress({ silent: true });
   }, 45000);
 })();

@@ -358,7 +358,346 @@ async function run() {
     console.log("✓ Legacy import simulation OK");
   }
 
-  // 8. Rate-limit lockout after 5 consecutive wrong password attempts
+  // 8. Cross-device sync, progress merge, guest release, rotate-code & revoke-other-devices
+  {
+    const authHeader = { Authorization: `Bearer ${adminToken}` };
+    const syncCodeA1 = "ABCD-EFGH-JKLM";
+    const syncCodeA2 = "NPQR-STUV-WXYZ";
+    const deviceBSecret = "secret_device_b_789012";
+
+    // Register sync code for Student A
+    const regA = await req("/api/sync/register-code", {
+      method: "POST",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        syncCode: syncCodeA1,
+      },
+    });
+    assert.equal(regA.status, 200);
+    assert.equal(regA.data.registered, true);
+
+    // Idempotent re-register with same code
+    const regAIdem = await req("/api/sync/register-code", {
+      method: "POST",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        syncCode: "abcdefghjklm",
+      },
+    });
+    assert.equal(regAIdem.status, 200);
+
+    // Student C trying to register Student A's sync code -> 409 collision
+    const regCollision = await req("/api/sync/register-code", {
+      method: "POST",
+      body: {
+        userId: "u_student_c",
+        clientSecret: "secret_ccc_123456",
+        syncCode: syncCodeA1,
+      },
+    });
+    assert.equal(regCollision.status, 409);
+
+    // Device A saves progress (including a cleared attempt tombstone on q002 and device_a daily stats)
+    const progA = {
+      attempts: {
+        "2026_q001": { selected: 1, isCorrect: true, ts: 2000 },
+        "2026_q003": { selected: 0, isCorrect: false, ts: 1500 },
+      },
+      clearedAttempts: {
+        "2026_q002": 3000,
+      },
+      flags: { "2026_q001": { star: true } },
+      flagUpdatedAt: { "2026_q001": { star: 2000 } },
+      dailyStatsByDevice: {
+        device_a: { "2026-11-24": { answered: 2, correct: 1 } },
+      },
+      dailyStatsUpdatedAt: 2000,
+    };
+    const putProgA = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        progress: progA,
+      },
+    });
+    assert.equal(putProgA.status, 200);
+    assert.equal(putProgA.data.progress.attempts["2026_q001"].selected, 1);
+
+    // Device A reads back via GET /api/progress
+    const getProgA = await req("/api/progress", {
+      headers: {
+        "X-User-Id": studentA.userId,
+        "X-Client-Secret": studentA.clientSecret,
+      },
+    });
+    assert.equal(getProgA.status, 200);
+    assert.equal(getProgA.data.progress.attempts["2026_q001"].selected, 1);
+    assert.equal(getProgA.data.progress.dailyStats["2026-11-24"].answered, 2);
+
+    // Device B previews Student A's sync code
+    const prevRes = await req("/api/sync/preview", {
+      method: "POST",
+      body: { syncCode: syncCodeA1 },
+    });
+    assert.equal(prevRes.status, 200);
+    assert.equal(prevRes.data.identity.userId, studentA.userId);
+    assert.equal(prevRes.data.identity.name, studentA.name);
+    assert.equal(prevRes.data.summary.solvedCount, 2);
+
+    // Guest on Device B has local identity + 1 non-conflicting note + 1 conflicting note + local progress
+    const guestUser = {
+      userId: "u_guest_temp",
+      name: "תות",
+      emoji: "🍓",
+      category: "פירות",
+      clientSecret: "secret_guest_123456",
+    };
+    assert.equal((await req("/api/identities/ping", { method: "POST", body: guestUser })).status, 200);
+    // Student A already has a note on 2026_q010; guest also has one on 2026_q010 (conflict) and one on 2026_q011 (non-conflict)
+    assert.equal(
+      (
+        await req("/api/notes/2026_q010", {
+          method: "PUT",
+          body: {
+            userId: studentA.userId,
+            clientSecret: studentA.clientSecret,
+            author: studentA.name,
+            emoji: studentA.emoji,
+            category: studentA.category,
+            text: "הערת מקור של תפוח",
+          },
+        })
+      ).status,
+      200
+    );
+    assert.equal(
+      (
+        await req("/api/notes/2026_q010", {
+          method: "PUT",
+          body: {
+            userId: guestUser.userId,
+            clientSecret: guestUser.clientSecret,
+            author: guestUser.name,
+            emoji: guestUser.emoji,
+            category: guestUser.category,
+            text: "הערה כפולה של תות",
+          },
+        })
+      ).status,
+      200
+    );
+    assert.equal(
+      (
+        await req("/api/notes/2026_q011", {
+          method: "PUT",
+          body: {
+            userId: guestUser.userId,
+            clientSecret: guestUser.clientSecret,
+            author: guestUser.name,
+            emoji: guestUser.emoji,
+            category: guestUser.category,
+            text: "הערה ייחודית של תות שתעבור לתפוח",
+          },
+        })
+      ).status,
+      200
+    );
+
+    // Link Device B in merge mode
+    const localProgB = {
+      attempts: {
+        "2026_q002": { selected: 2, isCorrect: true, ts: 1000 }, // older than A's clearedAttempts=3000 -> must stay cleared!
+        "2026_q003": { selected: 2, isCorrect: true, ts: 4000 }, // newer than A's 1500 -> must win!
+        "2026_q004": { selected: 1, isCorrect: true, ts: 2500 }, // new question from B
+      },
+      flags: { "2026_q004": { unsure: true } },
+      flagUpdatedAt: { "2026_q004": { unsure: 2500 } },
+      dailyStatsByDevice: {
+        device_b: { "2026-11-24": { answered: 3, correct: 2 } },
+      },
+      dailyStatsUpdatedAt: 4000,
+    };
+    const linkMerge = await req("/api/sync/link", {
+      method: "POST",
+      body: {
+        syncCode: syncCodeA1,
+        newClientSecret: deviceBSecret,
+        deviceLabel: "iPad",
+        mode: "merge",
+        localProgress: localProgB,
+        guestUserId: guestUser.userId,
+        guestClientSecret: guestUser.clientSecret,
+      },
+    });
+    assert.equal(linkMerge.status, 200);
+    assert.equal(linkMerge.data.identity.userId, studentA.userId);
+    assert.equal(linkMerge.data.guestReleased, true);
+    assert.equal(linkMerge.data.progress.attempts["2026_q001"].selected, 1);
+    assert.equal(linkMerge.data.progress.attempts["2026_q002"], undefined, "Older attempt must stay cleared by tombstone");
+    assert.equal(linkMerge.data.progress.attempts["2026_q003"].selected, 2, "Newer attempt from Device B must win");
+    assert.equal(linkMerge.data.progress.attempts["2026_q004"].selected, 1);
+    assert.equal(linkMerge.data.progress.dailyStats["2026-11-24"].answered, 5);
+    assert.equal(linkMerge.data.progress.dailyStats["2026-11-24"].correct, 3);
+
+    // Verify guest note on 2026_q011 moved to Student A and guest nickname "תות" was released
+    const bootAfterLink = await req("/api/bootstrap");
+    assert.equal(bootAfterLink.data.notes["2026_q011"][studentA.userId].text, "הערה ייחודית של תות שתעבור לתפוח");
+    assert.equal(bootAfterLink.data.notes["2026_q011"][studentA.userId].author, studentA.name);
+    assert.equal(bootAfterLink.data.notes["2026_q010"][studentA.userId].text, "הערת מקור של תפוח");
+    assert.equal(bootAfterLink.data.notes["2026_q010"][guestUser.userId], undefined);
+    assert.equal(bootAfterLink.data.takenNames["תות"], undefined, "Guest nickname must be released");
+
+    // Verify BOTH Device A and Device B can write notes, ping identity, and read/write progress
+    const pingFromB = await req("/api/identities/ping", {
+      method: "POST",
+      body: { ...studentA, clientSecret: deviceBSecret },
+    });
+    assert.equal(pingFromB.status, 200);
+
+    const noteFromB = await req("/api/notes/2026_q012", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: deviceBSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "הערה ממכשיר ב",
+      },
+    });
+    assert.equal(noteFromB.status, 200);
+
+    const noteFromA = await req("/api/notes/2026_q013", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "הערה ממכשיר א",
+      },
+    });
+    assert.equal(noteFromA.status, 200);
+
+    // Admin users endpoint exposes hasSyncCode and solvedCount safely
+    const adminUsersRes = await req("/api/admin/users", { headers: authHeader });
+    assert.equal(adminUsersRes.status, 200);
+    const adminUserA = adminUsersRes.data.users.find((u) => u.userId === studentA.userId);
+    assert.ok(adminUserA);
+    assert.equal(adminUserA.hasSyncCode, true);
+    assert.equal(adminUserA.solvedCount, 3);
+    assert.equal(adminUserA.syncCodeHash, undefined);
+    assert.equal(adminUserA.progressJson, undefined);
+
+    // Rotate sync code -> old code returns 404, connected devices keep working, new code works
+    const rotRes = await req("/api/sync/rotate-code", {
+      method: "POST",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        newSyncCode: syncCodeA2,
+      },
+    });
+    assert.equal(rotRes.status, 200);
+    assert.equal((await req("/api/sync/preview", { method: "POST", body: { syncCode: syncCodeA1 } })).status, 404);
+    assert.equal((await req("/api/sync/preview", { method: "POST", body: { syncCode: syncCodeA2 } })).status, 200);
+    assert.equal(
+      (
+        await req("/api/progress", {
+          headers: { "X-User-Id": studentA.userId, "X-Client-Secret": deviceBSecret },
+        })
+      ).status,
+      200
+    );
+
+    // Replace mode test with an empty guest -> does not overwrite cloud, releases guest
+    const guestEmpty = {
+      userId: "u_guest_empty",
+      name: "אננס",
+      emoji: "🍍",
+      category: "פירות",
+      clientSecret: "secret_guest_empty_123",
+    };
+    assert.equal((await req("/api/identities/ping", { method: "POST", body: guestEmpty })).status, 200);
+    const deviceCSecret = "secret_device_c_789012";
+    const linkReplace = await req("/api/sync/link", {
+      method: "POST",
+      body: {
+        syncCode: syncCodeA2,
+        newClientSecret: deviceCSecret,
+        deviceLabel: "iPhone",
+        mode: "replace",
+        localProgress: {
+          attempts: { "2026_q999": { selected: 0, isCorrect: true, ts: 999999 } },
+        },
+        guestUserId: guestEmpty.userId,
+        guestClientSecret: guestEmpty.clientSecret,
+      },
+    });
+    assert.equal(linkReplace.status, 200);
+    assert.equal(linkReplace.data.guestReleased, true);
+    assert.equal(linkReplace.data.progress.attempts["2026_q999"], undefined, "Replace mode must not push local progress");
+    assert.equal(linkReplace.data.progress.attempts["2026_q001"].selected, 1);
+
+    // Revoke other devices from Device A -> Device B & C get 403, Device A remains active
+    const revokeRes = await req("/api/sync/revoke-other-devices", {
+      method: "POST",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+      },
+    });
+    assert.equal(revokeRes.status, 200);
+    assert.equal(
+      (
+        await req("/api/progress", {
+          headers: { "X-User-Id": studentA.userId, "X-Client-Secret": deviceBSecret },
+        })
+      ).status,
+      403
+    );
+    assert.equal(
+      (
+        await req("/api/progress", {
+          headers: { "X-User-Id": studentA.userId, "X-Client-Secret": deviceCSecret },
+        })
+      ).status,
+      403
+    );
+    assert.equal(
+      (
+        await req("/api/progress", {
+          headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+        })
+      ).status,
+      200
+    );
+
+    // Sync rate-limit test using a dedicated forwarded IP so it doesn't interfere with earlier steps
+    const rlHeaders = { "X-Forwarded-For": "203.0.113.77" };
+    for (let i = 0; i < 9; i++) {
+      const badSync = await req("/api/sync/preview", {
+        method: "POST",
+        headers: rlHeaders,
+        body: { syncCode: "ZZZZ-ZZZZ-ZZZZ" },
+      });
+      assert.equal(badSync.status, 404, `Sync attempt ${i + 1} should return 404`);
+    }
+    const lockedSync = await req("/api/sync/preview", {
+      method: "POST",
+      headers: rlHeaders,
+      body: { syncCode: "ZZZZ-ZZZZ-ZZZZ" },
+    });
+    assert.equal(lockedSync.status, 429, "10th failed sync attempt should trigger 429 rate limit");
+
+    console.log("✓ Cross-device sync, merge, guest release, rotate, revoke & rate-limit OK");
+  }
+
+  // 9. Rate-limit lockout after 5 consecutive wrong password attempts
   {
     for (let i = 0; i < 4; i++) {
       const bad = await req("/api/admin/login", {
