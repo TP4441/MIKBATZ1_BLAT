@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261124a" />
+  <link rel="stylesheet" href="styles.css?v=20261124c" />
 </head>
 <body>
   <header class="topbar">
@@ -40,10 +40,11 @@
             <span aria-hidden="true">🛡️</span>
             <span class="btn-label-desktop">מנהל</span>
           </button>
-          <span class="sync-pill offline" id="syncPill" title="מצב שמירת התקדמות">
+          <button type="button" class="sync-pill offline" id="btnSyncModal" title="סנכרון אוטומטי והעברה בין מכשירים" aria-label="סנכרון בין מכשירים">
             <span class="dot" aria-hidden="true"></span>
+            <span class="sync-mobile-ico" aria-hidden="true">☁️</span>
             <span id="syncText" class="sync-text-label">שמירה בדפדפן</span>
-          </span>
+          </button>
           <button type="button" class="icon-btn" id="btnExportObsidian" title="ייצוא שאלות שטעית בהן והערות למחברת טעויות ב-Obsidian" aria-label="ייצוא טעויות ל-Obsidian">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19v20H6.5a2.5 2.5 0 0 1 0-5H19" />
@@ -670,7 +671,7 @@
           <button type="button" class="btn-secondary btn-sm" id="btnAdminRefreshUsers">🔄 רענן משתמשים</button>
         </div>
         <details class="admin-names-details">
-          <summary>🏷️ מפת 100 הכינויים (תפוסים מול פנויים)</summary>
+          <summary>🏷️ מפת 200 הכינויים (תפוסים מול פנויים)</summary>
           <div class="admin-names-grid" id="adminNamesGrid"></div>
         </details>
         <div class="admin-table-wrap" id="adminUsersList"></div>
