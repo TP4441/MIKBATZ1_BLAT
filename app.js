@@ -368,7 +368,7 @@
   const filters = {
     exams: new Set(), // empty = all
     subjects: new Set(), // empty = all
-    status: "all",
+    statuses: new Set(), // empty = all
     search: "",
     mergePathology: true,
   };
@@ -2354,6 +2354,12 @@
     return Array.from(set).sort((a, b) => a.localeCompare(b, "he"));
   }
 
+  function getStatusKeys() {
+    return Array.from(el("statusChips").querySelectorAll(".chip[data-status]"))
+      .map((c) => c.dataset.status)
+      .filter(Boolean);
+  }
+
   // Build filter chips
   function renderFilterChips() {
     const examWrap = el("examChips");
@@ -2385,6 +2391,24 @@
       };
       subjWrap.appendChild(btn);
     });
+
+    el("statusChips").querySelectorAll(".chip[data-status]").forEach((c) => {
+      c.classList.toggle("active", filters.statuses.has(c.dataset.status));
+    });
+  }
+
+  function matchesQuestionStatus(statusKey, q, att, fl, myNote, qCommNotes, qProblems) {
+    switch (statusKey) {
+      case "unsolved": return !att;
+      case "wrong": return !!att && !att.isCorrect;
+      case "starred": return !!fl.star;
+      case "unsure": return !!fl.unsure;
+      case "problematic": return !!fl.problem || qProblems.length > 0;
+      case "with_image": return q.images.length > 0;
+      case "with_note": return !!myNote;
+      case "with_any_note": return qCommNotes.length > 0 || !!myNote;
+      default: return false;
+    }
   }
 
   function getDrillQuestions() {
@@ -2418,15 +2442,15 @@
         const qCommNotes = getQuestionCommunityNotesList(q.id);
         const qProblems = getQuestionProblemsList(q.id);
 
-        switch (filters.status) {
-          case "unsolved": if (att) return false; break;
-          case "wrong": if (!att || att.isCorrect) return false; break;
-          case "starred": if (!fl.star) return false; break;
-          case "unsure": if (!fl.unsure) return false; break;
-          case "problematic": if (!fl.problem && qProblems.length === 0) return false; break;
-          case "with_image": if (q.images.length === 0) return false; break;
-          case "with_note": if (!myNote) return false; break;
-          case "with_any_note": if (qCommNotes.length === 0 && !myNote) return false; break;
+        if (filters.statuses.size > 0) {
+          let anyStatusMatch = false;
+          for (const st of filters.statuses) {
+            if (matchesQuestionStatus(st, q, att, fl, myNote, qCommNotes, qProblems)) {
+              anyStatusMatch = true;
+              break;
+            }
+          }
+          if (!anyStatusMatch) return false;
         }
 
         if (term) {
@@ -2459,11 +2483,16 @@
 
     el("filteredCountText").textContent = `מציג ${filteredList.length} מתוך ${QUESTIONS.length} שאלות`;
     el("jumpInput").max = Math.max(1, filteredList.length);
-    const hasCustomFilter = filters.exams.size > 0 || filters.subjects.size > 0 || filters.status !== "all" || !!filters.search.trim();
+    const totalExams = EXAMS.length;
+    const totalSubjs = getUniqueSubjects().length;
+    const hasExamFilter = filters.exams.size > 0 && filters.exams.size < totalExams;
+    const hasSubjectFilter = filters.subjects.size > 0 && filters.subjects.size < totalSubjs;
+    const hasStatusFilter = filters.statuses.size > 0;
+    const hasCustomFilter = hasExamFilter || hasSubjectFilter || hasStatusFilter || !!filters.search.trim();
     const summaryParts = [];
-    if (filters.exams.size > 0) summaryParts.push(`${filters.exams.size} מועדים`);
-    if (filters.subjects.size > 0) summaryParts.push(`${filters.subjects.size} מקצועות`);
-    if (filters.status !== "all") summaryParts.push("מסונן");
+    if (hasExamFilter) summaryParts.push(`${filters.exams.size} מועדים`);
+    if (hasSubjectFilter) summaryParts.push(`${filters.subjects.size} מקצועות`);
+    if (hasStatusFilter) summaryParts.push(filters.statuses.size === 1 ? "מסונן" : `${filters.statuses.size} סטטוסים`);
     const prefix = summaryParts.length > 0 ? summaryParts.join(" · ") : "הכל";
     el("filterSummaryBadge").textContent = `${prefix} · ${filteredList.length}/${QUESTIONS.length}`;
     el("filterActiveDot").classList.toggle("hidden", !hasCustomFilter);
@@ -3232,7 +3261,7 @@
       btn.onclick = () => {
         filters.exams = new Set([btn.dataset.exam]);
         filters.subjects = new Set([btn.dataset.subj]);
-        filters.status = "all";
+        filters.statuses.clear();
         renderFilterChips();
         switchMode("practice");
       };
@@ -3821,17 +3850,44 @@
       renderFilterChips();
       applyFilters();
     };
-    el("btnAllYears").onclick = () => { filters.exams.clear(); renderFilterChips(); applyFilters(); };
-    el("btnClearYears").onclick = () => { filters.exams.clear(); renderFilterChips(); applyFilters(); };
-    el("btnAllSubjects").onclick = () => { filters.subjects.clear(); renderFilterChips(); applyFilters(); };
-    el("btnClearSubjects").onclick = () => { filters.subjects.clear(); renderFilterChips(); applyFilters(); };
+    el("btnAllYears").onclick = () => {
+      filters.exams = new Set(EXAMS.map((ex) => ex.name));
+      renderFilterChips();
+      applyFilters();
+    };
+    el("btnClearYears").onclick = () => {
+      filters.exams.clear();
+      renderFilterChips();
+      applyFilters();
+    };
+    el("btnAllSubjects").onclick = () => {
+      filters.subjects = new Set(getUniqueSubjects());
+      renderFilterChips();
+      applyFilters();
+    };
+    el("btnClearSubjects").onclick = () => {
+      filters.subjects.clear();
+      renderFilterChips();
+      applyFilters();
+    };
+    el("btnAllStatuses").onclick = () => {
+      filters.statuses = new Set(getStatusKeys());
+      renderFilterChips();
+      applyFilters();
+    };
+    el("btnClearStatuses").onclick = () => {
+      filters.statuses.clear();
+      renderFilterChips();
+      applyFilters();
+    };
 
-    // Status chips
-    el("statusChips").querySelectorAll(".chip").forEach((c) => {
+    // Status chips (multi-select toggle)
+    el("statusChips").querySelectorAll(".chip[data-status]").forEach((c) => {
       c.onclick = () => {
-        el("statusChips").querySelectorAll(".chip").forEach((x) => x.classList.remove("active"));
-        c.classList.add("active");
-        filters.status = c.dataset.status;
+        const st = c.dataset.status;
+        if (filters.statuses.has(st)) filters.statuses.delete(st);
+        else filters.statuses.add(st);
+        renderFilterChips();
         applyFilters();
       };
     });
@@ -3839,10 +3895,10 @@
     el("btnResetFiltersEmpty").onclick = () => {
       filters.exams.clear();
       filters.subjects.clear();
-      filters.status = "all";
+      filters.statuses.clear();
       filters.search = "";
       el("searchInput").value = "";
-      el("statusChips").querySelectorAll(".chip").forEach((x) => x.classList.toggle("active", x.dataset.status === "all"));
+      el("clearSearchBtn").classList.add("hidden");
       renderFilterChips();
       applyFilters();
     };
@@ -4962,11 +5018,10 @@
     closeAdminDashboardModal();
     filters.exams.clear();
     filters.subjects.clear();
-    filters.status = "all";
+    filters.statuses.clear();
     filters.search = "";
     el("searchInput").value = "";
     el("clearSearchBtn").classList.add("hidden");
-    el("statusChips").querySelectorAll(".chip").forEach((x) => x.classList.toggle("active", x.dataset.status === "all"));
     renderFilterChips();
     switchMode("practice");
     applyFilters(qId);

@@ -265,9 +265,14 @@
         </div>
 
         <div class="filter-row">
-          <div class="filter-label"><span>🏷️ סטטוס</span></div>
+          <div class="filter-label">
+            <span>🏷️ סטטוס</span>
+            <div class="filter-mini-links">
+              <button type="button" class="link-btn" id="btnAllStatuses">הכל</button>
+              <button type="button" class="link-btn" id="btnClearStatuses">נקה</button>
+            </div>
+          </div>
           <div class="chips-wrap" id="statusChips">
-            <button type="button" class="chip active" data-status="all">הכל</button>
             <button type="button" class="chip" data-status="unsolved">⏳ לא נפתרו</button>
             <button type="button" class="chip" data-status="wrong">❌ טעיתי בהן</button>
             <button type="button" class="chip" data-status="starred">⭐ מועדפים</button>
