@@ -5,8 +5,37 @@
   const THEME_KEY = "med_exam_theme_v1";
   const IDENTITY_KEY = "med_exam_user_identity_v1";
   const COMMUNITY_NOTES_CACHE_KEY = "med_exam_community_notes_cache_v1";
+  const COMMUNITY_PROBLEMS_CACHE_KEY = "med_exam_community_problems_cache_v1";
   const CLOUD_NOTES_URL = "https://textdb.dev/api/data/mikbatz1_blat_notes_1b014a75-b087-45fc-9cea-c4749561ae4e";
+  const CLOUD_PROBLEMS_URL = "https://textdb.dev/api/data/mikbatz1_blat_problems_a9f3e2c1-7d4b-4e8a-9c2f-31d5e8a4b210";
   const HEBREW_LETTERS = ["א", "ב", "ג", "ד", "ה", "ו"];
+
+  const PROBLEM_TYPES = {
+    question_issue: {
+      id: "question_issue",
+      label: "בעיה בשאלה",
+      emoji: "❓",
+      detailLabel: "מה בדיוק הבעיה בשאלה?",
+      placeholder: "פרט מה לא תקין בניסוח השאלה, בנתונים או בתמונה...",
+      requireDetail: true,
+    },
+    distractor_issue: {
+      id: "distractor_issue",
+      label: "בעיה במסיחים",
+      emoji: "🔀",
+      detailLabel: "איזה מסיח ולמה?",
+      placeholder: "ציין איזה מסיח בעייתי (למשל מסיח ב׳ / ג׳) ומדוע...",
+      requireDetail: true,
+    },
+    out_of_material: {
+      id: "out_of_material",
+      label: "שאלה שלא בחומר",
+      emoji: "📚",
+      detailLabel: "פירוט נוסף (רשות):",
+      placeholder: "למשל: ירד מהמיקוד / לא נלמד השנה (לא חובה למלא)...",
+      requireDetail: false,
+    },
+  };
 
   // 100 unique identities across 4 categories (25 each)
   const IDENTITY_CATALOG = [
@@ -130,6 +159,7 @@
   let serverOnline = false;
   let currentMode = "practice"; // practice | exam | drill | flashcard | analytics
   let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
+  let communityProblems = loadCommunityProblemsCache(); // { qId: { userId: { type, text, author, emoji, category, updatedAt } } }
   let identityNeedsCloudCheck = false;
   let userIdentity = loadOrInitIdentity();
   let progress = loadProgress();
@@ -143,10 +173,14 @@
   let notesExpanded = false; // Always closed by default (strict manual spoiler toggle)
   let lastRenderedQId = null;
   let noteSyncState = "synced";
+  let problemSyncState = "synced";
+  let activeProblemModalQId = null;
   const noteDrafts = {}; // qId -> unsent draft text
   const editingNoteQIds = new Set();
   const pendingDirtyQIds = new Set();
+  const pendingProblemDirtyQIds = new Set();
   let cloudWriteQueue = Promise.resolve();
+  let problemWriteQueue = Promise.resolve();
 
   // Filter state
   const filters = {
@@ -265,15 +299,37 @@
     } catch {}
   }
 
+  function loadCommunityProblemsCache() {
+    try {
+      const raw = localStorage.getItem(COMMUNITY_PROBLEMS_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveCommunityProblemsCache() {
+    try {
+      localStorage.setItem(COMMUNITY_PROBLEMS_CACHE_KEY, JSON.stringify(communityProblems));
+    } catch {}
+  }
+
   function getTakenAuthorNames() {
     const taken = new Set();
-    Object.values(communityNotes).forEach((byUser) => {
-      if (!byUser || typeof byUser !== "object") return;
-      Object.entries(byUser).forEach(([uid, noteObj]) => {
-        if (userIdentity && uid === userIdentity.userId) return;
-        if (noteObj && typeof noteObj.text === "string" && noteObj.text.trim() && noteObj.author) {
-          taken.add(noteObj.author);
-        }
+    [communityNotes, communityProblems].forEach((store) => {
+      Object.values(store).forEach((byUser) => {
+        if (!byUser || typeof byUser !== "object") return;
+        Object.entries(byUser).forEach(([uid, entry]) => {
+          if (userIdentity && uid === userIdentity.userId) return;
+          if (!entry || typeof entry !== "object") return;
+          const hasText = typeof entry.text === "string" && entry.text.trim();
+          const hasType = typeof entry.type === "string" && Boolean(PROBLEM_TYPES[entry.type]);
+          if ((hasText || hasType) && entry.author) {
+            taken.add(entry.author);
+          }
+        });
       });
     });
     return taken;
@@ -675,6 +731,453 @@
     }
   }
 
+  // Community Problem Reports ("בעיות בשאלה")
+  function isValidProblemEntry(entry) {
+    if (!entry || typeof entry !== "object") return false;
+    const typeInfo = PROBLEM_TYPES[entry.type];
+    if (!typeInfo) return false;
+    const text = typeof entry.text === "string" ? entry.text.trim() : "";
+    if (typeInfo.requireDetail && !text) return false;
+    return true;
+  }
+
+  function getQuestionProblemsList(qId) {
+    const byUser = communityProblems[qId];
+    const list = [];
+    if (byUser && typeof byUser === "object") {
+      Object.entries(byUser).forEach(([uid, entry]) => {
+        if (!isValidProblemEntry(entry)) return;
+        list.push({
+          userId: uid,
+          type: entry.type,
+          text: (entry.text || "").trim(),
+          author: entry.author || "אנונימי",
+          emoji: entry.emoji || "⚠️",
+          category: entry.category || "",
+          updatedAt: Number(entry.updatedAt) || 0,
+          isMine: uid === userIdentity.userId,
+        });
+      });
+    }
+    list.sort((a, b) => {
+      if (a.isMine !== b.isMine) return a.isMine ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    });
+    return list;
+  }
+
+  function updateProblemSyncBadge() {
+    const statusEl = el("problemSyncStatus");
+    if (!statusEl) return;
+    if (problemSyncState === "saving") statusEl.textContent = "שומר לענן... ⏳";
+    else if (problemSyncState === "offline") statusEl.textContent = "שמור מקומית (אופליין) 💾";
+    else if (problemSyncState === "error") statusEl.textContent = "ממתין לסנכרון ⚠️";
+    else statusEl.textContent = "מסונכרן ☁️";
+  }
+
+  function updateProblemFlagButton(btnEl, countEl, q) {
+    if (!btnEl || !q) return;
+    const problems = getQuestionProblemsList(q.id);
+    const fl = progress.flags[q.id] || {};
+    const hasMine = problems.some((p) => p.isMine);
+    btnEl.classList.toggle("active", hasMine || !!fl.problem);
+    btnEl.classList.toggle("has-problems", problems.length > 0);
+    if (countEl) {
+      if (problems.length > 0) {
+        countEl.textContent = String(problems.length);
+        countEl.classList.remove("hidden");
+      } else {
+        countEl.textContent = "";
+        countEl.classList.add("hidden");
+      }
+    }
+  }
+
+  function renderProblemBanner(bannerEl, q) {
+    if (!bannerEl || !q) return;
+    const problems = getQuestionProblemsList(q.id);
+    if (problems.length === 0) {
+      bannerEl.classList.add("hidden");
+      bannerEl.innerHTML = "";
+      return;
+    }
+
+    bannerEl.classList.remove("hidden");
+    bannerEl.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "problem-banner-head";
+
+    const title = document.createElement("div");
+    title.className = "problem-banner-title";
+    title.textContent = problems.length === 1
+      ? "⚠️ שים לב – דווחה בעיה בשאלה זו"
+      : `⚠️ שים לב – דווחו ${problems.length} בעיות בשאלה זו`;
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "problem-banner-add-btn";
+    const mine = problems.find((p) => p.isMine);
+    addBtn.textContent = mine ? "✏️ ערוך דיווח שלי" : "+ הוסף דיווח";
+    addBtn.onclick = () => openProblemModal(q.id);
+
+    head.append(title, addBtn);
+
+    const listWrap = document.createElement("div");
+    listWrap.className = "problem-banner-list";
+
+    problems.forEach((p) => {
+      const info = PROBLEM_TYPES[p.type] || PROBLEM_TYPES.question_issue;
+      const item = document.createElement("div");
+      item.className = "problem-banner-item" + (p.isMine ? " is-mine" : "");
+
+      const top = document.createElement("div");
+      top.className = "problem-item-top";
+
+      const pill = document.createElement("span");
+      pill.className = `problem-type-pill ${info.id}`;
+      pill.textContent = `${info.emoji} ${info.label}`;
+
+      const meta = document.createElement("div");
+      meta.className = "problem-item-meta";
+
+      const authorSpan = document.createElement("span");
+      authorSpan.className = "problem-item-author";
+      authorSpan.textContent = `${p.emoji} ${p.author}`;
+      meta.appendChild(authorSpan);
+
+      const timeStr = formatNoteTime(p.updatedAt);
+      if (timeStr) {
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "tabular-text";
+        timeSpan.textContent = `· ${timeStr}`;
+        meta.appendChild(timeSpan);
+      }
+
+      if (p.isMine) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "note-card-action-btn";
+        editBtn.title = "ערוך דיווח";
+        editBtn.textContent = "✏️";
+        editBtn.onclick = () => openProblemModal(q.id);
+
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "note-card-action-btn danger";
+        delBtn.title = "מחק דיווח";
+        delBtn.textContent = "🗑️";
+        delBtn.onclick = () => deleteMyProblemReport(q.id);
+
+        meta.append(editBtn, delBtn);
+      }
+
+      top.append(pill, meta);
+      item.appendChild(top);
+
+      if (p.text) {
+        const textDiv = document.createElement("div");
+        textDiv.className = "problem-item-text";
+        textDiv.textContent = p.text;
+        item.appendChild(textDiv);
+      }
+
+      listWrap.appendChild(item);
+    });
+
+    bannerEl.append(head, listWrap);
+  }
+
+  function updateProblemModalFields() {
+    const selectedRadio = document.querySelector('input[name="problemType"]:checked');
+    const typeKey = selectedRadio ? selectedRadio.value : "question_issue";
+    const info = PROBLEM_TYPES[typeKey] || PROBLEM_TYPES.question_issue;
+    const labelEl = el("problemDetailLabel");
+    const inputEl = el("problemDetailInput");
+    if (labelEl) labelEl.textContent = info.detailLabel;
+    if (inputEl) inputEl.placeholder = info.placeholder;
+  }
+
+  function openProblemModal(qId) {
+    const q = Q_MAP.get(qId);
+    if (!q) return;
+    activeProblemModalQId = qId;
+
+    const modal = el("problemReportModal");
+    el("problemModalQLabel").textContent = `${q.exam} · שאלה ${q.num} · ${formatSubject(getSubject(q))}`;
+    el("problemAuthorLabel").textContent = `מדווח בתור ${userIdentity.emoji} ${userIdentity.name}`;
+
+    const mine = communityProblems[qId]?.[userIdentity.userId];
+    const hasValidMine = isValidProblemEntry(mine);
+    const chosenType = hasValidMine && PROBLEM_TYPES[mine.type] ? mine.type : "question_issue";
+
+    document.querySelectorAll('input[name="problemType"]').forEach((r) => {
+      r.checked = r.value === chosenType;
+    });
+    el("problemDetailInput").value = hasValidMine ? (mine.text || "") : "";
+    el("btnSubmitProblem").textContent = hasValidMine ? "💾 עדכן אזהרה" : "⚠️ פרסם אזהרה לכולם";
+    el("btnDeleteMyProblem").classList.toggle("hidden", !hasValidMine);
+
+    updateProblemModalFields();
+    updateProblemSyncBadge();
+    modal.classList.remove("hidden");
+    setTimeout(() => el("problemDetailInput")?.focus(), 20);
+  }
+
+  function closeProblemModal() {
+    activeProblemModalQId = null;
+    el("problemReportModal").classList.add("hidden");
+  }
+
+  function refreshActiveQuestionProblemViews() {
+    if (currentMode === "exam" && simState.active) {
+      const simQ = simState.questions[simState.currentIndex];
+      if (simQ) {
+        renderProblemBanner(el("simProblemBanner"), simQ);
+        updateProblemFlagButton(el("simProblemBtn"), el("simProblemCount"), simQ);
+      }
+      return;
+    }
+    if (currentMode !== "analytics" && filteredList.length > 0) {
+      const q = filteredList[currentIndex];
+      if (q) {
+        renderProblemBanner(el("qProblemBanner"), q);
+        updateProblemFlagButton(el("btnFlagProblem"), el("btnFlagProblemCount"), q);
+      }
+    }
+  }
+
+  async function submitProblemReport() {
+    const qId = activeProblemModalQId;
+    if (!qId) return;
+    const selectedRadio = document.querySelector('input[name="problemType"]:checked');
+    const typeKey = selectedRadio ? selectedRadio.value : "question_issue";
+    const info = PROBLEM_TYPES[typeKey] || PROBLEM_TYPES.question_issue;
+    const rawText = el("problemDetailInput").value;
+    const trimmed = rawText.trim();
+
+    if (info.requireDetail && !trimmed) {
+      showToast(`✏️ נא לפרט: ${info.detailLabel}`);
+      el("problemDetailInput").focus();
+      return;
+    }
+
+    identityNeedsCloudCheck = false;
+    if (!progress.flags[qId]) progress.flags[qId] = {};
+    progress.flags[qId].problem = true;
+    saveProgress();
+
+    if (!communityProblems[qId] || typeof communityProblems[qId] !== "object") {
+      communityProblems[qId] = {};
+    }
+    communityProblems[qId][userIdentity.userId] = {
+      type: info.id,
+      text: trimmed,
+      author: userIdentity.name,
+      emoji: userIdentity.emoji,
+      category: userIdentity.category,
+      updatedAt: Date.now(),
+    };
+
+    pendingProblemDirtyQIds.add(qId);
+    saveCommunityProblemsCache();
+    problemSyncState = "saving";
+    closeProblemModal();
+    refreshActiveQuestionProblemViews();
+
+    await enqueueProblemCloudSync();
+    if (problemSyncState === "synced") {
+      showToast("⚠️ הדיווח פורסם ומוצג מעל השאלה לכולם!");
+    } else {
+      showToast("⚠️ הדיווח נשמר מקומית ויוצג מעל השאלה.");
+    }
+  }
+
+  async function deleteMyProblemReport(qId) {
+    if (!qId) return;
+    if (progress.flags[qId]) {
+      progress.flags[qId].problem = false;
+      saveProgress();
+    }
+    if (communityProblems[qId]) {
+      delete communityProblems[qId][userIdentity.userId];
+      if (Object.keys(communityProblems[qId]).length === 0) {
+        delete communityProblems[qId];
+      }
+    }
+    pendingProblemDirtyQIds.add(qId);
+    saveCommunityProblemsCache();
+    problemSyncState = "saving";
+    if (activeProblemModalQId === qId) closeProblemModal();
+    refreshActiveQuestionProblemViews();
+
+    await enqueueProblemCloudSync();
+    if (problemSyncState === "synced") {
+      showToast("🗑️ הדיווח שלך הוסר.");
+    }
+  }
+
+  function normalizeCloudProblemsPayload(raw) {
+    if (raw && typeof raw === "object" && raw.problems && typeof raw.problems === "object") {
+      return { version: 1, problems: raw.problems };
+    }
+    return { version: 1, problems: {} };
+  }
+
+  function mergeCloudProblemsIntoLocal(cloudPayload) {
+    const normalized = normalizeCloudProblemsPayload(cloudPayload);
+    const merged = {};
+
+    Object.entries(normalized.problems).forEach(([qId, byUser]) => {
+      if (!byUser || typeof byUser !== "object") return;
+      merged[qId] = {};
+      Object.entries(byUser).forEach(([uid, entry]) => {
+        if (isValidProblemEntry(entry)) {
+          merged[qId][uid] = { ...entry };
+        }
+      });
+      if (Object.keys(merged[qId]).length === 0) delete merged[qId];
+    });
+
+    pendingProblemDirtyQIds.forEach((qId) => {
+      const localMine = communityProblems[qId]?.[userIdentity.userId];
+      if (!merged[qId]) merged[qId] = {};
+      if (isValidProblemEntry(localMine)) {
+        merged[qId][userIdentity.userId] = { ...localMine };
+      } else {
+        delete merged[qId][userIdentity.userId];
+        if (Object.keys(merged[qId]).length === 0) delete merged[qId];
+      }
+    });
+
+    communityProblems = merged;
+    saveCommunityProblemsCache();
+  }
+
+  async function fetchCloudProblemsPayload() {
+    try {
+      const res = await fetch(CLOUD_PROBLEMS_URL, { cache: "no-store" });
+      if (res.ok) {
+        const text = await res.text();
+        if (!text || !text.trim()) return { version: 1, problems: {} };
+        return normalizeCloudProblemsPayload(JSON.parse(text));
+      }
+    } catch {}
+    if (serverOnline) {
+      const res = await fetch("/api/community-problems", { cache: "no-store" });
+      if (res.ok) return normalizeCloudProblemsPayload(await res.json());
+    }
+    throw new Error("Cloud problems unreachable");
+  }
+
+  async function pullCloudProblems(showFeedback = false) {
+    try {
+      const cloudData = await fetchCloudProblemsPayload();
+      mergeCloudProblemsIntoLocal(cloudData);
+      if (pendingProblemDirtyQIds.size === 0) {
+        problemSyncState = "synced";
+      }
+      if (serverOnline) {
+        fetch("/api/community-problems", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version: 1, problems: communityProblems }),
+        }).catch(() => {});
+      }
+      refreshActiveQuestionProblemViews();
+      updateProblemSyncBadge();
+      if (showFeedback) showToast("🔄 דיווחי הבעיות רועננו מהענן!");
+    } catch {
+      if (pendingProblemDirtyQIds.size > 0) problemSyncState = "offline";
+      updateProblemSyncBadge();
+    }
+  }
+
+  function enqueueProblemCloudSync() {
+    problemWriteQueue = problemWriteQueue
+      .then(async () => {
+        if (pendingProblemDirtyQIds.size === 0) return;
+        problemSyncState = "saving";
+        updateProblemSyncBadge();
+
+        const syncSnapshot = new Map();
+        pendingProblemDirtyQIds.forEach((qId) => {
+          const entry = communityProblems[qId]?.[userIdentity.userId];
+          syncSnapshot.set(qId, isValidProblemEntry(entry) ? { ...entry } : null);
+        });
+
+        let cloudData = { version: 1, problems: {} };
+        let cloudReachable = false;
+        try {
+          const res = await fetch(CLOUD_PROBLEMS_URL, { cache: "no-store" });
+          if (res.ok) {
+            cloudReachable = true;
+            const text = await res.text();
+            if (text && text.trim()) {
+              cloudData = normalizeCloudProblemsPayload(JSON.parse(text));
+            }
+          }
+        } catch {}
+
+        syncSnapshot.forEach((entry, qId) => {
+          if (!cloudData.problems[qId] || typeof cloudData.problems[qId] !== "object") {
+            cloudData.problems[qId] = {};
+          }
+          if (isValidProblemEntry(entry)) {
+            cloudData.problems[qId][userIdentity.userId] = entry;
+          } else {
+            delete cloudData.problems[qId][userIdentity.userId];
+            if (Object.keys(cloudData.problems[qId]).length === 0) {
+              delete cloudData.problems[qId];
+            }
+          }
+        });
+
+        let cloudSaved = false;
+        if (cloudReachable) {
+          try {
+            const postRes = await fetch(CLOUD_PROBLEMS_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cloudData),
+            });
+            cloudSaved = postRes.ok;
+          } catch {}
+        }
+
+        if (serverOnline) {
+          fetch("/api/community-problems", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(cloudData),
+          }).catch(() => {});
+        }
+
+        if (cloudSaved) {
+          syncSnapshot.forEach((sentEntry, qId) => {
+            const currentEntry = communityProblems[qId]?.[userIdentity.userId] || null;
+            const sameType = (sentEntry?.type || "") === (currentEntry?.type || "");
+            const sameText = (sentEntry?.text || "") === (currentEntry?.text || "");
+            if (sameType && sameText) {
+              pendingProblemDirtyQIds.delete(qId);
+            }
+          });
+          mergeCloudProblemsIntoLocal(cloudData);
+          problemSyncState = pendingProblemDirtyQIds.size > 0 ? "saving" : "synced";
+        } else {
+          problemSyncState = "offline";
+        }
+
+        refreshActiveQuestionProblemViews();
+        updateProblemSyncBadge();
+      })
+      .catch(() => {
+        problemSyncState = "error";
+        updateProblemSyncBadge();
+      });
+    return problemWriteQueue;
+  }
+
   function enqueueCloudSync() {
     cloudWriteQueue = cloudWriteQueue
       .then(async () => {
@@ -894,13 +1397,14 @@
         const fl = progress.flags[q.id] || {};
         const myNote = getMyNoteText(q.id).trim();
         const qCommNotes = getQuestionCommunityNotesList(q.id);
+        const qProblems = getQuestionProblemsList(q.id);
 
         switch (filters.status) {
           case "unsolved": if (att) return false; break;
           case "wrong": if (!att || att.isCorrect) return false; break;
           case "starred": if (!fl.star) return false; break;
           case "unsure": if (!fl.unsure) return false; break;
-          case "problematic": if (!fl.problem) return false; break;
+          case "problematic": if (!fl.problem && qProblems.length === 0) return false; break;
           case "with_image": if (q.images.length === 0) return false; break;
           case "with_note": if (!myNote) return false; break;
           case "with_any_note": if (qCommNotes.length === 0 && !myNote) return false; break;
@@ -908,11 +1412,16 @@
 
         if (term) {
           const commText = qCommNotes.map((n) => `${n.emoji} ${n.author} ${n.text}`).join(" ");
+          const probText = qProblems.map((p) => {
+            const info = PROBLEM_TYPES[p.type];
+            return `${info ? info.label : ""} ${p.author} ${p.text}`;
+          }).join(" ");
           const hay = (
             q.stem + " " +
             q.options.map((o) => o.text).join(" ") + " " +
             myNote + " " +
             commText + " " +
+            probText + " " +
             q.exam + " " +
             q.subject
           ).toLowerCase();
@@ -999,7 +1508,7 @@
 
     el("btnFlagStar").classList.toggle("active", !!fl.star);
     el("btnFlagUnsure").classList.toggle("active", !!fl.unsure);
-    el("btnFlagProblem").classList.toggle("active", !!fl.problem);
+    updateProblemFlagButton(el("btnFlagProblem"), el("btnFlagProblemCount"), q);
 
     el("qPositionText").textContent = `שאלה ${currentIndex + 1} מתוך ${filteredList.length}`;
     el("jumpInput").value = currentIndex + 1;
@@ -1016,6 +1525,8 @@
     el("qSessionStatsText").textContent = sessionAnswered > 0
       ? `בסשן: ${sessionCorrect}/${sessionAnswered} (${Math.round((sessionCorrect / sessionAnswered) * 100)}%)`
       : "";
+
+    renderProblemBanner(el("qProblemBanner"), q);
 
     el("qStem").textContent = q.stem;
     el("qContentGrid").classList.toggle("has-images", q.images.length > 0);
@@ -1446,8 +1957,15 @@
             <span class="q-badge exam-badge">שאלה ${simState.currentIndex + 1} מתוך ${simState.questions.length}</span>
             <span class="q-badge subject-badge">${escapeHtml(formatSubject(getSubject(q)))} · ${escapeHtml(q.exam)}</span>
           </div>
-          <button type="button" class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">🚩 סמן לבדיקה</button>
+          <div class="q-flags">
+            <button type="button" class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">🚩 סמן לבדיקה</button>
+            <button type="button" class="flag-btn" id="simProblemBtn" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
+              <span aria-hidden="true">⚠️</span>
+              <span class="flag-count hidden" id="simProblemCount"></span>
+            </button>
+          </div>
         </div>
+        <div class="q-problem-banner hidden" id="simProblemBanner" role="alert"></div>
         <div class="q-content-grid${q.images.length > 0 ? " has-images" : ""}">
           <div class="q-stem">${escapeHtml(q.stem)}</div>
           <div class="q-images" id="simImages"></div>
@@ -1471,6 +1989,9 @@
       else simState.flagged.add(q.id);
       renderSimQuestion();
     };
+    el("simProblemBtn").onclick = () => openProblemModal(q.id);
+    updateProblemFlagButton(el("simProblemBtn"), el("simProblemCount"), q);
+    renderProblemBanner(el("simProblemBanner"), q);
 
     const imgWrap = el("simImages");
     q.images.forEach((src) => {
@@ -1691,8 +2212,9 @@
       const att = progress.attempts[q.id];
       const note = getMyNoteText(q.id).trim();
       const qComm = getQuestionCommunityNotesList(q.id);
+      const qProbs = getQuestionProblemsList(q.id);
       const fl = progress.flags[q.id] || {};
-      return (att && !att.isCorrect) || note || qComm.length > 0 || fl.star || fl.problem;
+      return (att && !att.isCorrect) || note || qComm.length > 0 || qProbs.length > 0 || fl.star || fl.problem;
     });
 
     if (wrongOrNoted.length === 0) {
@@ -1705,7 +2227,7 @@
         const res = await fetch("/api/export-obsidian", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ progress, communityNotes }),
+          body: JSON.stringify({ progress, communityNotes, communityProblems }),
         });
         const data = await res.json();
         if (res.ok) {
@@ -1720,10 +2242,16 @@
     wrongOrNoted.forEach((q) => {
       const note = getMyNoteText(q.id).trim();
       const qComm = getQuestionCommunityNotesList(q.id);
+      const qProbs = getQuestionProblemsList(q.id);
       const corrText = q.correct.map((i) => `${q.options[i].letter}. ${q.options[i].text}`).join(" / ");
       lines.push(`## ${q.exam} · שאלה ${q.num} (${q.subject})`);
       lines.push(q.stem);
       lines.push(`**תשובה נכונה:** ${corrText}`);
+      qProbs.forEach((p) => {
+        const info = PROBLEM_TYPES[p.type] || PROBLEM_TYPES.question_issue;
+        const body = p.text ? `: ${p.text}` : "";
+        lines.push(`> ⚠️ **${info.label} (${p.emoji} ${p.author})**${body}`);
+      });
       if (note) lines.push(`> 📝 **הפנינה שלי (${userIdentity.emoji} ${userIdentity.name}):** ${note}`);
       qComm.filter((n) => !n.isMine).forEach((n) => {
         lines.push(`> 💬 **${n.emoji} ${n.author}:** ${n.text}`);
@@ -1861,7 +2389,24 @@
     el("btnNextQ").onclick = nextQuestion;
     el("btnFlagStar").onclick = () => toggleFlag("star");
     el("btnFlagUnsure").onclick = () => toggleFlag("unsure");
-    el("btnFlagProblem").onclick = () => toggleFlag("problem");
+    el("btnFlagProblem").onclick = () => {
+      if (filteredList.length === 0) return;
+      openProblemModal(filteredList[currentIndex].id);
+    };
+
+    // Problem Report Modal
+    document.querySelectorAll('input[name="problemType"]').forEach((radio) => {
+      radio.addEventListener("change", updateProblemModalFields);
+    });
+    el("btnCloseProblemModal").onclick = closeProblemModal;
+    el("btnCancelProblemModal").onclick = closeProblemModal;
+    el("btnSubmitProblem").onclick = submitProblemReport;
+    el("btnDeleteMyProblem").onclick = () => {
+      if (activeProblemModalQId) deleteMyProblemReport(activeProblemModalQId);
+    };
+    el("problemReportModal").addEventListener("click", (e) => {
+      if (e.target === el("problemReportModal")) closeProblemModal();
+    });
 
     el("btnClearAttempt").onclick = () => {
       if (filteredList.length === 0) return;
@@ -1872,7 +2417,10 @@
     };
 
     el("btnToggleNotes").onclick = () => toggleNotesDrawer();
-    el("btnRefreshNotes").onclick = () => pullCloudNotes(true);
+    el("btnRefreshNotes").onclick = () => {
+      pullCloudNotes(true);
+      pullCloudProblems(false);
+    };
     el("userIdentityPill").onclick = () => {
       showToast(`🔒 הכינוי הקבוע שלך במכשיר זה: ${userIdentity.emoji} ${userIdentity.name}`);
     };
@@ -2027,10 +2575,12 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         closeLightbox();
+        closeProblemModal();
         el("backupModal").classList.add("hidden");
         el("shortcutsModal").classList.add("hidden");
         return;
       }
+      if (!el("problemReportModal").classList.contains("hidden")) return;
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (currentMode === "analytics" || currentMode === "exam") return;
@@ -2082,5 +2632,9 @@
   applyFilters();
   checkServer();
   pullCloudNotes(false);
-  setInterval(() => pullCloudNotes(false), 45000);
+  pullCloudProblems(false);
+  setInterval(() => {
+    pullCloudNotes(false);
+    pullCloudProblems(false);
+  }, 45000);
 })();

@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261123e" />
+  <link rel="stylesheet" href="styles.css?v=20261124a" />
 </head>
 <body>
   <header class="topbar">
@@ -244,7 +244,10 @@
           <div class="q-flags">
             <button type="button" class="flag-btn" id="btnFlagStar" title="מועדפים / לחזרה (S)" aria-label="סמן כמועדף">⭐</button>
             <button type="button" class="flag-btn" id="btnFlagUnsure" title="ניחשתי / לא בטוח" aria-label="סמן התלבטות">🤔</button>
-            <button type="button" class="flag-btn" id="btnFlagProblem" title="שאלה בעייתית / שגויה בשחזור" aria-label="דווח שאלה בעייתית">⚠️</button>
+            <button type="button" class="flag-btn" id="btnFlagProblem" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
+              <span aria-hidden="true">⚠️</span>
+              <span class="flag-count hidden" id="btnFlagProblemCount"></span>
+            </button>
           </div>
         </div>
 
@@ -253,6 +256,8 @@
           <span id="qDrillStreakText" class="drill-streak hidden"></span>
           <span id="qSessionStatsText" class="session-mini tabular-text"></span>
         </div>
+
+        <div class="q-problem-banner hidden" id="qProblemBanner" role="alert"></div>
 
         <div class="q-content-grid" id="qContentGrid">
           <div class="q-stem" id="qStem"></div>
@@ -490,9 +495,66 @@
     </div>
   </div>
 
+  <!-- Problem Report Modal -->
+  <div class="modal-overlay hidden" id="problemReportModal" role="dialog" aria-modal="true" aria-labelledby="problemModalTitle">
+    <div class="modal-box card problem-modal-box">
+      <div class="modal-header">
+        <div>
+          <h2 id="problemModalTitle">⚠️ דיווח על בעיה בשאלה</h2>
+          <span class="muted problem-modal-q-label" id="problemModalQLabel"></span>
+        </div>
+        <button type="button" class="icon-btn icon-only" id="btnCloseProblemModal" aria-label="סגור חלון">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <p class="muted problem-modal-desc">הדיווח יוצג באופן בולט מעל השאלה כדי להזהיר את שאר התלמידים.</p>
+
+      <div class="problem-type-list" role="radiogroup" aria-label="סוג הבעיה">
+        <label class="radio-card problem-type-card">
+          <input type="radio" name="problemType" value="question_issue" checked />
+          <div>
+            <strong>❓ בעיה בשאלה</strong>
+            <span>ניסוח שגוי, נתונים חסרים, תמונה לא תואמת או שגיאת שחזור</span>
+          </div>
+        </label>
+        <label class="radio-card problem-type-card">
+          <input type="radio" name="problemType" value="distractor_issue" />
+          <div>
+            <strong>🔀 בעיה במסיחים</strong>
+            <span>תשובה מסומנת שגויה, יותר מתשובה נכונה אחת או מסיח לא תקין</span>
+          </div>
+        </label>
+        <label class="radio-card problem-type-card">
+          <input type="radio" name="problemType" value="out_of_material" />
+          <div>
+            <strong>📚 שאלה שלא בחומר</strong>
+            <span>נושא שירד מהסילבוס או לא נלמד בקורס</span>
+          </div>
+        </label>
+      </div>
+
+      <div class="problem-detail-wrap" id="problemDetailWrap">
+        <label for="problemDetailInput" id="problemDetailLabel">מה בדיוק הבעיה בשאלה?</label>
+        <textarea id="problemDetailInput" rows="3" placeholder="פרט מה לא תקין בניסוח השאלה, בנתונים או בתמונה..."></textarea>
+      </div>
+
+      <div class="problem-modal-meta">
+        <span class="muted" id="problemAuthorLabel"></span>
+        <span class="note-sync-status" id="problemSyncStatus">☁️ מסונכרן</span>
+      </div>
+
+      <div class="problem-modal-footer">
+        <button type="button" class="btn-primary" id="btnSubmitProblem">⚠️ פרסם אזהרה לכולם</button>
+        <button type="button" class="btn-danger btn-sm hidden" id="btnDeleteMyProblem">🗑️ מחק דיווח שלי</button>
+        <button type="button" class="btn-secondary" id="btnCancelProblemModal">ביטול</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <script src="questions_data.js"></script>
-  <script src="app.js?v=20261123e"></script>
+  <script src="app.js?v=20261124a"></script>
 </body>
 </html>

@@ -785,6 +785,229 @@ button,
   border-color: var(--warning);
   color: var(--warning-ink);
 }
+.flag-btn.has-problems {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning-ink);
+}
+.flag-btn .flag-count {
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: var(--warning);
+  color: #FFFFFF;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Prominent Problem Warning Banner (above question stem) */
+.q-problem-banner {
+  background: var(--warning-soft);
+  border: 1.5px solid var(--warning);
+  border-radius: 10px;
+  padding: 11px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.problem-banner-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.problem-banner-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: var(--warning-ink);
+}
+
+.problem-banner-add-btn {
+  background: var(--surface);
+  border: 1px solid var(--warning);
+  color: var(--warning-ink);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.14s ease;
+}
+
+.problem-banner-add-btn:hover {
+  background: var(--surface-hover);
+}
+
+.problem-banner-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.problem-banner-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.problem-banner-item.is-mine {
+  border-color: var(--warning);
+}
+
+.problem-item-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+}
+
+.problem-type-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.problem-type-pill.question_issue {
+  background: var(--danger-soft);
+  color: var(--danger-ink);
+  border-color: rgba(185, 28, 28, 0.25);
+}
+
+.problem-type-pill.distractor_issue {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+  border-color: rgba(180, 83, 9, 0.3);
+}
+
+.problem-type-pill.out_of_material {
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  border-color: rgba(22, 58, 95, 0.25);
+}
+
+.problem-item-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.problem-item-author {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.problem-item-text {
+  font-size: 0.91rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Problem Report Modal */
+.problem-modal-box {
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.problem-modal-q-label {
+  display: block;
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.problem-modal-desc {
+  font-size: 0.86rem;
+}
+
+.problem-type-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.problem-type-card {
+  padding: 10px 12px;
+  align-items: center;
+}
+
+.problem-type-card input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.problem-detail-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.problem-detail-wrap label {
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.problem-detail-wrap textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.problem-detail-wrap textarea:focus {
+  border-color: var(--primary-ink);
+  background: var(--surface);
+}
+
+.problem-modal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+
+.problem-modal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.problem-modal-footer .btn-primary {
+  flex: 1 1 auto;
+}
 
 .q-progress-strip {
   display: flex;
