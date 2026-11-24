@@ -32,6 +32,8 @@ async function run() {
     const b = await req("/api/bootstrap");
     assert.equal(b.status, 200);
     assert.equal(b.data.ok, true);
+    assert.equal(typeof b.data.communityVersion, "number");
+    assert.ok(b.data.communityVersion >= 1);
     assert.equal(typeof b.data.notes, "object");
     assert.equal(typeof b.data.problems, "object");
     assert.equal(typeof b.data.overrides, "object");
@@ -756,6 +758,110 @@ async function run() {
       );
     }
     console.log("✓ Leaderboard answers/notes sorting & privacy checks OK");
+  }
+
+  // 8c. Conditional smart polling (/api/poll)
+  {
+    const bootInit = await req("/api/bootstrap");
+    assert.equal(bootInit.status, 200);
+    const vCommInit = bootInit.data.communityVersion;
+    assert.equal(typeof vCommInit, "number");
+
+    const progInit = await req("/api/progress", {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+    });
+    assert.equal(progInit.status, 200);
+    const vProgInit = progInit.data.version;
+    assert.equal(typeof vProgInit, "number");
+
+    // 1. Poll with matching versions -> no community or progress payloads returned
+    const pollIdle = await req(`/api/poll?communityVersion=${vCommInit}&progressVersion=${vProgInit}`, {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+    });
+    assert.equal(pollIdle.status, 200);
+    assert.equal(pollIdle.data.ok, true);
+    assert.equal(pollIdle.data.communityVersion, vCommInit);
+    assert.equal(pollIdle.data.communityChanged, false);
+    assert.equal(pollIdle.data.notes, undefined);
+    assert.equal(pollIdle.data.problems, undefined);
+    assert.equal(pollIdle.data.overrides, undefined);
+    assert.equal(pollIdle.data.takenNames, undefined);
+    assert.equal(pollIdle.data.progressStatus, 200);
+    assert.equal(pollIdle.data.progressChanged, false);
+    assert.equal(pollIdle.data.progressVersion, vProgInit);
+    assert.equal(pollIdle.data.progress, undefined);
+    assert.ok(Array.isArray(pollIdle.data.onlineUsers));
+
+    // 2. Add a community note -> poll with previous communityVersion returns communityChanged: true + new note
+    const putPollNote = await req("/api/notes/2026_q014", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "הערה חדשה לבדיקת poll",
+      },
+    });
+    assert.equal(putPollNote.status, 200);
+
+    const pollAfterNote = await req(`/api/poll?communityVersion=${vCommInit}&progressVersion=${vProgInit}`, {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+    });
+    assert.equal(pollAfterNote.status, 200);
+    assert.equal(pollAfterNote.data.communityChanged, true);
+    assert.ok(pollAfterNote.data.communityVersion > vCommInit);
+    assert.equal(pollAfterNote.data.notes["2026_q014"][studentA.userId].text, "הערה חדשה לבדיקת poll");
+    assert.equal(pollAfterNote.data.takenNames, undefined);
+    assert.equal(pollAfterNote.data.progressChanged, false);
+
+    // 3. Poll with updated communityVersion -> communityChanged: false again
+    const vCommAfterNote = pollAfterNote.data.communityVersion;
+    const pollAfterNoteClean = await req(`/api/poll?communityVersion=${vCommAfterNote}&progressVersion=${vProgInit}`, {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+    });
+    assert.equal(pollAfterNoteClean.status, 200);
+    assert.equal(pollAfterNoteClean.data.communityChanged, false);
+    assert.equal(pollAfterNoteClean.data.notes, undefined);
+
+    // 4. Update progress -> poll with older progressVersion returns progressChanged: true + updated progress
+    const putProgPoll = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        progress: {
+          attempts: {
+            "2026_q020": { selected: 2, isCorrect: true, ts: 9000 },
+          },
+        },
+      },
+    });
+    assert.equal(putProgPoll.status, 200);
+    const vProgNew = putProgPoll.data.version;
+    assert.ok(vProgNew > vProgInit);
+
+    const pollAfterProg = await req(`/api/poll?communityVersion=${vCommAfterNote}&progressVersion=${vProgInit}`, {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+    });
+    assert.equal(pollAfterProg.status, 200);
+    assert.equal(pollAfterProg.data.communityChanged, false);
+    assert.equal(pollAfterProg.data.progressStatus, 200);
+    assert.equal(pollAfterProg.data.progressChanged, true);
+    assert.equal(pollAfterProg.data.progressVersion, vProgNew);
+    assert.equal(pollAfterProg.data.progress.attempts["2026_q020"].selected, 2);
+
+    // 5. Revoked device calling /api/poll receives progressStatus: 403
+    const pollRevoked = await req(`/api/poll?communityVersion=${vCommAfterNote}&progressVersion=${vProgInit}&touchPresence=0`, {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": "secret_device_b_789012" },
+    });
+    assert.equal(pollRevoked.status, 200);
+    assert.equal(pollRevoked.data.progressStatus, 403);
+    assert.equal(pollRevoked.data.progressChanged, false);
+    assert.equal(pollRevoked.data.progress, undefined);
+
+    console.log("✓ Smart polling (/api/poll) conditional sync & 403 handling OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts

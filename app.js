@@ -307,11 +307,20 @@
   let deviceId = loadOrInitDeviceId();
   let userIdentity = loadOrInitIdentity();
   let progress = loadProgress();
+  const CLOUD_POLL_INTERVAL_MS = 90000;
+  const USER_IDLE_TIMEOUT_MS = 180000;
+  const VISIBILITY_POLL_COOLDOWN_MS = 15000;
   let cloudProgressSyncState = isCloudApiConfigured() ? "idle" : "offline";
   let cloudProgressDirty = false;
   let cloudProgressPushTimer = null;
   let cloudProgressSyncPromise = null;
   let lastVisibilityPullAt = Date.now();
+  let lastCommunityVersion = 0;
+  let lastSyncedProgressVersion = 0;
+  let lastUserActivityAt = Date.now();
+  let lastActivityThrottleAt = 0;
+  let lastCloudPollAt = 0;
+  let cloudPollInFlight = null;
   let pendingSyncPreview = null;
   let onlineUsersList = [];
   let onlineUsersLoaded = false;
@@ -1430,7 +1439,7 @@
       } else if (onlineUsersLoading && !onlineUsersLoaded) {
         subEl.textContent = "טוען רשימת מחוברים...";
       } else {
-        subEl.textContent = "פעילים ב-2 הדקות האחרונות";
+        subEl.textContent = "פעילים ב-3 הדקות האחרונות";
       }
     }
     if (!listEl) return;
@@ -1448,7 +1457,7 @@
     }
 
     if (onlineUsersList.length === 0) {
-      listEl.innerHTML = `<li class="online-users-empty">אין משתמשים פעילים ב-2 הדקות האחרונות.</li>`;
+      listEl.innerHTML = `<li class="online-users-empty">אין משתמשים פעילים ב-3 הדקות האחרונות.</li>`;
       return;
     }
 
@@ -1545,6 +1554,7 @@
           const data = await res.json();
           return {
             source: "cloud",
+            communityVersion: Number(data?.communityVersion) || 0,
             notes: data?.notes && typeof data.notes === "object" ? data.notes : {},
             problems: data?.problems && typeof data.problems === "object" ? data.problems : {},
             overrides: data?.overrides && typeof data.overrides === "object" ? data.overrides : {},
@@ -1567,87 +1577,122 @@
       const overrides = overridesRaw?.overrides && typeof overridesRaw.overrides === "object"
         ? overridesRaw.overrides
         : questionOverrides;
-      return { source: "local", notes, problems, overrides, takenNames: takenNamesMap };
+      return { source: "local", communityVersion: 0, notes, problems, overrides, takenNames: takenNamesMap };
     }
     throw new Error("Cloud API unreachable");
+  }
+
+  function applyCloudCommunityPayload(
+    {
+      notes = null,
+      problems = null,
+      overrides = null,
+      takenNames = null,
+      onlineUsers = null,
+      serverTime = 0,
+      communityVersion = 0,
+      mirrorToLocalServer = false,
+      runIdentityCheck = false,
+    } = {}
+  ) {
+    if (communityVersion > 0) {
+      lastCommunityVersion = communityVersion;
+    }
+
+    if (Array.isArray(onlineUsers)) {
+      updateOnlineUsersState(onlineUsers, {
+        loaded: true,
+        serverTime: Number(serverTime) || 0,
+      });
+    }
+
+    const hasCommunityData = Boolean(notes || problems || overrides || takenNames);
+    if (!hasCommunityData) return;
+
+    const prevOverridesJson = JSON.stringify(questionOverrides);
+
+    if (notes && typeof notes === "object") {
+      mergeCloudIntoLocal({ version: 1, notes });
+    }
+    if (problems && typeof problems === "object") {
+      mergeCloudProblemsIntoLocal({ version: 1, problems });
+    }
+    if (takenNames && typeof takenNames === "object") {
+      takenNamesMap = takenNames;
+      saveTakenNamesCache();
+    }
+    if (overrides && typeof overrides === "object") {
+      questionOverrides = overrides;
+      saveQuestionOverridesCache();
+    }
+
+    if (runIdentityCheck && identityNeedsCloudCheck) {
+      identityNeedsCloudCheck = false;
+      const hasMyContent =
+        pendingDirtyQIds.size > 0 ||
+        pendingProblemDirtyQIds.size > 0 ||
+        Object.values(communityNotes).some((byUser) => byUser && byUser[userIdentity.userId]) ||
+        Object.values(communityProblems).some((byUser) => byUser && byUser[userIdentity.userId]);
+      if (!hasMyContent && getTakenAuthorNames().has(userIdentity.name)) {
+        const fresh = pickRandomIdentity(true);
+        userIdentity = {
+          ...userIdentity,
+          name: fresh.name,
+          emoji: fresh.emoji,
+          category: fresh.category,
+          locked: true,
+        };
+        saveUserIdentity();
+      }
+    }
+
+    if (pendingDirtyQIds.size === 0) noteSyncState = "synced";
+    if (pendingProblemDirtyQIds.size === 0) problemSyncState = "synced";
+
+    if (mirrorToLocalServer && serverOnline) {
+      fetch("/api/community-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: 1, notes: communityNotes }),
+      }).catch(() => {});
+      fetch("/api/community-problems", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: 1, problems: communityProblems }),
+      }).catch(() => {});
+      fetch("/api/question-overrides", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: 1, overrides: questionOverrides }),
+      }).catch(() => {});
+    }
+
+    const nextOverridesJson = JSON.stringify(questionOverrides);
+    if (prevOverridesJson !== nextOverridesJson) {
+      rebuildEffectiveQuestions({ render: true });
+    } else {
+      if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
+        renderNotesSection(filteredList[currentIndex], true);
+      }
+      refreshActiveQuestionProblemViews();
+      updateProblemSyncBadge();
+    }
   }
 
   async function bootstrapCloudState(showFeedback = false) {
     try {
       const data = await fetchBootstrapPayload();
-      const prevOverridesJson = JSON.stringify(questionOverrides);
-
-      mergeCloudIntoLocal({ version: 1, notes: data.notes });
-      mergeCloudProblemsIntoLocal({ version: 1, problems: data.problems });
-
-      if (data.takenNames && typeof data.takenNames === "object") {
-        takenNamesMap = data.takenNames;
-        saveTakenNamesCache();
-      }
-
-      if (Array.isArray(data.onlineUsers)) {
-        updateOnlineUsersState(data.onlineUsers, {
-          loaded: true,
-          serverTime: Number(data.serverTime) || 0,
-        });
-      }
-
-      if (data.overrides && typeof data.overrides === "object") {
-        questionOverrides = data.overrides;
-        saveQuestionOverridesCache();
-      }
-
-      if (identityNeedsCloudCheck) {
-        identityNeedsCloudCheck = false;
-        const hasMyContent =
-          pendingDirtyQIds.size > 0 ||
-          pendingProblemDirtyQIds.size > 0 ||
-          Object.values(communityNotes).some((byUser) => byUser && byUser[userIdentity.userId]) ||
-          Object.values(communityProblems).some((byUser) => byUser && byUser[userIdentity.userId]);
-        if (!hasMyContent && getTakenAuthorNames().has(userIdentity.name)) {
-          const fresh = pickRandomIdentity(true);
-          userIdentity = {
-            ...userIdentity,
-            name: fresh.name,
-            emoji: fresh.emoji,
-            category: fresh.category,
-            locked: true,
-          };
-          saveUserIdentity();
-        }
-      }
-
-      if (pendingDirtyQIds.size === 0) noteSyncState = "synced";
-      if (pendingProblemDirtyQIds.size === 0) problemSyncState = "synced";
-
-      if (serverOnline && data.source === "cloud") {
-        fetch("/api/community-notes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ version: 1, notes: communityNotes }),
-        }).catch(() => {});
-        fetch("/api/community-problems", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ version: 1, problems: communityProblems }),
-        }).catch(() => {});
-        fetch("/api/question-overrides", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ version: 1, overrides: questionOverrides }),
-        }).catch(() => {});
-      }
-
-      const nextOverridesJson = JSON.stringify(questionOverrides);
-      if (prevOverridesJson !== nextOverridesJson) {
-        rebuildEffectiveQuestions({ render: true });
-      } else {
-        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
-          renderNotesSection(filteredList[currentIndex], true);
-        }
-        refreshActiveQuestionProblemViews();
-        updateProblemSyncBadge();
-      }
+      applyCloudCommunityPayload({
+        notes: data.notes,
+        problems: data.problems,
+        overrides: data.overrides,
+        takenNames: data.takenNames,
+        onlineUsers: data.onlineUsers,
+        serverTime: data.serverTime,
+        communityVersion: Number(data.communityVersion) || 0,
+        mirrorToLocalServer: data.source === "cloud",
+        runIdentityCheck: true,
+      });
 
       if (showFeedback) showToast("🔄 הנתונים המשותפים רועננו מהענן!");
       return true;
@@ -5460,6 +5505,9 @@
           updateSyncStatusUI();
           return false;
         }
+        if (Number(data.version) > 0) {
+          lastSyncedProgressVersion = Number(data.version);
+        }
         if (data.progress) {
           const changedLocallyDuringFlight = JSON.stringify(progress) !== snapshotJson;
           applyMergedCloudProgress(data.progress, { rerender: true });
@@ -5517,6 +5565,9 @@
       }
       const data = await res.json().catch(() => ({}));
       if (data.progress) {
+        if (Number(data.version) > 0) {
+          lastSyncedProgressVersion = Number(data.version);
+        }
         applyMergedCloudProgress(data.progress, { rerender: true });
         cloudProgressSyncState = "synced";
         updateSyncStatusUI();
@@ -5534,6 +5585,107 @@
     }
   }
 
+  async function pollCloudState({ touchPresence = true, silent = true } = {}) {
+    if (!isCloudApiConfigured()) return false;
+    if (cloudPollInFlight) return cloudPollInFlight;
+
+    const runPoll = async () => {
+      try {
+        if (!identityRegisteredInCloud) {
+          await registerIdentityPing(false);
+        }
+        if (cloudProgressDirty) {
+          await pushCloudProgress();
+        }
+
+        const params = new URLSearchParams({
+          communityVersion: String(lastCommunityVersion || 0),
+          progressVersion: String(lastSyncedProgressVersion || 0),
+          touchPresence: touchPresence ? "1" : "0",
+        });
+        const res = await fetch(`${CLOUD_API_BASE}/api/poll?${params.toString()}`, {
+          method: "GET",
+          headers: {
+            "X-User-Id": userIdentity.userId,
+            "X-Client-Secret": userIdentity.clientSecret,
+          },
+          cache: "no-store",
+        });
+
+        if (res.status === 404) {
+          const okProg = await pullCloudProgress({ silent });
+          const okBoot = await bootstrapCloudState(false);
+          lastCloudPollAt = Date.now();
+          return okProg && okBoot;
+        }
+
+        if (!res.ok) {
+          cloudProgressSyncState = "error";
+          updateSyncStatusUI();
+          return false;
+        }
+
+        const data = await res.json().catch(() => ({}));
+        lastCloudPollAt = Date.now();
+
+        if (Array.isArray(data.onlineUsers)) {
+          updateOnlineUsersState(data.onlineUsers, {
+            loaded: true,
+            serverTime: Number(data.serverTime) || 0,
+          });
+        }
+
+        if (data.progressStatus === 403) {
+          cloudProgressSyncState = "error";
+          updateSyncStatusUI();
+          if (!silent) showToast("⚠️ חיבור המכשיר בוטל ממכשיר אחר.");
+        } else if (data.progressStatus === 200) {
+          if (data.progressChanged && data.progress) {
+            applyMergedCloudProgress(data.progress, { rerender: true });
+            if (Number(data.progressVersion) > 0) {
+              lastSyncedProgressVersion = Number(data.progressVersion);
+            }
+            cloudProgressSyncState = "synced";
+            updateSyncStatusUI();
+          } else if (!data.hasServerProgress && hasSubstantialLocalProgress(progress)) {
+            await pushCloudProgress();
+          } else {
+            if (Number(data.progressVersion) > 0) {
+              lastSyncedProgressVersion = Number(data.progressVersion);
+            }
+            if (!cloudProgressDirty) {
+              cloudProgressSyncState = "synced";
+              updateSyncStatusUI();
+            }
+          }
+        }
+
+        if (data.communityChanged) {
+          applyCloudCommunityPayload({
+            notes: data.notes && typeof data.notes === "object" ? data.notes : {},
+            problems: data.problems && typeof data.problems === "object" ? data.problems : {},
+            overrides: data.overrides && typeof data.overrides === "object" ? data.overrides : {},
+            communityVersion: Number(data.communityVersion) || 0,
+            mirrorToLocalServer: true,
+          });
+        } else if (Number(data.communityVersion) > 0) {
+          lastCommunityVersion = Number(data.communityVersion);
+        }
+
+        return true;
+      } catch {
+        cloudProgressSyncState = "offline";
+        updateSyncStatusUI();
+        return false;
+      }
+    };
+
+    cloudPollInFlight = runPoll().finally(() => {
+      cloudPollInFlight = null;
+    });
+    return cloudPollInFlight;
+  }
+
   async function syncNowManual() {
     if (!isCloudApiConfigured()) {
       showToast("⚠️ סנכרון הענן אינו זמין כרגע.");
@@ -5545,6 +5697,7 @@
     await ensureSyncCodeRegistered();
     const okProg = cloudProgressDirty ? await pushCloudProgress() : await pullCloudProgress({ silent: false });
     const okBoot = await bootstrapCloudState(false);
+    lastCloudPollAt = Date.now();
     renderSyncModal();
     if (okProg && okBoot) {
       showToast("☁️ ההתקדמות וההערות סונכרנו בהצלחה!");
@@ -5748,6 +5901,9 @@
       pendingSyncPreview = null;
       cloudProgressDirty = false;
       cloudProgressSyncState = "synced";
+      if (Number(data.version) > 0) {
+        lastSyncedProgressVersion = Number(data.version);
+      }
       const inputEl = el("syncConnectInput");
       if (inputEl) inputEl.value = "";
 
@@ -5755,6 +5911,7 @@
       updateDrillBadge();
       updateSyncStatusUI();
       await bootstrapCloudState(false);
+      lastCloudPollAt = Date.now();
       renderCurrentView();
       renderSyncModal();
       showToast(`✅ התחברת לפרופיל ${userIdentity.emoji} ${userIdentity.name}!`);
@@ -6208,6 +6365,7 @@
       await ensureSyncCodeRegistered();
       await pullCloudProgress({ silent: true });
     }
+    lastCloudPollAt = Date.now();
     if (!hasSeenOnboarding() && !tourState.active && !simState.active) {
       if (!el("syncModal")?.classList.contains("hidden")) {
         tourState.pendingAfterSyncModal = true;
@@ -6218,6 +6376,26 @@
   })();
 
   initAdminAuth();
+
+  function markUserActivity() {
+    const now = Date.now();
+    if (now - lastActivityThrottleAt < 5000) return;
+    lastActivityThrottleAt = now;
+    const wasIdle = now - lastUserActivityAt > USER_IDLE_TIMEOUT_MS;
+    lastUserActivityAt = now;
+    if (
+      wasIdle &&
+      document.visibilityState !== "hidden" &&
+      isCloudApiConfigured() &&
+      now - lastCloudPollAt > CLOUD_POLL_INTERVAL_MS
+    ) {
+      pollCloudState({ touchPresence: true });
+    }
+  }
+
+  ["pointerdown", "keydown", "touchstart", "scroll"].forEach((evt) => {
+    document.addEventListener(evt, markUserActivity, { passive: true, capture: true });
+  });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
@@ -6230,15 +6408,10 @@
       }
     } else if (document.visibilityState === "visible") {
       const now = Date.now();
-      if (now - lastVisibilityPullAt > 10000) {
+      lastUserActivityAt = now;
+      if (now - lastVisibilityPullAt > VISIBILITY_POLL_COOLDOWN_MS) {
         lastVisibilityPullAt = now;
-        (async () => {
-          if (!identityRegisteredInCloud) {
-            await registerIdentityPing(false);
-          }
-          await pullCloudProgress({ silent: true });
-          await bootstrapCloudState(false);
-        })();
+        pollCloudState({ touchPresence: true });
       }
     }
   });
@@ -6253,12 +6426,9 @@
     }
   });
 
-  setInterval(async () => {
+  setInterval(() => {
     if (document.visibilityState === "hidden") return;
-    if (!identityRegisteredInCloud) {
-      await registerIdentityPing(false);
-    }
-    await pullCloudProgress({ silent: true });
-    await bootstrapCloudState(false);
-  }, 45000);
+    if (Date.now() - lastUserActivityAt > USER_IDLE_TIMEOUT_MS) return;
+    pollCloudState({ touchPresence: true });
+  }, CLOUD_POLL_INTERVAL_MS);
 })();

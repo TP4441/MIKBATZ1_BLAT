@@ -7,7 +7,8 @@ const SYNC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
 const MAX_PROGRESS_JSON_BYTES = 1500 * 1024;
 const VALID_PROBLEM_TYPES = new Set(["question_issue", "distractor_issue", "out_of_material"]);
-const ONLINE_WINDOW_MS = 2 * 60 * 1000; // 2 minutes active presence window
+const ONLINE_WINDOW_MS = 3 * 60 * 1000; // 3 minutes active presence window
+const PRESENCE_TOUCH_INTERVAL_MS = 60 * 1000; // Throttle last_seen_at writes to once per minute
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -446,40 +447,37 @@ function mergeProgressPayloads(base, incoming) {
   return merged;
 }
 
-async function verifyExistingClientSecret(db, userId, clientSecret) {
-  if (!userId || typeof userId !== "string" || userId.length > 80) {
-    return { ok: false, status: 400, error: "Invalid userId" };
-  }
-  if (!clientSecret || typeof clientSecret !== "string" || clientSecret.length < 8 || clientSecret.length > 256) {
-    return { ok: false, status: 403, error: "Missing or invalid clientSecret" };
-  }
-
-  const secretHash = await sha256Hex(clientSecret);
-  const existing = await db
-    .prepare("SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash FROM identities WHERE user_id = ?")
-    .bind(userId)
-    .first();
-
-  if (!existing) {
-    return { ok: false, status: 404, error: "Identity not found" };
-  }
-
+async function verifyAgainstExistingIdentity(db, existing, userId, secretHash, touchPresence = true) {
   const now = Date.now();
+  const identityStale = now - Number(existing.last_seen_at || 0) >= PRESENCE_TOUCH_INTERVAL_MS;
+
   if (existing.client_secret_hash && existing.client_secret_hash === secretHash) {
-    await db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run();
+    if (touchPresence && identityStale) {
+      await db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run();
+    }
     return { ok: true, secretHash, identity: existing };
   }
 
   const deviceRow = await db
-    .prepare("SELECT secret_hash FROM user_device_secrets WHERE secret_hash = ? AND user_id = ?")
+    .prepare("SELECT secret_hash, last_seen_at FROM user_device_secrets WHERE secret_hash = ? AND user_id = ?")
     .bind(secretHash, userId)
     .first();
 
   if (deviceRow) {
-    await Promise.all([
-      db.prepare("UPDATE user_device_secrets SET last_seen_at = ? WHERE secret_hash = ?").bind(now, secretHash).run(),
-      db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run(),
-    ]);
+    if (touchPresence) {
+      const updates = [];
+      if (now - Number(deviceRow.last_seen_at || 0) >= PRESENCE_TOUCH_INTERVAL_MS) {
+        updates.push(
+          db.prepare("UPDATE user_device_secrets SET last_seen_at = ? WHERE secret_hash = ?").bind(now, secretHash).run()
+        );
+      }
+      if (identityStale) {
+        updates.push(db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run());
+      }
+      if (updates.length > 0) {
+        await Promise.all(updates);
+      }
+    }
     return { ok: true, secretHash, identity: existing };
   }
 
@@ -494,7 +492,8 @@ async function verifyExistingClientSecret(db, userId, clientSecret) {
   return { ok: false, status: 403, error: "Forbidden: clientSecret mismatch" };
 }
 
-async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo = null) {
+async function verifyExistingClientSecret(db, userId, clientSecret, options = {}) {
+  const { touchPresence = true } = options || {};
   if (!userId || typeof userId !== "string" || userId.length > 80) {
     return { ok: false, status: 400, error: "Invalid userId" };
   }
@@ -504,45 +503,42 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
 
   const secretHash = await sha256Hex(clientSecret);
   const existing = await db
-    .prepare("SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash FROM identities WHERE user_id = ?")
+    .prepare(
+      "SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at FROM identities WHERE user_id = ?"
+    )
     .bind(userId)
     .first();
 
-  const now = Date.now();
+  if (!existing) {
+    return { ok: false, status: 404, error: "Identity not found" };
+  }
+
+  return verifyAgainstExistingIdentity(db, existing, userId, secretHash, touchPresence);
+}
+
+async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo = null, options = {}) {
+  const { touchPresence = true } = options || {};
+  if (!userId || typeof userId !== "string" || userId.length > 80) {
+    return { ok: false, status: 400, error: "Invalid userId" };
+  }
+  if (!clientSecret || typeof clientSecret !== "string" || clientSecret.length < 8 || clientSecret.length > 256) {
+    return { ok: false, status: 403, error: "Missing or invalid clientSecret" };
+  }
+
+  const secretHash = await sha256Hex(clientSecret);
+  const existing = await db
+    .prepare(
+      "SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at FROM identities WHERE user_id = ?"
+    )
+    .bind(userId)
+    .first();
+
   if (existing) {
-    if (existing.client_secret_hash && existing.client_secret_hash === secretHash) {
-      await db
-        .prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?")
-        .bind(now, userId)
-        .run();
-      return { ok: true, secretHash, identity: existing };
-    }
-
-    const deviceRow = await db
-      .prepare("SELECT secret_hash FROM user_device_secrets WHERE secret_hash = ? AND user_id = ?")
-      .bind(secretHash, userId)
-      .first();
-
-    if (deviceRow) {
-      await Promise.all([
-        db.prepare("UPDATE user_device_secrets SET last_seen_at = ? WHERE secret_hash = ?").bind(now, secretHash).run(),
-        db.prepare("UPDATE identities SET last_seen_at = ? WHERE user_id = ?").bind(now, userId).run(),
-      ]);
-      return { ok: true, secretHash, identity: existing };
-    }
-
-    if (!existing.client_secret_hash) {
-      await db
-        .prepare("UPDATE identities SET client_secret_hash = ?, last_seen_at = ? WHERE user_id = ?")
-        .bind(secretHash, now, userId)
-        .run();
-      return { ok: true, secretHash, identity: existing };
-    }
-
-    return { ok: false, status: 403, error: "Forbidden: clientSecret mismatch" };
+    return verifyAgainstExistingIdentity(db, existing, userId, secretHash, touchPresence);
   }
 
   // First time seeing this userId — create identity row if info is provided
+  const now = Date.now();
   const name = String(identityInfo?.name || "").trim();
   const emoji = String(identityInfo?.emoji || "👤").trim();
   const category = String(identityInfo?.category || "").trim();
@@ -562,7 +558,9 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
       .bind(userId, name, emoji, category, secretHash, now, now)
       .run();
     const created = await db
-      .prepare("SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash FROM identities WHERE user_id = ?")
+      .prepare(
+        "SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at FROM identities WHERE user_id = ?"
+      )
       .bind(userId)
       .first();
     return { ok: true, secretHash, identity: created };
@@ -570,16 +568,31 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
   return { ok: true, secretHash, identity: null };
 }
 
-async function handleBootstrap(env) {
-  const now = Date.now();
-  const [notesRes, probsRes, overridesRes, takenNames, onlineUsers] = await Promise.all([
-    env.DB.prepare("SELECT q_id, user_id, author, emoji, category, text, updated_at FROM community_notes").all(),
-    env.DB.prepare("SELECT q_id, user_id, type, text, author, emoji, category, updated_at FROM community_problems").all(),
-    env.DB.prepare(
+async function getCommunityVersion(db) {
+  const row = await db.prepare("SELECT community_version FROM sync_meta WHERE id = 1").first();
+  return Number(row?.community_version) || 1;
+}
+
+async function bumpCommunityVersion(db, now = Date.now()) {
+  await db
+    .prepare(
+      `INSERT INTO sync_meta (id, community_version, updated_at)
+       VALUES (1, 2, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         community_version = community_version + 1,
+         updated_at = excluded.updated_at`
+    )
+    .bind(now)
+    .run();
+}
+
+async function fetchCommunityData(db) {
+  const [notesRes, probsRes, overridesRes] = await Promise.all([
+    db.prepare("SELECT q_id, user_id, author, emoji, category, text, updated_at FROM community_notes").all(),
+    db.prepare("SELECT q_id, user_id, type, text, author, emoji, category, updated_at FROM community_problems").all(),
+    db.prepare(
       "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at FROM question_overrides"
     ).all(),
-    getTakenNamesMap(env.DB),
-    getOnlineUsersList(env.DB, now),
   ]);
 
   const notes = {};
@@ -612,7 +625,112 @@ async function handleBootstrap(env) {
     overrides[r.q_id] = formatOverrideRow(r);
   }
 
-  return jsonResponse({ ok: true, notes, problems, overrides, takenNames, onlineUsers, serverTime: now });
+  return { notes, problems, overrides };
+}
+
+async function handleBootstrap(env) {
+  const now = Date.now();
+  const [communityVersion, communityData, takenNames, onlineUsers] = await Promise.all([
+    getCommunityVersion(env.DB),
+    fetchCommunityData(env.DB),
+    getTakenNamesMap(env.DB),
+    getOnlineUsersList(env.DB, now),
+  ]);
+
+  return jsonResponse({
+    ok: true,
+    communityVersion,
+    ...communityData,
+    takenNames,
+    onlineUsers,
+    serverTime: now,
+  });
+}
+
+async function handlePoll(request, env) {
+  const url = new URL(request.url);
+  const clientCommunityVersion = Math.max(0, Number.parseInt(url.searchParams.get("communityVersion") || "0", 10) || 0);
+  const clientProgressVersion = Math.max(0, Number.parseInt(url.searchParams.get("progressVersion") || "0", 10) || 0);
+  const touchPresence = url.searchParams.get("touchPresence") !== "0";
+
+  const userId = String(request.headers.get("X-User-Id") || "").trim();
+  const clientSecret = String(request.headers.get("X-Client-Secret") || "");
+  const hasAuthHeaders = Boolean(userId && clientSecret);
+
+  const [serverCommunityVersion, auth] = await Promise.all([
+    getCommunityVersion(env.DB),
+    hasAuthHeaders ? verifyExistingClientSecret(env.DB, userId, clientSecret, { touchPresence }) : Promise.resolve(null),
+  ]);
+
+  const now = Date.now();
+  const communityChanged = serverCommunityVersion !== clientCommunityVersion;
+
+  const [onlineUsers, communityData, progressRow] = await Promise.all([
+    getOnlineUsersList(env.DB, now),
+    communityChanged ? fetchCommunityData(env.DB) : Promise.resolve(null),
+    auth && auth.ok
+      ? env.DB
+          .prepare(
+            `SELECT
+               version,
+               updated_at,
+               CASE WHEN version != ? THEN progress_json ELSE NULL END AS progress_json
+             FROM user_progress
+             WHERE user_id = ?`
+          )
+          .bind(clientProgressVersion, userId)
+          .first()
+      : Promise.resolve(null),
+  ]);
+
+  const payload = {
+    ok: true,
+    serverTime: now,
+    communityVersion: serverCommunityVersion,
+    communityChanged,
+    onlineUsers,
+  };
+
+  if (communityChanged && communityData) {
+    payload.notes = communityData.notes;
+    payload.problems = communityData.problems;
+    payload.overrides = communityData.overrides;
+  }
+
+  if (hasAuthHeaders && auth) {
+    if (!auth.ok) {
+      if (auth.status === 404) {
+        payload.progressStatus = 200;
+        payload.progressChanged = false;
+        payload.progressVersion = 0;
+        payload.progressUpdatedAt = 0;
+        payload.hasServerProgress = false;
+      } else {
+        payload.progressStatus = auth.status;
+        payload.progressChanged = false;
+        payload.progressError = auth.error;
+      }
+    } else if (!progressRow) {
+      payload.progressStatus = 200;
+      payload.progressChanged = false;
+      payload.progressVersion = 0;
+      payload.progressUpdatedAt = 0;
+      payload.hasServerProgress = false;
+    } else {
+      const serverProgressVersion = Number(progressRow.version) || 1;
+      const progressChanged = serverProgressVersion !== clientProgressVersion;
+      payload.progressStatus = 200;
+      payload.progressChanged = progressChanged;
+      payload.progressVersion = serverProgressVersion;
+      payload.progressUpdatedAt = Number(progressRow.updated_at) || 0;
+      payload.hasServerProgress = true;
+      if (progressChanged) {
+        payload.progress = parseJsonSafe(progressRow.progress_json, {});
+      }
+    }
+  }
+
+  return jsonResponse(payload);
 }
 
 async function handleOnlineUsers(env) {
@@ -800,10 +918,13 @@ async function handlePutNote(request, env, qId) {
 
   const trimmed = text.trim();
   if (!trimmed) {
-    await env.DB
+    const delRes = await env.DB
       .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
       .bind(qId, userId)
       .run();
+    if ((delRes?.meta?.changes ?? 1) > 0) {
+      await bumpCommunityVersion(env.DB);
+    }
     return jsonResponse({ ok: true, deleted: true });
   }
 
@@ -825,6 +946,7 @@ async function handlePutNote(request, env, qId) {
     )
     .bind(qId, userId, author || "אנונימי", emoji, category, text, updatedAt)
     .run();
+  await bumpCommunityVersion(env.DB, updatedAt);
 
   return jsonResponse({
     ok: true,
@@ -853,6 +975,7 @@ async function handleDeleteNote(request, env, qId) {
       .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
       .bind(qId, userId)
       .run();
+    await bumpCommunityVersion(env.DB);
   }
 
   return jsonResponse({ ok: true, deleted: Boolean(existingNote) });
@@ -908,6 +1031,7 @@ async function handlePutProblem(request, env, qId) {
     )
     .bind(qId, userId, type, text, author || "אנונימי", emoji, category, updatedAt)
     .run();
+  await bumpCommunityVersion(env.DB, updatedAt);
 
   return jsonResponse({
     ok: true,
@@ -935,6 +1059,7 @@ async function handleDeleteProblem(request, env, qId) {
       .prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?")
       .bind(qId, userId)
       .run();
+    await bumpCommunityVersion(env.DB);
   }
 
   return jsonResponse({ ok: true, deleted: Boolean(existing) });
@@ -1425,6 +1550,7 @@ async function handleSyncLink(request, env) {
           for (let idx = 0; idx < stmts.length; idx += CHUNK_SIZE) {
             await env.DB.batch(stmts.slice(idx, idx + CHUNK_SIZE));
           }
+          await bumpCommunityVersion(env.DB, now);
         }
       }
 
@@ -1649,6 +1775,7 @@ async function handleAdminPutOverride(request, env, qId) {
     )
     .bind(qId, hidden, stem, optionsJson, correctJson, allAccepted, appealNote, subject, updatedAt)
     .run();
+  await bumpCommunityVersion(env.DB, updatedAt);
 
   const savedRow = await env.DB
     .prepare(
@@ -1760,6 +1887,9 @@ async function handleAdminImportLegacy(request, env) {
   for (let i = 0; i < statements.length; i += CHUNK_SIZE) {
     await env.DB.batch(statements.slice(i, i + CHUNK_SIZE));
   }
+  if (notesImported > 0 || problemsImported > 0) {
+    await bumpCommunityVersion(env.DB, now);
+  }
 
   return jsonResponse({
     ok: true,
@@ -1786,6 +1916,10 @@ export default {
 
       if (method === "GET" && path === "/api/bootstrap") {
         return await handleBootstrap(env);
+      }
+
+      if (method === "GET" && path === "/api/poll") {
+        return await handlePoll(request, env);
       }
 
       if (method === "GET" && path === "/api/online") {
@@ -1870,10 +2004,13 @@ export default {
         if (adminNoteMatch && method === "DELETE") {
           const qId = decodeURIComponent(adminNoteMatch[1]);
           const userId = decodeURIComponent(adminNoteMatch[2]);
-          await env.DB
+          const delRes = await env.DB
             .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
             .bind(qId, userId)
             .run();
+          if ((delRes?.meta?.changes ?? 1) > 0) {
+            await bumpCommunityVersion(env.DB);
+          }
           return jsonResponse({ ok: true, qId, userId });
         }
 
@@ -1881,10 +2018,13 @@ export default {
         if (adminProblemMatch && method === "DELETE") {
           const qId = decodeURIComponent(adminProblemMatch[1]);
           const userId = decodeURIComponent(adminProblemMatch[2]);
-          await env.DB
+          const delRes = await env.DB
             .prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?")
             .bind(qId, userId)
             .run();
+          if ((delRes?.meta?.changes ?? 1) > 0) {
+            await bumpCommunityVersion(env.DB);
+          }
           return jsonResponse({ ok: true, qId, userId });
         }
 
@@ -1893,7 +2033,10 @@ export default {
           const qId = decodeURIComponent(adminOverrideMatch[1]);
           if (method === "PUT") return await handleAdminPutOverride(request, env, qId);
           if (method === "DELETE") {
-            await env.DB.prepare("DELETE FROM question_overrides WHERE q_id = ?").bind(qId).run();
+            const delRes = await env.DB.prepare("DELETE FROM question_overrides WHERE q_id = ?").bind(qId).run();
+            if ((delRes?.meta?.changes ?? 1) > 0) {
+              await bumpCommunityVersion(env.DB);
+            }
             return jsonResponse({ ok: true, reset: qId });
           }
         }
