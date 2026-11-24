@@ -312,6 +312,11 @@
   let cloudProgressSyncPromise = null;
   let lastVisibilityPullAt = Date.now();
   let pendingSyncPreview = null;
+  let onlineUsersList = [];
+  let onlineUsersLoaded = false;
+  let onlineUsersLoading = false;
+  let onlineUsersServerTimeOffset = 0;
+  let identityRegisteredInCloud = false;
   let filteredList = [];
   let currentIndex = 0;
   let optionPermutations = new Map(); // qId -> array of original indices
@@ -1312,12 +1317,207 @@
         return registerIdentityPing(true);
       }
       if (res.ok) {
+        identityRegisteredInCloud = true;
         takenNamesMap[userIdentity.name] = userIdentity.userId;
         saveTakenNamesCache();
+        if (Array.isArray(data.onlineUsers)) {
+          updateOnlineUsersState(data.onlineUsers, {
+            loaded: true,
+            serverTime: Number(data.serverTime) || 0,
+          });
+        }
         return true;
       }
     } catch {}
     return false;
+  }
+
+  function updateOnlineUsersState(users, { loaded = true, serverTime = 0 } = {}) {
+    if (serverTime > 0) {
+      onlineUsersServerTimeOffset = serverTime - Date.now();
+    }
+    if (Array.isArray(users)) {
+      const deduped = new Map();
+      users.forEach((u) => {
+        if (!u || typeof u !== "object") return;
+        const userId = String(u.userId || "").trim();
+        const name = String(u.name || "").trim();
+        if (!userId || !name) return;
+        const prev = deduped.get(userId);
+        const lastSeenAt = Number(u.lastSeenAt) || 0;
+        if (!prev || lastSeenAt > prev.lastSeenAt) {
+          deduped.set(userId, {
+            userId,
+            name,
+            emoji: String(u.emoji || "👤").trim(),
+            category: String(u.category || "").trim(),
+            lastSeenAt,
+          });
+        }
+      });
+      onlineUsersList = Array.from(deduped.values());
+    }
+    onlineUsersLoaded = loaded;
+    renderOnlineUsersUI();
+  }
+
+  function formatOnlineRelativeTime(lastSeenAt) {
+    if (!lastSeenAt) return "מחובר";
+    const approxServerNow = Date.now() + onlineUsersServerTimeOffset;
+    const diffSec = Math.max(0, Math.floor((approxServerNow - lastSeenAt) / 1000));
+    if (diffSec < 50) return "פעיל עכשיו";
+    const mins = Math.max(1, Math.round(diffSec / 60));
+    return mins === 1 ? "לפני דקה" : `לפני ${mins} דק׳`;
+  }
+
+  function renderOnlineUsersUI() {
+    const countEl = el("onlineUsersCount");
+    const btnEl = el("btnOnlineUsers");
+    const popoverEl = el("onlineUsersPopover");
+    const titleEl = el("onlinePopoverTitle");
+    const subEl = el("onlinePopoverSub");
+    const listEl = el("onlineUsersList");
+    const refreshBtn = el("btnRefreshOnlineUsers");
+
+    const count = onlineUsersList.length;
+    const isLive = onlineUsersLoaded && isCloudApiConfigured();
+
+    if (countEl) {
+      countEl.textContent = onlineUsersLoaded ? String(count) : "—";
+    }
+    if (btnEl) {
+      btnEl.classList.toggle("is-live", isLive);
+      const label = onlineUsersLoaded
+        ? `מחוברים עכשיו: ${count} — לחץ לצפייה בשמות`
+        : "מחוברים עכשיו — לחץ לצפייה";
+      btnEl.title = label;
+      btnEl.setAttribute("aria-label", label);
+    }
+    if (popoverEl) {
+      popoverEl.classList.toggle("is-live", isLive);
+    }
+    if (refreshBtn) {
+      refreshBtn.classList.toggle("is-spinning", onlineUsersLoading);
+      refreshBtn.disabled = onlineUsersLoading;
+    }
+
+    if (!popoverEl || popoverEl.classList.contains("hidden")) return;
+
+    if (titleEl) {
+      titleEl.textContent = onlineUsersLoaded ? `מחוברים עכשיו (${count})` : "מחוברים עכשיו";
+    }
+    if (subEl) {
+      if (!isCloudApiConfigured()) {
+        subEl.textContent = "מצב לא מקוון — סנכרון ענן אינו פעיל";
+      } else if (onlineUsersLoading && !onlineUsersLoaded) {
+        subEl.textContent = "טוען רשימת מחוברים...";
+      } else {
+        subEl.textContent = "פעילים ב-2 הדקות האחרונות";
+      }
+    }
+    if (!listEl) return;
+
+    if (!isCloudApiConfigured()) {
+      listEl.innerHTML = `<li class="online-users-empty">חיבור הענן כבוי כרגע.</li>`;
+      return;
+    }
+
+    if (!onlineUsersLoaded) {
+      listEl.innerHTML = onlineUsersLoading
+        ? `<li class="online-users-empty">בודק מי מחובר...</li>`
+        : `<li class="online-users-empty">לא ניתן לטעון כרגע את רשימת המחוברים.</li>`;
+      return;
+    }
+
+    if (onlineUsersList.length === 0) {
+      listEl.innerHTML = `<li class="online-users-empty">אין משתמשים פעילים ב-2 הדקות האחרונות.</li>`;
+      return;
+    }
+
+    const sorted = [...onlineUsersList].sort((a, b) => {
+      const aMe = a.userId === userIdentity.userId;
+      const bMe = b.userId === userIdentity.userId;
+      if (aMe !== bMe) return aMe ? -1 : 1;
+      return b.lastSeenAt - a.lastSeenAt;
+    });
+
+    listEl.innerHTML = sorted
+      .map((u) => {
+        const isMe = u.userId === userIdentity.userId;
+        const catTitle = u.category ? ` title="${escapeHtml(u.category)}"` : "";
+        return `<li class="online-user-item${isMe ? " is-me" : ""}"${catTitle}>
+          <span class="online-user-main">
+            <span class="online-user-emoji" aria-hidden="true">${escapeHtml(u.emoji)}</span>
+            <span class="online-user-name">${escapeHtml(u.name)}</span>
+            ${isMe ? `<span class="online-user-me-badge">את/ה</span>` : ""}
+          </span>
+          <span class="online-user-meta">
+            <span class="online-user-dot" aria-hidden="true"></span>
+            <span>${escapeHtml(formatOnlineRelativeTime(u.lastSeenAt))}</span>
+          </span>
+        </li>`;
+      })
+      .join("");
+  }
+
+  async function refreshOnlineUsers({ pingMe = false } = {}) {
+    if (!isCloudApiConfigured()) {
+      renderOnlineUsersUI();
+      return false;
+    }
+    if (onlineUsersLoading) return false;
+    onlineUsersLoading = true;
+    renderOnlineUsersUI();
+    try {
+      if ((pingMe || !identityRegisteredInCloud) && !identityNeedsCloudCheck) {
+        const pinged = await registerIdentityPing(false);
+        if (pinged && onlineUsersLoaded) {
+          return true;
+        }
+      }
+      const res = await fetch(`${CLOUD_API_BASE}/api/online`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        updateOnlineUsersState(Array.isArray(data?.onlineUsers) ? data.onlineUsers : [], {
+          loaded: true,
+          serverTime: Number(data?.serverTime) || 0,
+        });
+        return true;
+      }
+    } catch {}
+    finally {
+      onlineUsersLoading = false;
+      renderOnlineUsersUI();
+    }
+    return false;
+  }
+
+  function openOnlineUsersPopover() {
+    const popoverEl = el("onlineUsersPopover");
+    const btnEl = el("btnOnlineUsers");
+    if (!popoverEl) return;
+    popoverEl.classList.remove("hidden");
+    if (btnEl) btnEl.setAttribute("aria-expanded", "true");
+    renderOnlineUsersUI();
+    refreshOnlineUsers({ pingMe: true });
+  }
+
+  function closeOnlineUsersPopover() {
+    const popoverEl = el("onlineUsersPopover");
+    const btnEl = el("btnOnlineUsers");
+    if (!popoverEl || popoverEl.classList.contains("hidden")) return;
+    popoverEl.classList.add("hidden");
+    if (btnEl) btnEl.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleOnlineUsersPopover() {
+    const popoverEl = el("onlineUsersPopover");
+    if (!popoverEl) return;
+    if (popoverEl.classList.contains("hidden")) {
+      openOnlineUsersPopover();
+    } else {
+      closeOnlineUsersPopover();
+    }
   }
 
   async function fetchBootstrapPayload() {
@@ -1332,6 +1532,8 @@
             problems: data?.problems && typeof data.problems === "object" ? data.problems : {},
             overrides: data?.overrides && typeof data.overrides === "object" ? data.overrides : {},
             takenNames: data?.takenNames && typeof data.takenNames === "object" ? data.takenNames : {},
+            onlineUsers: Array.isArray(data?.onlineUsers) ? data.onlineUsers : null,
+            serverTime: Number(data?.serverTime) || 0,
           };
         }
       } catch {}
@@ -1364,6 +1566,13 @@
       if (data.takenNames && typeof data.takenNames === "object") {
         takenNamesMap = data.takenNames;
         saveTakenNamesCache();
+      }
+
+      if (Array.isArray(data.onlineUsers)) {
+        updateOnlineUsersState(data.onlineUsers, {
+          loaded: true,
+          serverTime: Number(data.serverTime) || 0,
+        });
       }
 
       if (data.overrides && typeof data.overrides === "object") {
@@ -3327,6 +3536,20 @@
       if (confirm("להגיש את המבחן ולראות תוצאות?")) submitSimulation();
     };
 
+    // Online users indicator & popover
+    el("btnOnlineUsers")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleOnlineUsersPopover();
+    });
+    el("btnCloseOnlineUsers")?.addEventListener("click", () => closeOnlineUsersPopover());
+    el("btnRefreshOnlineUsers")?.addEventListener("click", () => refreshOnlineUsers({ pingMe: true }));
+    document.addEventListener("click", (e) => {
+      const wrap = el("onlineUsersWrap");
+      if (wrap && !wrap.contains(e.target)) {
+        closeOnlineUsersPopover();
+      }
+    });
+
     // Modals
     el("btnBackupMenu").onclick = () => el("backupModal").classList.remove("hidden");
     el("btnCloseBackup").onclick = () => el("backupModal").classList.add("hidden");
@@ -3505,6 +3728,7 @@
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         closeLightbox();
+        closeOnlineUsersPopover();
         closeProblemModal();
         closeSyncModal();
         closeAdminLoginModal();
@@ -4628,6 +4852,7 @@
         }
       }
       if (res.ok) {
+        identityRegisteredInCloud = true;
         userIdentity.syncCodeRegistered = true;
         saveUserIdentity();
         takenNamesMap[userIdentity.name] = userIdentity.userId;
@@ -5000,6 +5225,7 @@
         locked: true,
       };
       identityNeedsCloudCheck = false;
+      identityRegisteredInCloud = true;
       saveUserIdentity();
 
       const nextProgress = mergeProgressPayloads({}, data.progress || {});
@@ -5117,8 +5343,13 @@
       const now = Date.now();
       if (now - lastVisibilityPullAt > 10000) {
         lastVisibilityPullAt = now;
-        bootstrapCloudState(false);
-        pullCloudProgress({ silent: true });
+        (async () => {
+          if (!identityRegisteredInCloud) {
+            await registerIdentityPing(false);
+          }
+          await pullCloudProgress({ silent: true });
+          await bootstrapCloudState(false);
+        })();
       }
     }
   });
@@ -5133,8 +5364,12 @@
     }
   });
 
-  setInterval(() => {
-    bootstrapCloudState(false);
-    pullCloudProgress({ silent: true });
+  setInterval(async () => {
+    if (document.visibilityState === "hidden") return;
+    if (!identityRegisteredInCloud) {
+      await registerIdentityPing(false);
+    }
+    await pullCloudProgress({ silent: true });
+    await bootstrapCloudState(false);
   }, 45000);
 })();

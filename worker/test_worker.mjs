@@ -36,7 +36,13 @@ async function run() {
     assert.equal(typeof b.data.problems, "object");
     assert.equal(typeof b.data.overrides, "object");
     assert.equal(typeof b.data.takenNames, "object");
-    console.log("✓ Health & bootstrap OK");
+    assert.ok(Array.isArray(b.data.onlineUsers));
+
+    const onlineRes = await req("/api/online");
+    assert.equal(onlineRes.status, 200);
+    assert.equal(onlineRes.data.ok, true);
+    assert.ok(Array.isArray(onlineRes.data.onlineUsers));
+    console.log("✓ Health, bootstrap & online endpoint OK");
   }
 
   // 2. Admin auth guards (no token / forged token)
@@ -123,6 +129,19 @@ async function run() {
 
     const pingB = await req("/api/identities/ping", { method: "POST", body: studentB });
     assert.equal(pingB.status, 200);
+    assert.ok(Array.isArray(pingB.data.onlineUsers));
+    assert.ok(pingB.data.onlineUsers.some((u) => u.userId === studentA.userId && u.name === studentA.name));
+    assert.ok(pingB.data.onlineUsers.some((u) => u.userId === studentB.userId && u.name === studentB.name));
+
+    const onlineCheck = await req("/api/online");
+    assert.equal(onlineCheck.status, 200);
+    const listedB = onlineCheck.data.onlineUsers.find((u) => u.userId === studentB.userId);
+    assert.ok(listedB);
+    assert.equal(listedB.name, studentB.name);
+    assert.equal(listedB.emoji, studentB.emoji);
+    assert.equal(listedB.clientSecret, undefined);
+    assert.equal(listedB.client_secret_hash, undefined);
+    assert.equal(listedB.sync_code_hash, undefined);
 
     // Student A creates note and problem report
     const putNote = await req("/api/notes/2026_q001", {

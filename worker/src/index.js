@@ -7,6 +7,7 @@ const SYNC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
 const MAX_PROGRESS_JSON_BYTES = 1500 * 1024;
 const VALID_PROBLEM_TYPES = new Set(["question_issue", "distractor_issue", "out_of_material"]);
+const ONLINE_WINDOW_MS = 2 * 60 * 1000; // 2 minutes active presence window
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -202,6 +203,26 @@ async function getTakenNamesMap(db) {
     }
   }
   return takenNames;
+}
+
+async function getOnlineUsersList(db, now = Date.now()) {
+  const cutoff = now - ONLINE_WINDOW_MS;
+  const { results } = await db
+    .prepare(
+      `SELECT user_id, name, emoji, category, last_seen_at
+       FROM identities
+       WHERE last_seen_at >= ? AND name != ''
+       ORDER BY last_seen_at DESC`
+    )
+    .bind(cutoff)
+    .all();
+  return (results || []).map((row) => ({
+    userId: row.user_id,
+    name: row.name,
+    emoji: row.emoji,
+    category: row.category || "",
+    lastSeenAt: Number(row.last_seen_at) || 0,
+  }));
 }
 
 function normalizeSyncCode(raw) {
@@ -550,13 +571,15 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
 }
 
 async function handleBootstrap(env) {
-  const [notesRes, probsRes, overridesRes, takenNames] = await Promise.all([
+  const now = Date.now();
+  const [notesRes, probsRes, overridesRes, takenNames, onlineUsers] = await Promise.all([
     env.DB.prepare("SELECT q_id, user_id, author, emoji, category, text, updated_at FROM community_notes").all(),
     env.DB.prepare("SELECT q_id, user_id, type, text, author, emoji, category, updated_at FROM community_problems").all(),
     env.DB.prepare(
       "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at FROM question_overrides"
     ).all(),
     getTakenNamesMap(env.DB),
+    getOnlineUsersList(env.DB, now),
   ]);
 
   const notes = {};
@@ -589,7 +612,18 @@ async function handleBootstrap(env) {
     overrides[r.q_id] = formatOverrideRow(r);
   }
 
-  return jsonResponse({ ok: true, notes, problems, overrides, takenNames });
+  return jsonResponse({ ok: true, notes, problems, overrides, takenNames, onlineUsers, serverTime: now });
+}
+
+async function handleOnlineUsers(env) {
+  const now = Date.now();
+  const onlineUsers = await getOnlineUsersList(env.DB, now);
+  return jsonResponse({
+    ok: true,
+    onlineUsers,
+    windowMs: ONLINE_WINDOW_MS,
+    serverTime: now,
+  });
 }
 
 async function handleIdentityPing(request, env) {
@@ -663,7 +697,8 @@ async function handleIdentityPing(request, env) {
       .run();
   }
 
-  return jsonResponse({ ok: true, conflict: false, lastSeenAt: now });
+  const onlineUsers = await getOnlineUsersList(env.DB, now);
+  return jsonResponse({ ok: true, conflict: false, lastSeenAt: now, onlineUsers, serverTime: now });
 }
 
 async function handlePutNote(request, env, qId) {
@@ -1678,6 +1713,10 @@ export default {
 
       if (method === "GET" && path === "/api/bootstrap") {
         return await handleBootstrap(env);
+      }
+
+      if (method === "GET" && path === "/api/online") {
+        return await handleOnlineUsers(env);
       }
 
       if (method === "POST" && path === "/api/identities/ping") {
