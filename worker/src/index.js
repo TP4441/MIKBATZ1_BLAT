@@ -837,10 +837,19 @@ async function syncDeletionToUserProgress(db, userId, qId, kind, now = Date.now(
 }
 
 async function fetchCommunityData(db) {
-  const [notesRes, noteFlagsRes, probsRes, overridesRes] = await Promise.all([
+  const [notesRes, noteRepliesRes, probsRes, problemFlagsRes, overridesRes] = await Promise.all([
     db.prepare("SELECT q_id, user_id, author, emoji, category, text, updated_at FROM community_notes").all(),
-    db.prepare("SELECT q_id, note_user_id, flagger_user_id, author, emoji, category, created_at FROM note_flags").all(),
+    db
+      .prepare(
+        `SELECT reply_id, q_id, note_user_id, parent_reply_id, reply_to_author, user_id, author, emoji, category, text, created_at, updated_at
+         FROM note_replies
+         ORDER BY created_at ASC`
+      )
+      .all(),
     db.prepare("SELECT q_id, user_id, type, text, author, emoji, category, updated_at FROM community_problems").all(),
+    db
+      .prepare("SELECT q_id, problem_user_id, flagger_user_id, author, emoji, category, created_at FROM problem_flags")
+      .all(),
     db.prepare(
       "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at FROM question_overrides"
     ).all(),
@@ -858,17 +867,23 @@ async function fetchCommunityData(db) {
     };
   }
 
-  const noteFlags = {};
-  for (const r of noteFlagsRes.results || []) {
+  const noteReplies = {};
+  for (const r of noteRepliesRes.results || []) {
     if (!notes[r.q_id]?.[r.note_user_id]) continue;
-    if (!noteFlags[r.q_id]) noteFlags[r.q_id] = {};
-    if (!noteFlags[r.q_id][r.note_user_id]) noteFlags[r.q_id][r.note_user_id] = {};
-    noteFlags[r.q_id][r.note_user_id][r.flagger_user_id] = {
+    if (!noteReplies[r.q_id]) noteReplies[r.q_id] = {};
+    if (!noteReplies[r.q_id][r.note_user_id]) noteReplies[r.q_id][r.note_user_id] = [];
+    noteReplies[r.q_id][r.note_user_id].push({
+      replyId: r.reply_id,
+      parentReplyId: r.parent_reply_id || null,
+      replyToAuthor: r.reply_to_author || "",
+      userId: r.user_id,
       author: r.author,
       emoji: r.emoji,
       category: r.category,
+      text: r.text,
       createdAt: Number(r.created_at) || 0,
-    };
+      updatedAt: Number(r.updated_at) || 0,
+    });
   }
 
   const problems = {};
@@ -884,12 +899,25 @@ async function fetchCommunityData(db) {
     };
   }
 
+  const problemFlags = {};
+  for (const r of problemFlagsRes.results || []) {
+    if (!problems[r.q_id]?.[r.problem_user_id]) continue;
+    if (!problemFlags[r.q_id]) problemFlags[r.q_id] = {};
+    if (!problemFlags[r.q_id][r.problem_user_id]) problemFlags[r.q_id][r.problem_user_id] = {};
+    problemFlags[r.q_id][r.problem_user_id][r.flagger_user_id] = {
+      author: r.author,
+      emoji: r.emoji,
+      category: r.category,
+      createdAt: Number(r.created_at) || 0,
+    };
+  }
+
   const overrides = {};
   for (const r of overridesRes.results || []) {
     overrides[r.q_id] = formatOverrideRow(r);
   }
 
-  return { notes, noteFlags, problems, overrides };
+  return { notes, noteReplies, problems, problemFlags, overrides };
 }
 
 async function handleBootstrap(env) {
@@ -957,8 +985,9 @@ async function handlePoll(request, env) {
 
   if (communityChanged && communityData) {
     payload.notes = communityData.notes;
-    payload.noteFlags = communityData.noteFlags;
+    payload.noteReplies = communityData.noteReplies;
     payload.problems = communityData.problems;
+    payload.problemFlags = communityData.problemFlags;
     payload.overrides = communityData.overrides;
   }
 
@@ -1184,11 +1213,11 @@ async function handlePutNote(request, env, qId) {
   const trimmed = text.trim();
   if (!trimmed) {
     const now = Date.now();
-    const [delRes, delFlagsRes] = await env.DB.batch([
+    const [delRes, delRepliesRes] = await env.DB.batch([
       env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
-      env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+      env.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
     ]);
-    if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
+    if ((delRes?.meta?.changes ?? 0) > 0 || (delRepliesRes?.meta?.changes ?? 0) > 0) {
       await bumpCommunityVersion(env.DB, now);
       await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
     }
@@ -1241,7 +1270,7 @@ async function handleDeleteNote(request, env, qId) {
     const now = Date.now();
     await env.DB.batch([
       env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
-      env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+      env.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
     ]);
     await bumpCommunityVersion(env.DB, now);
     await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
@@ -1250,19 +1279,51 @@ async function handleDeleteNote(request, env, qId) {
   return jsonResponse({ ok: true, deleted: Boolean(existingNote) });
 }
 
-async function handlePutNoteFlag(request, env, qId, noteUserId) {
+async function collectDescendantReplyIds(db, qId, noteUserId, rootReplyId) {
+  const { results } = await db
+    .prepare("SELECT reply_id, parent_reply_id FROM note_replies WHERE q_id = ? AND note_user_id = ?")
+    .bind(qId, noteUserId)
+    .all();
+  const childrenMap = new Map();
+  for (const r of results || []) {
+    const pid = r.parent_reply_id || "";
+    if (!childrenMap.has(pid)) childrenMap.set(pid, []);
+    childrenMap.get(pid).push(r.reply_id);
+  }
+  const toDelete = [];
+  const stack = [rootReplyId];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (!cur || seen.has(cur)) continue;
+    seen.add(cur);
+    toDelete.push(cur);
+    const kids = childrenMap.get(cur) || [];
+    for (const k of kids) stack.push(k);
+  }
+  return toDelete;
+}
+
+async function handleCreateNoteReply(request, env, qId, noteUserId) {
   const body = await readJsonBody(request);
   if (!body) return errorResponse("Invalid JSON", 400);
 
   const userId = String(body.userId || "").trim();
   const author = String(body.author || "").trim();
-  const emoji = String(body.emoji || "⚠️").trim();
+  const emoji = String(body.emoji || "💬").trim();
   const category = String(body.category || "").trim();
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  const parentReplyId = typeof body.parentReplyId === "string" && body.parentReplyId.trim()
+    ? body.parentReplyId.trim()
+    : null;
+  const requestedReplyId = typeof body.replyId === "string" ? body.replyId.trim() : "";
   const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
 
   if (!noteUserId) return errorResponse("Missing noteUserId", 400);
-  if (userId && userId === noteUserId) {
-    return errorResponse("Cannot flag your own note", 400);
+  if (!text) return errorResponse("Reply text is required", 400);
+  if (text.length > 4000) return errorResponse("Reply is too long (max 4000 chars)", 400);
+  if (requestedReplyId && (requestedReplyId.length > 80 || !/^[a-zA-Z0-9_-]+$/.test(requestedReplyId))) {
+    return errorResponse("Invalid replyId", 400);
   }
 
   const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret, {
@@ -1279,25 +1340,182 @@ async function handlePutNoteFlag(request, env, qId, noteUserId) {
   }
 
   const targetNote = await env.DB
-    .prepare("SELECT q_id FROM community_notes WHERE q_id = ? AND user_id = ? AND TRIM(text) != ''")
+    .prepare("SELECT q_id, author, emoji FROM community_notes WHERE q_id = ? AND user_id = ? AND TRIM(text) != ''")
     .bind(qId, noteUserId)
     .first();
   if (!targetNote) {
-    return errorResponse("Note not found", 404);
+    return errorResponse("Parent note not found", 404);
+  }
+
+  let replyToAuthor = `${targetNote.emoji || "💬"} ${targetNote.author || "אנונימי"}`.trim();
+  if (parentReplyId) {
+    const parentReply = await env.DB
+      .prepare("SELECT reply_id, author, emoji FROM note_replies WHERE reply_id = ? AND q_id = ? AND note_user_id = ?")
+      .bind(parentReplyId, qId, noteUserId)
+      .first();
+    if (!parentReply) {
+      return errorResponse("Parent reply not found", 404);
+    }
+    replyToAuthor = `${parentReply.emoji || "💬"} ${parentReply.author || "אנונימי"}`.trim();
+  }
+
+  const now = Date.now();
+  const replyId = requestedReplyId || `r_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const finalAuthor = author || "אנונימי";
+
+  await env.DB
+    .prepare(
+      `INSERT INTO note_replies
+         (reply_id, q_id, note_user_id, parent_reply_id, reply_to_author, user_id, author, emoji, category, text, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(replyId, qId, noteUserId, parentReplyId, replyToAuthor, userId, finalAuthor, emoji, category, text, now, now)
+    .run();
+  await bumpCommunityVersion(env.DB, now);
+
+  return jsonResponse({
+    ok: true,
+    reply: {
+      replyId,
+      parentReplyId,
+      replyToAuthor,
+      userId,
+      author: finalAuthor,
+      emoji,
+      category,
+      text,
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+}
+
+async function handlePutNoteReply(request, env, replyId) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || "").trim();
+  const author = String(body.author || "").trim();
+  const emoji = String(body.emoji || "💬").trim();
+  const category = String(body.category || "").trim();
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+
+  const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
+  if (!auth.ok) return errorResponse(auth.error, auth.status);
+
+  const existing = await env.DB
+    .prepare("SELECT reply_id, q_id, note_user_id, parent_reply_id, reply_to_author, user_id, created_at FROM note_replies WHERE reply_id = ?")
+    .bind(replyId)
+    .first();
+  if (!existing) return errorResponse("Reply not found", 404);
+  if (existing.user_id !== userId) return errorResponse("Forbidden: not your reply", 403);
+  if (!text) return errorResponse("Reply text cannot be empty", 400);
+  if (text.length > 4000) return errorResponse("Reply is too long (max 4000 chars)", 400);
+
+  const now = Date.now();
+  const finalAuthor = author || "אנונימי";
+  await env.DB
+    .prepare(
+      `UPDATE note_replies
+       SET author = ?, emoji = ?, category = ?, text = ?, updated_at = ?
+       WHERE reply_id = ?`
+    )
+    .bind(finalAuthor, emoji, category, text, now, replyId)
+    .run();
+  await bumpCommunityVersion(env.DB, now);
+
+  return jsonResponse({
+    ok: true,
+    reply: {
+      replyId: existing.reply_id,
+      parentReplyId: existing.parent_reply_id || null,
+      replyToAuthor: existing.reply_to_author || "",
+      userId,
+      author: finalAuthor,
+      emoji,
+      category,
+      text,
+      createdAt: Number(existing.created_at) || now,
+      updatedAt: now,
+    },
+  });
+}
+
+async function handleDeleteNoteReply(request, env, replyId) {
+  const body = await readJsonBody(request);
+  if (body === null) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || request.headers.get("X-User-Id") || "").trim();
+  const clientSecret = String(body.clientSecret || request.headers.get("X-Client-Secret") || "");
+
+  const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
+  if (!auth.ok) return errorResponse(auth.error, auth.status);
+
+  const existing = await env.DB
+    .prepare("SELECT reply_id, q_id, note_user_id, user_id FROM note_replies WHERE reply_id = ?")
+    .bind(replyId)
+    .first();
+  if (!existing) return jsonResponse({ ok: true, deletedIds: [] });
+  if (existing.user_id !== userId) return errorResponse("Forbidden: not your reply", 403);
+
+  const idsToDelete = await collectDescendantReplyIds(env.DB, existing.q_id, existing.note_user_id, replyId);
+  const stmts = idsToDelete.map((id) => env.DB.prepare("DELETE FROM note_replies WHERE reply_id = ?").bind(id));
+  for (let idx = 0; idx < stmts.length; idx += 50) {
+    await env.DB.batch(stmts.slice(idx, idx + 50));
+  }
+  await bumpCommunityVersion(env.DB, Date.now());
+  return jsonResponse({ ok: true, deletedIds: idsToDelete });
+}
+
+async function handlePutProblemFlag(request, env, qId, problemUserId) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || "").trim();
+  const author = String(body.author || "").trim();
+  const emoji = String(body.emoji || "⚠️").trim();
+  const category = String(body.category || "").trim();
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+
+  if (!problemUserId) return errorResponse("Missing problemUserId", 400);
+  if (userId && userId === problemUserId) {
+    return errorResponse("Cannot flag your own problem report", 400);
+  }
+
+  const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret, {
+    name: author,
+    emoji,
+    category,
+  });
+  if (!auth.ok) {
+    if (auth.conflict) {
+      const takenNames = await getTakenNamesMap(env.DB);
+      return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
+    }
+    return errorResponse(auth.error, auth.status);
+  }
+
+  const targetProb = await env.DB
+    .prepare("SELECT q_id FROM community_problems WHERE q_id = ? AND user_id = ?")
+    .bind(qId, problemUserId)
+    .first();
+  if (!targetProb) {
+    return errorResponse("Problem report not found", 404);
   }
 
   const createdAt = Date.now();
   await env.DB
     .prepare(
-      `INSERT INTO note_flags (q_id, note_user_id, flagger_user_id, author, emoji, category, created_at)
+      `INSERT INTO problem_flags (q_id, problem_user_id, flagger_user_id, author, emoji, category, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(q_id, note_user_id, flagger_user_id) DO UPDATE SET
+       ON CONFLICT(q_id, problem_user_id, flagger_user_id) DO UPDATE SET
          author = excluded.author,
          emoji = excluded.emoji,
          category = excluded.category,
          created_at = excluded.created_at`
     )
-    .bind(qId, noteUserId, userId, author || "אנונימי", emoji, category, createdAt)
+    .bind(qId, problemUserId, userId, author || "אנונימי", emoji, category, createdAt)
     .run();
   await bumpCommunityVersion(env.DB, createdAt);
 
@@ -1307,7 +1525,7 @@ async function handlePutNoteFlag(request, env, qId, noteUserId) {
   });
 }
 
-async function handleDeleteNoteFlag(request, env, qId, noteUserId) {
+async function handleDeleteProblemFlag(request, env, qId, problemUserId) {
   const body = await readJsonBody(request);
   if (body === null) return errorResponse("Invalid JSON", 400);
 
@@ -1319,8 +1537,8 @@ async function handleDeleteNoteFlag(request, env, qId, noteUserId) {
 
   const now = Date.now();
   const delRes = await env.DB
-    .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ? AND flagger_user_id = ?")
-    .bind(qId, noteUserId, userId)
+    .prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ? AND flagger_user_id = ?")
+    .bind(qId, problemUserId, userId)
     .run();
   const deleted = (delRes?.meta?.changes ?? 0) > 0;
   if (deleted) {
@@ -1405,10 +1623,10 @@ async function handleDeleteProblem(request, env, qId) {
 
   if (existing) {
     const now = Date.now();
-    await env.DB
-      .prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?")
-      .bind(qId, userId)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+      env.DB.prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?").bind(qId, userId),
+    ]);
     await bumpCommunityVersion(env.DB, now);
     await syncDeletionToUserProgress(env.DB, userId, qId, "problem", now);
   }
@@ -1844,12 +2062,13 @@ async function handleSyncLink(request, env) {
     const guestAuth = await verifyExistingClientSecret(env.DB, guestUserId, guestClientSecret);
     if (guestAuth.ok) {
       if (mode === "merge") {
-        const [guestNotesRes, targetNotesRes, guestProbsRes, targetProbsRes, guestFlagsRes] = await Promise.all([
+        const [guestNotesRes, targetNotesRes, guestProbsRes, targetProbsRes, guestProbFlagsRes, guestRepliesRes] = await Promise.all([
           env.DB.prepare("SELECT q_id, text, updated_at FROM community_notes WHERE user_id = ?").bind(guestUserId).all(),
           env.DB.prepare("SELECT q_id FROM community_notes WHERE user_id = ?").bind(target.user_id).all(),
           env.DB.prepare("SELECT q_id, type, text, updated_at FROM community_problems WHERE user_id = ?").bind(guestUserId).all(),
           env.DB.prepare("SELECT q_id FROM community_problems WHERE user_id = ?").bind(target.user_id).all(),
-          env.DB.prepare("SELECT q_id, note_user_id, created_at FROM note_flags WHERE flagger_user_id = ?").bind(guestUserId).all(),
+          env.DB.prepare("SELECT q_id, problem_user_id, created_at FROM problem_flags WHERE flagger_user_id = ?").bind(guestUserId).all(),
+          env.DB.prepare("SELECT reply_id FROM note_replies WHERE user_id = ?").bind(guestUserId).all(),
         ]);
 
         const targetNoteQIds = new Set((targetNotesRes.results || []).map((r) => r.q_id));
@@ -1866,34 +2085,42 @@ async function handleSyncLink(request, env) {
                 )
                 .bind(gn.q_id, target.user_id, target.name, target.emoji, target.category, gn.text, gn.updated_at),
               env.DB
-                .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ? AND flagger_user_id = ?")
-                .bind(gn.q_id, guestUserId, target.user_id),
-              env.DB
-                .prepare("UPDATE OR IGNORE note_flags SET note_user_id = ? WHERE q_id = ? AND note_user_id = ?")
+                .prepare("UPDATE note_replies SET note_user_id = ? WHERE q_id = ? AND note_user_id = ?")
                 .bind(target.user_id, gn.q_id, guestUserId)
+            );
+          } else {
+            stmts.push(
+              env.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(gn.q_id, guestUserId)
             );
           }
           stmts.push(
-            env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(gn.q_id, guestUserId),
             env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(gn.q_id, guestUserId)
           );
         }
 
-        for (const gf of guestFlagsRes.results || []) {
-          if (gf.note_user_id !== target.user_id) {
+        if ((guestRepliesRes.results || []).length > 0) {
+          stmts.push(
+            env.DB
+              .prepare("UPDATE note_replies SET user_id = ?, author = ?, emoji = ?, category = ? WHERE user_id = ?")
+              .bind(target.user_id, target.name, target.emoji, target.category, guestUserId)
+          );
+        }
+
+        for (const gf of guestProbFlagsRes.results || []) {
+          if (gf.problem_user_id !== target.user_id) {
             stmts.push(
               env.DB
                 .prepare(
-                  `INSERT OR IGNORE INTO note_flags (q_id, note_user_id, flagger_user_id, author, emoji, category, created_at)
+                  `INSERT OR IGNORE INTO problem_flags (q_id, problem_user_id, flagger_user_id, author, emoji, category, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)`
                 )
-                .bind(gf.q_id, gf.note_user_id, target.user_id, target.name, target.emoji, target.category, gf.created_at)
+                .bind(gf.q_id, gf.problem_user_id, target.user_id, target.name, target.emoji, target.category, gf.created_at)
             );
           }
           stmts.push(
             env.DB
-              .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ? AND flagger_user_id = ?")
-              .bind(gf.q_id, gf.note_user_id, guestUserId)
+              .prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ? AND flagger_user_id = ?")
+              .bind(gf.q_id, gf.problem_user_id, guestUserId)
           );
         }
 
@@ -1914,10 +2141,17 @@ async function handleSyncLink(request, env) {
                   target.emoji,
                   target.category,
                   gp.updated_at
-                )
+                ),
+              env.DB
+                .prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ? AND flagger_user_id = ?")
+                .bind(gp.q_id, guestUserId, target.user_id),
+              env.DB
+                .prepare("UPDATE OR IGNORE problem_flags SET problem_user_id = ? WHERE q_id = ? AND problem_user_id = ?")
+                .bind(target.user_id, gp.q_id, guestUserId)
             );
           }
           stmts.push(
+            env.DB.prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?").bind(gp.q_id, guestUserId),
             env.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(gp.q_id, guestUserId)
           );
         }
@@ -1931,12 +2165,23 @@ async function handleSyncLink(request, env) {
         }
       }
 
-      const [remNotes, remProbs, remFlags] = await Promise.all([
+      const [remNotes, remProbs, remProbFlags, remReplies] = await Promise.all([
         env.DB.prepare("SELECT COUNT(*) AS cnt FROM community_notes WHERE user_id = ?").bind(guestUserId).first(),
         env.DB.prepare("SELECT COUNT(*) AS cnt FROM community_problems WHERE user_id = ?").bind(guestUserId).first(),
-        env.DB.prepare("SELECT COUNT(*) AS cnt FROM note_flags WHERE flagger_user_id = ? OR note_user_id = ?").bind(guestUserId, guestUserId).first(),
+        env.DB
+          .prepare("SELECT COUNT(*) AS cnt FROM problem_flags WHERE flagger_user_id = ? OR problem_user_id = ?")
+          .bind(guestUserId, guestUserId)
+          .first(),
+        env.DB
+          .prepare("SELECT COUNT(*) AS cnt FROM note_replies WHERE user_id = ? OR note_user_id = ?")
+          .bind(guestUserId, guestUserId)
+          .first(),
       ]);
-      const remainingCount = (Number(remNotes?.cnt) || 0) + (Number(remProbs?.cnt) || 0) + (Number(remFlags?.cnt) || 0);
+      const remainingCount =
+        (Number(remNotes?.cnt) || 0) +
+        (Number(remProbs?.cnt) || 0) +
+        (Number(remProbFlags?.cnt) || 0) +
+        (Number(remReplies?.cnt) || 0);
       if (remainingCount === 0) {
         await env.DB.batch([
           env.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(guestUserId),
@@ -2341,12 +2586,18 @@ export default {
         if (method === "DELETE") return await handleDeleteNote(request, env, qId);
       }
 
-      const noteFlagMatch = path.match(/^\/api\/note-flags\/([^/]+)\/([^/]+)$/);
-      if (noteFlagMatch) {
-        const qId = decodeURIComponent(noteFlagMatch[1]);
-        const noteUserId = decodeURIComponent(noteFlagMatch[2]);
-        if (method === "PUT") return await handlePutNoteFlag(request, env, qId, noteUserId);
-        if (method === "DELETE") return await handleDeleteNoteFlag(request, env, qId, noteUserId);
+      const noteReplyCreateMatch = path.match(/^\/api\/note-replies\/([^/]+)\/([^/]+)$/);
+      if (noteReplyCreateMatch && method === "POST") {
+        const qId = decodeURIComponent(noteReplyCreateMatch[1]);
+        const noteUserId = decodeURIComponent(noteReplyCreateMatch[2]);
+        return await handleCreateNoteReply(request, env, qId, noteUserId);
+      }
+
+      const noteReplyItemMatch = path.match(/^\/api\/note-replies\/([^/]+)$/);
+      if (noteReplyItemMatch) {
+        const replyId = decodeURIComponent(noteReplyItemMatch[1]);
+        if (method === "PUT") return await handlePutNoteReply(request, env, replyId);
+        if (method === "DELETE") return await handleDeleteNoteReply(request, env, replyId);
       }
 
       const problemMatch = path.match(/^\/api\/problems\/([^/]+)$/);
@@ -2354,6 +2605,14 @@ export default {
         const qId = decodeURIComponent(problemMatch[1]);
         if (method === "PUT") return await handlePutProblem(request, env, qId);
         if (method === "DELETE") return await handleDeleteProblem(request, env, qId);
+      }
+
+      const problemFlagMatch = path.match(/^\/api\/problem-flags\/([^/]+)\/([^/]+)$/);
+      if (problemFlagMatch) {
+        const qId = decodeURIComponent(problemFlagMatch[1]);
+        const problemUserId = decodeURIComponent(problemFlagMatch[2]);
+        if (method === "PUT") return await handlePutProblemFlag(request, env, qId, problemUserId);
+        if (method === "DELETE") return await handleDeleteProblemFlag(request, env, qId, problemUserId);
       }
 
       if (method === "POST" && path === "/api/admin/login") {
@@ -2391,30 +2650,34 @@ export default {
           const qId = decodeURIComponent(adminNoteMatch[1]);
           const userId = decodeURIComponent(adminNoteMatch[2]);
           const now = Date.now();
-          const [delRes, delFlagsRes] = await env.DB.batch([
+          const [delRes, delRepliesRes] = await env.DB.batch([
             env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
-            env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+            env.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
           ]);
-          if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
+          if ((delRes?.meta?.changes ?? 0) > 0 || (delRepliesRes?.meta?.changes ?? 0) > 0) {
             await bumpCommunityVersion(env.DB, now);
             await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
           }
           return jsonResponse({ ok: true, qId, userId });
         }
 
-        const adminNoteFlagsMatch = path.match(/^\/api\/admin\/note-flags\/([^/]+)\/([^/]+)$/);
-        if (adminNoteFlagsMatch && method === "DELETE") {
-          const qId = decodeURIComponent(adminNoteFlagsMatch[1]);
-          const noteUserId = decodeURIComponent(adminNoteFlagsMatch[2]);
-          const now = Date.now();
-          const delRes = await env.DB
-            .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?")
-            .bind(qId, noteUserId)
-            .run();
-          if ((delRes?.meta?.changes ?? 0) > 0) {
-            await bumpCommunityVersion(env.DB, now);
+        const adminNoteReplyMatch = path.match(/^\/api\/admin\/note-replies\/([^/]+)$/);
+        if (adminNoteReplyMatch && method === "DELETE") {
+          const replyId = decodeURIComponent(adminNoteReplyMatch[1]);
+          const existing = await env.DB
+            .prepare("SELECT reply_id, q_id, note_user_id FROM note_replies WHERE reply_id = ?")
+            .bind(replyId)
+            .first();
+          let deletedIds = [];
+          if (existing) {
+            deletedIds = await collectDescendantReplyIds(env.DB, existing.q_id, existing.note_user_id, replyId);
+            const stmts = deletedIds.map((id) => env.DB.prepare("DELETE FROM note_replies WHERE reply_id = ?").bind(id));
+            for (let idx = 0; idx < stmts.length; idx += 50) {
+              await env.DB.batch(stmts.slice(idx, idx + 50));
+            }
+            await bumpCommunityVersion(env.DB, Date.now());
           }
-          return jsonResponse({ ok: true, qId, noteUserId });
+          return jsonResponse({ ok: true, replyId, deletedIds });
         }
 
         const adminProblemMatch = path.match(/^\/api\/admin\/problems\/([^/]+)\/([^/]+)$/);
@@ -2422,15 +2685,30 @@ export default {
           const qId = decodeURIComponent(adminProblemMatch[1]);
           const userId = decodeURIComponent(adminProblemMatch[2]);
           const now = Date.now();
-          const delRes = await env.DB
-            .prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?")
-            .bind(qId, userId)
-            .run();
-          if ((delRes?.meta?.changes ?? 1) > 0) {
+          const [delRes, delFlagsRes] = await env.DB.batch([
+            env.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+            env.DB.prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?").bind(qId, userId),
+          ]);
+          if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
             await bumpCommunityVersion(env.DB, now);
             await syncDeletionToUserProgress(env.DB, userId, qId, "problem", now);
           }
           return jsonResponse({ ok: true, qId, userId });
+        }
+
+        const adminProblemFlagsMatch = path.match(/^\/api\/admin\/problem-flags\/([^/]+)\/([^/]+)$/);
+        if (adminProblemFlagsMatch && method === "DELETE") {
+          const qId = decodeURIComponent(adminProblemFlagsMatch[1]);
+          const problemUserId = decodeURIComponent(adminProblemFlagsMatch[2]);
+          const now = Date.now();
+          const delRes = await env.DB
+            .prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?")
+            .bind(qId, problemUserId)
+            .run();
+          if ((delRes?.meta?.changes ?? 0) > 0) {
+            await bumpCommunityVersion(env.DB, now);
+          }
+          return jsonResponse({ ok: true, qId, problemUserId });
         }
 
         const adminOverrideMatch = path.match(/^\/api\/admin\/overrides\/([^/]+)$/);

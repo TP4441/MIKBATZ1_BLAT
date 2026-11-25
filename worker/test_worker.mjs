@@ -35,8 +35,9 @@ async function run() {
     assert.equal(typeof b.data.communityVersion, "number");
     assert.ok(b.data.communityVersion >= 1);
     assert.equal(typeof b.data.notes, "object");
-    assert.equal(typeof b.data.noteFlags, "object");
+    assert.equal(typeof b.data.noteReplies, "object");
     assert.equal(typeof b.data.problems, "object");
+    assert.equal(typeof b.data.problemFlags, "object");
     assert.equal(typeof b.data.overrides, "object");
     assert.equal(typeof b.data.takenNames, "object");
     assert.ok(Array.isArray(b.data.onlineUsers));
@@ -62,8 +63,9 @@ async function run() {
       ["PUT", "/api/admin/overrides/2026_q001", { hidden: true }],
       ["DELETE", "/api/admin/overrides/2026_q001"],
       ["DELETE", "/api/admin/notes/2026_q001/u_fake"],
-      ["DELETE", "/api/admin/note-flags/2026_q001/u_fake"],
+      ["DELETE", "/api/admin/note-replies/r_fake"],
       ["DELETE", "/api/admin/problems/2026_q001/u_fake"],
+      ["DELETE", "/api/admin/problem-flags/2026_q001/u_fake"],
       ["POST", "/api/admin/import-legacy", { notes: {}, problems: {} }],
     ];
     for (const [method, path, body] of routes) {
@@ -990,20 +992,36 @@ async function run() {
     console.log("✓ Smart polling (/api/poll) conditional sync & 403 handling OK");
   }
 
-  // 8b. Community note inaccuracy flags
+  // 8b. Problem inaccuracy flags + Threaded note replies
   {
-    const flagger = {
+    const peer = {
       userId: "u_student_c",
       name: "מנגו",
       emoji: "🥭",
       category: "פירות",
       clientSecret: "secret_ccc_123456",
     };
+
+    // --- Problem inaccuracy flags ---
+    const probRes = await req("/api/problems/2026_q010", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        type: "out_of_material",
+        text: "ירד מהמיקוד",
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+      },
+    });
+    assert.equal(probRes.status, 200);
+
     const pollBefore = await req("/api/poll");
     const vBefore = pollBefore.data.communityVersion;
 
-    // Student A cannot flag own note (2026_q010 created in step 8)
-    const selfFlag = await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+    // Cannot flag own problem report
+    const selfProbFlag = await req(`/api/problem-flags/2026_q010/${studentA.userId}`, {
       method: "PUT",
       body: {
         userId: studentA.userId,
@@ -1013,79 +1031,167 @@ async function run() {
         category: studentA.category,
       },
     });
-    assert.equal(selfFlag.status, 400, "Cannot flag own note");
+    assert.equal(selfProbFlag.status, 400);
 
-    // Flagging non-existent note returns 404
-    const missingNoteFlag = await req(`/api/note-flags/2026_q999/${studentA.userId}`, {
+    // Flagging non-existent problem report returns 404
+    const missingProbFlag = await req(`/api/problem-flags/2026_q999/${studentA.userId}`, {
       method: "PUT",
       body: {
-        userId: flagger.userId,
-        clientSecret: flagger.clientSecret,
-        author: flagger.name,
-        emoji: flagger.emoji,
-        category: flagger.category,
+        userId: peer.userId,
+        clientSecret: peer.clientSecret,
+        author: peer.name,
+        emoji: peer.emoji,
+        category: peer.category,
       },
     });
-    assert.equal(missingNoteFlag.status, 404);
+    assert.equal(missingProbFlag.status, 404);
 
-    // Flagger flags Student A's note
-    const flagRes = await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+    // Peer flags Student A's problem report
+    const flagProbRes = await req(`/api/problem-flags/2026_q010/${studentA.userId}`, {
       method: "PUT",
       body: {
-        userId: flagger.userId,
-        clientSecret: flagger.clientSecret,
-        author: flagger.name,
-        emoji: flagger.emoji,
-        category: flagger.category,
+        userId: peer.userId,
+        clientSecret: peer.clientSecret,
+        author: peer.name,
+        emoji: peer.emoji,
+        category: peer.category,
       },
     });
-    assert.equal(flagRes.status, 200);
-    assert.equal(flagRes.data.ok, true);
+    assert.equal(flagProbRes.status, 200);
 
-    const pollAfterFlag = await req(`/api/poll?communityVersion=${vBefore}`);
-    assert.equal(pollAfterFlag.status, 200);
-    assert.equal(pollAfterFlag.data.communityChanged, true);
-    assert.equal(pollAfterFlag.data.noteFlags["2026_q010"][studentA.userId][flagger.userId].author, flagger.name);
+    const pollAfterProbFlag = await req(`/api/poll?communityVersion=${vBefore}`);
+    assert.equal(pollAfterProbFlag.status, 200);
+    assert.equal(pollAfterProbFlag.data.communityChanged, true);
+    assert.equal(pollAfterProbFlag.data.problemFlags["2026_q010"][studentA.userId][peer.userId].author, peer.name);
 
-    // Flagger unflags Student A's note
-    const unflagRes = await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+    // Unflag + re-flag + admin clear + cascade delete on problem deletion
+    const unflagProbRes = await req(`/api/problem-flags/2026_q010/${studentA.userId}`, {
       method: "DELETE",
-      body: {
-        userId: flagger.userId,
-        clientSecret: flagger.clientSecret,
-      },
+      body: { userId: peer.userId, clientSecret: peer.clientSecret },
     });
-    assert.equal(unflagRes.status, 200);
-    assert.equal(unflagRes.data.deleted, true);
+    assert.equal(unflagProbRes.status, 200);
+    assert.equal(unflagProbRes.data.deleted, true);
 
-    // Re-flag then test admin clear flags + note deletion cascade
-    await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+    await req(`/api/problem-flags/2026_q010/${studentA.userId}`, {
       method: "PUT",
       body: {
-        userId: flagger.userId,
-        clientSecret: flagger.clientSecret,
-        author: flagger.name,
-        emoji: flagger.emoji,
-        category: flagger.category,
+        userId: peer.userId,
+        clientSecret: peer.clientSecret,
+        author: peer.name,
+        emoji: peer.emoji,
+        category: peer.category,
       },
     });
-    const adminClearRes = await req(`/api/admin/note-flags/2026_q010/${studentA.userId}`, {
+    const adminClearProbRes = await req(`/api/admin/problem-flags/2026_q010/${studentA.userId}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${adminToken}` },
     });
-    assert.equal(adminClearRes.status, 200);
-    const bootAfterClear = await req("/api/bootstrap");
-    assert.equal(bootAfterClear.data.noteFlags["2026_q010"]?.[studentA.userId], undefined);
+    assert.equal(adminClearProbRes.status, 200);
 
-    // Re-flag then delete note -> flags cascade-deleted
-    await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+    await req(`/api/problem-flags/2026_q010/${studentA.userId}`, {
       method: "PUT",
       body: {
-        userId: flagger.userId,
-        clientSecret: flagger.clientSecret,
-        author: flagger.name,
-        emoji: flagger.emoji,
-        category: flagger.category,
+        userId: peer.userId,
+        clientSecret: peer.clientSecret,
+        author: peer.name,
+        emoji: peer.emoji,
+        category: peer.category,
+      },
+    });
+    const delProbRes = await req("/api/problems/2026_q010", {
+      method: "DELETE",
+      body: { userId: studentA.userId, clientSecret: studentA.clientSecret },
+    });
+    assert.equal(delProbRes.status, 200);
+    const bootAfterProbDel = await req("/api/bootstrap");
+    assert.equal(bootAfterProbDel.data.problemFlags["2026_q010"]?.[studentA.userId], undefined);
+
+    // --- Threaded note replies (reply to note + reply to reply) ---
+    const reply1 = await req(`/api/note-replies/2026_q010/${studentA.userId}`, {
+      method: "POST",
+      body: {
+        replyId: "r_test_1",
+        userId: peer.userId,
+        clientSecret: peer.clientSecret,
+        author: peer.name,
+        emoji: peer.emoji,
+        category: peer.category,
+        text: "לדעתי זה דווקא א'",
+      },
+    });
+    assert.equal(reply1.status, 200);
+    assert.equal(reply1.data.reply.replyId, "r_test_1");
+
+    // Reply on reply1
+    const reply2 = await req(`/api/note-replies/2026_q010/${studentA.userId}`, {
+      method: "POST",
+      body: {
+        replyId: "r_test_2",
+        parentReplyId: "r_test_1",
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "צודק, בדקתי שוב במצגת!",
+      },
+    });
+    assert.equal(reply2.status, 200);
+    assert.equal(reply2.data.reply.parentReplyId, "r_test_1");
+
+    // Peer cannot edit Student A's reply
+    const hijackReplyEdit = await req("/api/note-replies/r_test_2", {
+      method: "PUT",
+      body: {
+        userId: peer.userId,
+        clientSecret: peer.clientSecret,
+        author: peer.name,
+        emoji: peer.emoji,
+        category: peer.category,
+        text: "ניסיון עריכה",
+      },
+    });
+    assert.equal(hijackReplyEdit.status, 403);
+
+    // Student A edits reply2
+    const editReply2 = await req("/api/note-replies/r_test_2", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "צודק לגמרי, עדכנתי!",
+      },
+    });
+    assert.equal(editReply2.status, 200);
+    assert.equal(editReply2.data.reply.text, "צודק לגמרי, עדכנתי!");
+
+    const bootAfterReplies = await req("/api/bootstrap");
+    const q10Replies = bootAfterReplies.data.noteReplies["2026_q010"]?.[studentA.userId] || [];
+    assert.equal(q10Replies.length, 2);
+    assert.equal(q10Replies[1].text, "צודק לגמרי, עדכנתי!");
+
+    // Deleting parent reply1 cascades to child reply2
+    const delReply1 = await req("/api/note-replies/r_test_1", {
+      method: "DELETE",
+      body: { userId: peer.userId, clientSecret: peer.clientSecret },
+    });
+    assert.equal(delReply1.status, 200);
+    assert.equal(delReply1.data.deletedIds.length, 2);
+
+    // Create another reply and test parent note deletion cascade
+    await req(`/api/note-replies/2026_q010/${studentA.userId}`, {
+      method: "POST",
+      body: {
+        replyId: "r_test_3",
+        userId: peer.userId,
+        clientSecret: peer.clientSecret,
+        author: peer.name,
+        emoji: peer.emoji,
+        category: peer.category,
+        text: "עוד תגובה",
       },
     });
     const delNoteRes = await req("/api/notes/2026_q010", {
@@ -1094,9 +1200,9 @@ async function run() {
     });
     assert.equal(delNoteRes.status, 200);
     const bootAfterDelNote = await req("/api/bootstrap");
-    assert.equal(bootAfterDelNote.data.noteFlags["2026_q010"]?.[studentA.userId], undefined);
+    assert.equal(bootAfterDelNote.data.noteReplies["2026_q010"]?.[studentA.userId], undefined);
 
-    console.log("✓ Community note inaccuracy flags (flag/unflag/admin-clear/cascade) OK");
+    console.log("✓ Problem inaccuracy flags & threaded note replies OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts
