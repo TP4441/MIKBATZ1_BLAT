@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261125j" />
+  <link rel="stylesheet" href="styles.css?v=20261125m" />
 </head>
 <body>
   <header class="topbar">
@@ -189,6 +189,8 @@
   </header>
 
   <main class="main-container">
+    <div class="workspace-grid" id="workspaceGrid">
+      <div class="workspace-primary">
     <!-- Active Exam Simulation Resume Banner (local + cross-device) -->
     <section class="resume-sim-banner card hidden" id="resumeSimBanner" role="region" aria-label="סימולציה פעילה להמשך">
       <div class="resume-sim-info">
@@ -335,6 +337,16 @@
               <button type="button" class="flag-btn admin-action-btn danger" id="btnAdminHideQ" title="הסר שאלה מהבנק" aria-label="הסר שאלה">🗑️ הסר</button>
             </div>
             <div class="q-flags">
+              <button type="button" class="flag-btn drawboard-toggle-btn" id="btnFlagDrawBoard" title="לוח ציור אישי לצד השאלה (D)" aria-label="פתח או סגור לוח ציור אישי" aria-pressed="false">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                  <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+                  <path d="M2 2l7.586 7.586" />
+                  <circle cx="11" cy="11" r="2" />
+                </svg>
+                <span class="drawboard-btn-label">לוח</span>
+                <span class="drawboard-saved-dot hidden" id="btnFlagDrawBoardDot" aria-hidden="true"></span>
+              </button>
               <button type="button" class="flag-btn marker-toggle-btn" id="btnFlagMarker" title="מרקר צהוב — סמן מילות מפתח בשאלה (M)" aria-label="מצב מרקר צהוב" aria-pressed="false">🖍️</button>
               <button type="button" class="flag-btn marker-clear-btn hidden" id="btnClearMarkers" title="נקה את כל המרקור בשאלה זו" aria-label="נקה מרקור בשאלה">🧹</button>
               <button type="button" class="flag-btn" id="btnFlagStar" title="מועדפים / לחזרה (S)" aria-label="סמן כמועדף">⭐</button>
@@ -583,13 +595,222 @@
         <div id="leaderboardListMount"></div>
       </div>
     </section>
+      </div><!-- /.workspace-primary -->
+
+      <!-- Desktop Split-View Resizer -->
+      <div class="drawboard-resizer hidden" id="drawboardResizer" role="separator" aria-orientation="vertical" aria-label="שנה רוחב לוח הציור" title="גרור לשינוי רוחב (לחיצה כפולה לאיפוס)"></div>
+
+      <!-- Personal Drawing Board Panel (100% Local IndexedDB) -->
+      <aside class="drawboard-panel card hidden" id="drawboardPanel" aria-label="לוח ציור אישי">
+        <div class="drawboard-header">
+          <div class="drawboard-tabs" role="tablist" aria-label="מצב שמירת לוח">
+            <button type="button" class="drawboard-tab-btn active" id="btnDrawTabQuestion" role="tab" aria-selected="true" title="נשמר אוטומטית לשאלה הנוכחית ומתחלף במעבר שאלה">
+              <span aria-hidden="true">📌</span>
+              <span id="drawTabQuestionLabel">לשאלה זו</span>
+              <span class="drawboard-tab-dot hidden" id="drawTabQuestionDot" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="drawboard-tab-btn" id="btnDrawTabScratchpad" role="tab" aria-selected="false" title="טיוטה חופשית קבועה שנשארת איתך לאורך התרגול">
+              <span aria-hidden="true">🗒️</span>
+              <span>טיוטה חופשית</span>
+              <span class="drawboard-tab-dot hidden" id="drawTabScratchDot" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="drawboard-header-meta">
+            <span class="drawboard-save-status" id="drawboardSaveStatus" title="נשמר מקומית בדפדפן בלבד (IndexedDB)">נשמר מקומית</span>
+            <button type="button" class="icon-btn icon-only drawboard-close-btn" id="btnCloseDrawboard" title="סגור לוח ציור (D / Esc)" aria-label="סגור לוח ציור">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="drawboard-toolbar" role="toolbar" aria-label="כלי ציור">
+          <!-- Row 1: Drawing & Image Tools -->
+          <div class="drawboard-tool-row">
+            <button type="button" class="draw-tool-btn" data-draw-tool="select" title="בחירה, הזזה ושינוי גודל (Select)" aria-label="בחירה והזזה" aria-pressed="false">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 4l7 17 2.5-6.5L20 12 4 4z" />
+              </svg>
+            </button>
+            <button type="button" class="draw-tool-btn active" data-draw-tool="pen" title="עט (Pen)" aria-label="עט" aria-pressed="true">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+              </svg>
+            </button>
+            <button type="button" class="draw-tool-btn" data-draw-tool="highlighter" title="מרקר שקוף (Highlighter)" aria-label="מרקר שקוף" aria-pressed="false">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m9 11-6 6v3h9l3-3" />
+                <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" />
+              </svg>
+            </button>
+            <button type="button" class="draw-tool-btn" data-draw-tool="eraser" title="מחק קווים, צורות וטקסט (לא מוחק תמונות מתחת)" aria-label="מחק" aria-pressed="false">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+                <path d="M22 21H7" />
+                <path d="m5 11 9 9" />
+              </svg>
+            </button>
+
+            <div class="draw-popover-anchor">
+              <button type="button" class="draw-tool-btn draw-shape-btn" id="btnDrawToolShape" data-draw-tool="shape" data-active-shape="arrow" title="צורה: חץ (לחץ לבחירת צורה)" aria-label="צורות" aria-pressed="false">
+                <svg class="ui-ico shape-ico shape-ico-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="5" y1="19" x2="19" y2="5" />
+                  <polyline points="10 5 19 5 19 14" />
+                </svg>
+                <svg class="ui-ico shape-ico shape-ico-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="5" y1="19" x2="19" y2="5" />
+                </svg>
+                <svg class="ui-ico shape-ico shape-ico-rect" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="4" y="5" width="16" height="14" rx="2" />
+                </svg>
+                <svg class="ui-ico shape-ico shape-ico-ellipse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="8" />
+                </svg>
+                <span class="draw-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="drawboard-popover hidden" id="drawboardShapePopover" role="menu" aria-label="בחירת צורה">
+                <button type="button" class="draw-shape-opt active" data-shape-kind="arrow" title="חץ">
+                  <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="19" x2="19" y2="5"/><polyline points="10 5 19 5 19 14"/></svg>
+                  <span>חץ</span>
+                </button>
+                <button type="button" class="draw-shape-opt" data-shape-kind="line" title="קו ישר">
+                  <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="19" x2="19" y2="5"/></svg>
+                  <span>קו</span>
+                </button>
+                <button type="button" class="draw-shape-opt" data-shape-kind="rect" title="מלבן">
+                  <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/></svg>
+                  <span>מלבן</span>
+                </button>
+                <button type="button" class="draw-shape-opt" data-shape-kind="ellipse" title="עיגול / אליפסה">
+                  <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>
+                  <span>עיגול</span>
+                </button>
+              </div>
+            </div>
+
+            <button type="button" class="draw-tool-btn" data-draw-tool="text" title="תיבת טקסט (עברית / English)" aria-label="טקסט" aria-pressed="false">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="4 7 4 4 20 4 20 7" />
+                <line x1="9" y1="20" x2="15" y2="20" />
+                <line x1="12" y1="4" x2="12" y2="20" />
+              </svg>
+            </button>
+
+            <span class="draw-tool-sep" aria-hidden="true"></span>
+
+            <button type="button" class="draw-tool-btn" id="btnDrawUploadImg" title="הוסף תמונה מהמכשיר (או הדבק Ctrl+V / גרור ללוח)" aria-label="הוסף תמונה מהמכשיר">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <circle cx="9" cy="9" r="2" />
+                <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+              </svg>
+            </button>
+            <input type="file" id="drawboardImageInput" accept="image/*" multiple hidden />
+
+            <div class="draw-popover-anchor">
+              <button type="button" class="draw-tool-btn draw-import-qimg-btn hidden" id="btnDrawImportQImg" title="העבר את תמונת השאלה ללוח לסימון ישיר" aria-label="העבר תמונת שאלה ללוח">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>תמונת שאלה</span>
+              </button>
+              <div class="drawboard-popover drawboard-qimg-popover hidden" id="drawboardQImgPopover" role="menu" aria-label="בחר תמונה מהשאלה"></div>
+            </div>
+          </div>
+
+          <!-- Row 2: Clinical Colors, Stroke Widths, Grid & History Actions -->
+          <div class="drawboard-tool-row drawboard-style-row">
+            <div class="draw-color-group" role="group" aria-label="צבעי ציור">
+              <button type="button" class="draw-color-dot active" data-draw-color="#111827" style="--swatch:#111827" title="שחור-דיו" aria-label="שחור-דיו" aria-pressed="true"></button>
+              <button type="button" class="draw-color-dot" data-draw-color="#1D4ED8" style="--swatch:#1D4ED8" title="כחול-קובלט" aria-label="כחול-קובלט" aria-pressed="false"></button>
+              <button type="button" class="draw-color-dot" data-draw-color="#DC2626" style="--swatch:#DC2626" title="אדום" aria-label="אדום" aria-pressed="false"></button>
+              <button type="button" class="draw-color-dot" data-draw-color="#15803D" style="--swatch:#15803D" title="ירוק" aria-label="ירוק" aria-pressed="false"></button>
+              <button type="button" class="draw-color-dot" data-draw-color="#D97706" style="--swatch:#D97706" title="כתום-ענבר" aria-label="כתום-ענבר" aria-pressed="false"></button>
+              <button type="button" class="draw-color-dot" data-draw-color="#7C3AED" style="--swatch:#7C3AED" title="סגול" aria-label="סגול" aria-pressed="false"></button>
+            </div>
+
+            <span class="draw-tool-sep" aria-hidden="true"></span>
+
+            <div class="draw-size-group" role="group" aria-label="עובי קו">
+              <button type="button" class="draw-size-btn" data-draw-size="sm" title="דק" aria-label="עובי דק" aria-pressed="false"><span class="draw-size-dot sm"></span></button>
+              <button type="button" class="draw-size-btn active" data-draw-size="md" title="בינוני" aria-label="עובי בינוני" aria-pressed="true"><span class="draw-size-dot md"></span></button>
+              <button type="button" class="draw-size-btn" data-draw-size="lg" title="עבה" aria-label="עובי עבה" aria-pressed="false"><span class="draw-size-dot lg"></span></button>
+            </div>
+
+            <span class="draw-tool-sep" aria-hidden="true"></span>
+
+            <div class="draw-action-group">
+              <button type="button" class="draw-tool-btn" id="btnDrawToggleGrid" title="הצג/הסתר רשת נקודות" aria-label="רשת נקודות" aria-pressed="false">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="5" cy="5" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="19" cy="5" r="1" />
+                  <circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" />
+                  <circle cx="5" cy="19" r="1" /><circle cx="12" cy="19" r="1" /><circle cx="19" cy="19" r="1" />
+                </svg>
+              </button>
+              <button type="button" class="draw-tool-btn" id="btnDrawUndo" title="ביטול פעולה (Ctrl+Z)" aria-label="ביטול" disabled>
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 7v6h6" />
+                  <path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" />
+                </svg>
+              </button>
+              <button type="button" class="draw-tool-btn" id="btnDrawRedo" title="בצע שוב (Ctrl+Y)" aria-label="בצע שוב" disabled>
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 7v6h-6" />
+                  <path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3l3 2.7" />
+                </svg>
+              </button>
+              <button type="button" class="draw-tool-btn draw-clear-btn" id="btnDrawClear" title="נקה את הלוח הנוכחי" aria-label="נקה לוח">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="drawboard-stage" id="drawboardStage">
+          <canvas id="drawboardCanvas" aria-label="משטח ציור"></canvas>
+
+          <div class="drawboard-empty-hint" id="drawboardEmptyHint" aria-hidden="true">
+            <span>צייר בחופשיות, הדבק צילום מסך (<kbd>Ctrl+V</kbd>) או גרור תמונה לכאן</span>
+          </div>
+
+          <!-- Floating selection bar -->
+          <div class="drawboard-selection-bar hidden" id="drawboardSelectionBar">
+            <button type="button" class="btn-secondary btn-sm hidden" id="btnDrawEditSelectedText" title="ערוך טקסט">✏️ ערוך</button>
+            <button type="button" class="btn-danger btn-sm" id="btnDrawDeleteSelected" title="מחק אובייקט נבחר (Delete)">🗑️ מחק נבחר</button>
+          </div>
+
+          <!-- Inline floating text editor -->
+          <div class="drawboard-text-editor-wrap hidden" id="drawboardTextEditorWrap">
+            <textarea id="drawboardTextEditor" dir="auto" rows="2" placeholder="הקלד הערה..."></textarea>
+            <div class="drawboard-text-editor-actions">
+              <button type="button" class="btn-primary btn-sm" id="btnDrawTextConfirm" title="אישור (Ctrl+Enter)">✓ אישור</button>
+              <button type="button" class="btn-ghost btn-sm" id="btnDrawTextCancel" title="ביטול (Esc)">ביטול</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div><!-- /.workspace-grid -->
   </main>
+
+  <!-- Mobile Drawing Board Backdrop -->
+  <div class="drawboard-backdrop hidden" id="drawboardBackdrop" aria-hidden="true"></div>
 
   <!-- Image Lightbox Modal (Pan & Zoom) -->
   <div class="modal-overlay hidden" id="lightboxModal" role="dialog" aria-modal="true" aria-labelledby="lightboxCaption">
     <div class="lightbox-toolbar">
       <span id="lightboxCaption">תמונה קלינית</span>
       <div class="lightbox-controls">
+        <button type="button" class="btn-primary btn-sm" id="btnLightboxToBoard" title="העבר תמונה זו ללוח הציור לסימון ישיר">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 19l7-7 3 3-7 7-3-3z" />
+            <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+          </svg>
+          <span>העבר ללוח</span>
+        </button>
         <button type="button" class="btn-secondary btn-sm" id="btnZoomIn">הגדל +</button>
         <button type="button" class="btn-secondary btn-sm" id="btnZoomOut">הקטן -</button>
         <button type="button" class="btn-secondary btn-sm" id="btnZoomReset">איפוס</button>
@@ -715,6 +936,7 @@
         <li><kbd>Space</kbd> / <kbd>Enter</kbd> <span>חשיפת כרטיסייה / מעבר לשאלה הבאה</span></li>
         <li><kbd>S</kbd> או <kbd>F</kbd> <span>סימון/ביטול מועדפים ⭐</span></li>
         <li><kbd>M</kbd> <span>הפעלת/כיבוי מרקר צהוב בשאלה 🖍️</span></li>
+        <li><kbd>D</kbd> <span>פתיחה/סגירה של לוח הציור לצד השאלה 🎨</span></li>
         <li><kbd>N</kbd> <span>פתיחה/סגירה ידנית של מגירת ההערות 💬</span></li>
         <li><kbd>R</kbd> <span>ערבוב סדר השאלות 🔀</span></li>
         <li><kbd>Esc</kbd> <span>סגירת זום תמונה / חלון</span></li>
@@ -962,6 +1184,7 @@
 
   <script src="questions_data.js?v=20261125j"></script>
   <script src="qr.js?v=20261124d"></script>
-  <script src="app.js?v=20261125k"></script>
+  <script src="drawboard.js?v=20261125m"></script>
+  <script src="app.js?v=20261125l"></script>
 </body>
 </html>

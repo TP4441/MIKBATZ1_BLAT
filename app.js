@@ -450,6 +450,8 @@
   let lbDragging = false;
   let lbStartX = 0;
   let lbStartY = 0;
+  let lbCurrentSrc = "";
+  let lbCurrentCaption = "";
 
   // Onboarding tour state
   let tourState = {
@@ -3695,6 +3697,7 @@
     if (!simActive) {
       updateDrillBadge();
     }
+    syncDrawBoardAvailability();
   }
 
   function isStudyMode(mode = currentMode) {
@@ -4142,6 +4145,73 @@
     updateMarkerControlsUI();
   }
 
+  // Personal Drawing Board Bridge (100% Local IndexedDB via drawboard.js)
+  function getActiveDrawBoardQuestion() {
+    if (currentMode === "exam") {
+      if (!simState.active || simState.questions.length === 0) return null;
+      return simState.questions[simState.currentIndex] || null;
+    }
+    if (!isStudyMode(currentMode) || filteredList.length === 0) return null;
+    return filteredList[currentIndex] || null;
+  }
+
+  function isDrawBoardModeAvailable() {
+    return isStudyMode(currentMode) || (currentMode === "exam" && Boolean(simState.active));
+  }
+
+  function updateDrawBoardTriggerUI(qId = null) {
+    const dbApi = window.MikbatzDrawBoard;
+    const isOpen = Boolean(dbApi?.isOpen());
+    const targetQId = qId !== null ? qId : (getActiveDrawBoardQuestion()?.id || null);
+    const hasSaved = Boolean(targetQId && dbApi?.hasSavedBoard(targetQId));
+
+    const studyBtn = el("btnFlagDrawBoard");
+    if (studyBtn) {
+      studyBtn.classList.toggle("active", isOpen);
+      studyBtn.setAttribute("aria-pressed", isOpen ? "true" : "false");
+    }
+    el("btnFlagDrawBoardDot")?.classList.toggle("hidden", !hasSaved);
+
+    const simBtn = el("simDrawBoardBtn");
+    if (simBtn) {
+      simBtn.classList.toggle("active", isOpen);
+      simBtn.setAttribute("aria-pressed", isOpen ? "true" : "false");
+    }
+    el("simDrawBoardDot")?.classList.toggle("hidden", !hasSaved);
+  }
+
+  function syncDrawBoardAvailability() {
+    const dbApi = window.MikbatzDrawBoard;
+    if (!dbApi) return;
+    const available = isDrawBoardModeAvailable();
+    dbApi.setAvailable(available);
+    const activeQ = available ? getActiveDrawBoardQuestion() : null;
+    dbApi.setActiveQuestion(activeQ);
+    updateDrawBoardTriggerUI(activeQ?.id || null);
+  }
+
+  function initDrawBoardBridge() {
+    window.MikbatzDrawBoard?.init({
+      onStateChange: () => updateDrawBoardTriggerUI(),
+      getActiveQuestion: getActiveDrawBoardQuestion,
+      showToast,
+    });
+  }
+
+  function createImageToBoardButton(src, caption) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "q-image-to-board-btn";
+    btn.title = "העבר תמונה זו ללוח הציור לסימון ישיר";
+    btn.setAttribute("aria-label", "העבר תמונה ללוח הציור");
+    btn.innerHTML = `<svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg><span>ללוח</span>`;
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      window.MikbatzDrawBoard?.importQuestionImage(src, caption);
+    };
+    return btn;
+  }
+
   function renderQuestion() {
     if (currentMode === "exam" || currentMode === "analytics" || currentMode === "leaderboard") return;
 
@@ -4169,6 +4239,8 @@
         if (descEl) descEl.textContent = "נסה לנקות חלק מהמסננים או לשנות את מילת החיפוש.";
         resetBtn?.classList.remove("hidden");
       }
+      window.MikbatzDrawBoard?.setActiveQuestion(null);
+      updateDrawBoardTriggerUI(null);
       return;
     }
     card.classList.remove("hidden");
@@ -4248,10 +4320,15 @@
       const hint = document.createElement("span");
       hint.className = "q-image-hint";
       hint.textContent = "🔍 לחץ לזום";
-      box.append(img, hint);
-      box.onclick = () => openLightbox(src, `${q.exam} · שאלה ${q.num}`);
+      const imgLabel = `${q.exam} · שאלה ${q.num}`;
+      const toBoardBtn = createImageToBoardButton(src, imgLabel);
+      box.append(img, toBoardBtn, hint);
+      box.onclick = () => openLightbox(src, imgLabel);
       imgWrap.appendChild(box);
     });
+
+    window.MikbatzDrawBoard?.setActiveQuestion(q);
+    updateDrawBoardTriggerUI(q.id);
 
     // Options
     const optWrap = el("qOptions");
@@ -4707,6 +4784,8 @@
     lbScale = 1;
     lbX = 0;
     lbY = 0;
+    lbCurrentSrc = src || "";
+    lbCurrentCaption = caption || "";
     const stage = el("lightboxStage");
     stage.innerHTML = "";
     const img = document.createElement("img");
@@ -4716,6 +4795,7 @@
     img.src = src;
     stage.appendChild(img);
     el("lightboxCaption").textContent = caption;
+    el("btnLightboxToBoard")?.classList.toggle("hidden", !isDrawBoardModeAvailable() || !lbCurrentSrc);
     updateLightboxTransform();
     el("lightboxModal").classList.remove("hidden");
   }
@@ -4723,6 +4803,8 @@
   function closeLightbox() {
     el("lightboxModal").classList.add("hidden");
     el("lightboxStage").innerHTML = "";
+    lbCurrentSrc = "";
+    lbCurrentCaption = "";
   }
 
   function updateLightboxTransform() {
@@ -4755,6 +4837,15 @@
     el("btnZoomOut").onclick = () => { lbScale = Math.max(0.5, lbScale - 0.35); updateLightboxTransform(); };
     el("btnZoomReset").onclick = () => { lbScale = 1; lbX = 0; lbY = 0; updateLightboxTransform(); };
     el("btnCloseLightbox").onclick = closeLightbox;
+    const toBoardBtn = el("btnLightboxToBoard");
+    if (toBoardBtn) {
+      toBoardBtn.onclick = () => {
+        const src = lbCurrentSrc;
+        const caption = lbCurrentCaption;
+        closeLightbox();
+        if (src) window.MikbatzDrawBoard?.importQuestionImage(src, caption);
+      };
+    }
   }
 
   // Exam Simulation
@@ -5053,6 +5144,16 @@
             <span class="q-badge subject-badge${q.exam === PRACTICE_EXAM_NAME ? " practice-badge" : ""}">${escapeHtml(formatSubject(getSubject(q)))} · ${escapeHtml(q.exam)}</span>
           </div>
           <div class="q-flags">
+            <button type="button" class="flag-btn drawboard-toggle-btn" id="simDrawBoardBtn" title="לוח ציור אישי לצד השאלה (D)" aria-label="פתח או סגור לוח ציור אישי" aria-pressed="false">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+                <path d="M2 2l7.586 7.586" />
+                <circle cx="11" cy="11" r="2" />
+              </svg>
+              <span class="drawboard-btn-label">לוח</span>
+              <span class="drawboard-saved-dot hidden" id="simDrawBoardDot" aria-hidden="true"></span>
+            </button>
             <button type="button" class="flag-btn marker-toggle-btn" id="simMarkerBtn" title="מרקר צהוב — סמן מילות מפתח בשאלה (M)" aria-label="מצב מרקר צהוב" aria-pressed="false">🖍️</button>
             <button type="button" class="flag-btn marker-clear-btn hidden" id="simClearMarkersBtn" title="נקה את כל המרקור בשאלה זו" aria-label="נקה מרקור בשאלה">🧹</button>
             <button type="button" class="flag-btn ${isUnsure ? "active" : ""}" id="simUnsureBtn" title="ניחשתי / התלבטתי — לחזור אחר כך" aria-label="סמן התלבטות" aria-pressed="${isUnsure ? "true" : "false"}">🤔 התלבטתי</button>
@@ -5082,6 +5183,7 @@
       </article>
     `;
 
+    el("simDrawBoardBtn").onclick = () => window.MikbatzDrawBoard?.toggle();
     el("simMarkerBtn").onclick = () => toggleMarkerMode();
     el("simClearMarkersBtn").onclick = () => clearQuestionHighlights(q.id);
     el("simUnsureBtn").onclick = () => {
@@ -5105,10 +5207,21 @@
     q.images.forEach((src) => {
       const box = document.createElement("div");
       box.className = "q-image-wrap";
-      box.innerHTML = `<img src="${src}" alt="תמונה" /><span class="q-image-hint">🔍 לחץ לזום</span>`;
-      box.onclick = () => openLightbox(src, `סימולציה · שאלה ${simState.currentIndex + 1}`);
+      const img = document.createElement("img");
+      img.src = src;
+      img.alt = "תמונה";
+      const hint = document.createElement("span");
+      hint.className = "q-image-hint";
+      hint.textContent = "🔍 לחץ לזום";
+      const simLabel = `סימולציה · שאלה ${simState.currentIndex + 1}`;
+      const toBoardBtn = createImageToBoardButton(src, simLabel);
+      box.append(img, toBoardBtn, hint);
+      box.onclick = () => openLightbox(src, simLabel);
       imgWrap.appendChild(box);
     });
+
+    window.MikbatzDrawBoard?.setActiveQuestion(q);
+    updateDrawBoardTriggerUI(q.id);
 
     const optWrap = el("simOptions");
     order.forEach((origIdx, dispIdx) => {
@@ -6070,6 +6183,7 @@
     // Question controls
     el("btnPrevQ").onclick = prevQuestion;
     el("btnNextQ").onclick = nextQuestion;
+    el("btnFlagDrawBoard")?.addEventListener("click", () => window.MikbatzDrawBoard?.toggle());
     el("btnFlagMarker").onclick = () => toggleMarkerMode();
     el("btnClearMarkers").onclick = () => {
       if (filteredList.length > 0) clearQuestionHighlights(filteredList[currentIndex].id);
@@ -6591,6 +6705,20 @@
         return;
       }
       if (e.key === "Escape") {
+        const hasOpenModal =
+          !el("lightboxModal").classList.contains("hidden") ||
+          !el("onlineUsersPopover")?.classList.contains("hidden") ||
+          !el("problemReportModal").classList.contains("hidden") ||
+          !el("syncModal")?.classList.contains("hidden") ||
+          !el("adminLoginModal").classList.contains("hidden") ||
+          !el("adminQuestionModal").classList.contains("hidden") ||
+          !el("adminDashboardModal").classList.contains("hidden") ||
+          !el("backupModal").classList.contains("hidden") ||
+          !el("shortcutsModal").classList.contains("hidden");
+        if (!hasOpenModal && window.MikbatzDrawBoard?.handleEscape()) {
+          e.preventDefault();
+          return;
+        }
         closeLightbox();
         closeOnlineUsersPopover();
         closeProblemModal();
@@ -6613,6 +6741,13 @@
       }
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "d" || e.key === "D")) {
+        if (isDrawBoardModeAvailable()) {
+          e.preventDefault();
+          window.MikbatzDrawBoard?.toggle();
+        }
+        return;
+      }
       if (e.key.toLowerCase() === "m") {
         if (getActiveStemContext()) {
           e.preventDefault();
@@ -8865,6 +9000,7 @@
   initExamSetup();
   updateDrillBadge();
   bindEvents();
+  initDrawBoardBridge();
   if (progress.studySession) {
     const s = progress.studySession;
     const f = s.filters || {};
@@ -8888,6 +9024,7 @@
   } else {
     applyFilters();
   }
+  syncDrawBoardAvailability();
   renderResumeSimBanner();
   checkServer();
 

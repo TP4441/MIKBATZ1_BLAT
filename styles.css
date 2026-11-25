@@ -4387,3 +4387,690 @@ kbd {
 .marker-floating-pill:hover {
   background: #FDE047;
 }
+
+/* ============================================================
+   Personal Drawing Board ("לוח ציור אישי")
+   ============================================================ */
+
+.workspace-grid {
+  display: block;
+}
+
+.workspace-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+/* Flag toggle button + saved-drawing indicator dot */
+.flag-btn.drawboard-toggle-btn {
+  position: relative;
+  font-size: 0.84rem;
+  gap: 5px;
+  padding: 6px 10px;
+}
+
+.flag-btn.drawboard-toggle-btn.active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary-ink);
+}
+
+.drawboard-saved-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+
+[data-theme="dark"] .drawboard-saved-dot {
+  background: var(--primary-ink);
+}
+
+/* Quick "to board" button on question image thumbnails */
+.q-image-to-board-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(22, 58, 95, 0.9);
+  color: #FFFFFF;
+  font-family: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  opacity: 0.94;
+  transition: opacity 0.15s ease, background-color 0.15s ease, transform 0.12s ease;
+}
+
+@media (hover: hover) and (min-width: 721px) {
+  .q-image-to-board-btn {
+    opacity: 0;
+  }
+  .q-image-wrap:hover .q-image-to-board-btn,
+  .q-image-to-board-btn:focus-visible {
+    opacity: 1;
+  }
+}
+
+.q-image-to-board-btn:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.q-image-to-board-btn .ui-ico {
+  width: 13px;
+  height: 13px;
+}
+
+/* Desktop Split View (>= 1024px) */
+@media (min-width: 1024px) {
+  body.drawboard-open .main-container {
+    max-width: min(1560px, calc(100vw - 24px));
+    margin-bottom: 16px;
+  }
+
+  body.drawboard-open .workspace-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 8px minmax(340px, var(--drawboard-width, 460px));
+    align-items: start;
+    gap: 0 8px;
+  }
+
+  /* When split-view narrows the primary column, stack stem & images cleanly if space is tight */
+  body.drawboard-open .q-content-grid.has-images {
+    grid-template-columns: minmax(0, 1.15fr) minmax(210px, 0.75fr);
+    gap: 14px;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1279px) {
+  body.drawboard-open .q-content-grid.has-images {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+}
+
+/* Vertical Resizer Handle (Desktop) */
+.drawboard-resizer {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .drawboard-resizer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: sticky;
+    top: var(--drawboard-top, 116px);
+    height: calc(100vh - var(--drawboard-top, 116px) - 16px);
+    cursor: col-resize;
+    user-select: none;
+    touch-action: none;
+    border-radius: 999px;
+  }
+
+  .drawboard-resizer::after {
+    content: "";
+    width: 3px;
+    height: 48px;
+    border-radius: 999px;
+    background: var(--border-strong);
+    transition: background-color 0.15s ease, height 0.15s ease;
+  }
+
+  .drawboard-resizer:hover::after,
+  .drawboard-resizer.dragging::after {
+    background: var(--primary);
+    height: 76px;
+  }
+}
+
+body.drawboard-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+/* Mobile Backdrop */
+.drawboard-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  background: rgba(11, 18, 27, 0.52);
+}
+
+/* Drawing Board Panel Container */
+.drawboard-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  overflow: visible;
+}
+
+@media (min-width: 1024px) {
+  .drawboard-panel {
+    position: sticky;
+    top: var(--drawboard-top, 116px);
+    height: calc(100vh - var(--drawboard-top, 116px) - 16px);
+    min-height: 440px;
+  }
+}
+
+/* Mobile & Narrow Tablet Bottom Sheet (< 1024px) */
+@media (max-width: 1023px) {
+  .drawboard-panel {
+    position: fixed;
+    inset: auto 0 0 0;
+    height: 82dvh;
+    max-height: 88dvh;
+    z-index: 70;
+    border-radius: 16px 16px 0 0;
+    border-bottom: none;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    box-shadow: var(--shadow-elevated);
+  }
+}
+
+/* Panel Header & Mode Tabs */
+.drawboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.drawboard-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  min-width: 0;
+}
+
+.drawboard-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.drawboard-tab-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.drawboard-tab-btn.active {
+  background: var(--primary);
+  color: var(--primary-on-solid);
+}
+
+.drawboard-tab-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.drawboard-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
+  flex-shrink: 0;
+}
+
+.drawboard-tab-btn.active .drawboard-tab-dot {
+  background: #FDE047;
+}
+
+.drawboard-header-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.drawboard-save-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.drawboard-save-status.saving {
+  color: var(--warning-ink);
+}
+
+.drawboard-save-status.saved {
+  color: var(--success-ink);
+}
+
+.drawboard-close-btn {
+  padding: 5px;
+  min-width: 30px;
+  min-height: 30px;
+}
+
+/* Compact 2-Row Toolbar */
+.drawboard-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.drawboard-tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.drawboard-style-row {
+  justify-content: space-between;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.draw-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.13s ease, border-color 0.13s ease, color 0.13s ease;
+}
+
+.draw-tool-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.draw-tool-btn.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-on-solid);
+}
+
+.draw-tool-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.draw-clear-btn:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
+.draw-import-qimg-btn {
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  color: var(--primary-ink);
+  padding: 0 9px;
+}
+
+.draw-import-qimg-btn:hover {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-on-solid);
+}
+
+.draw-tool-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border-strong);
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+/* Shape selector icon switching */
+.draw-shape-btn {
+  padding: 0 6px;
+}
+
+.draw-shape-btn .shape-ico {
+  display: none;
+}
+
+.draw-shape-btn[data-active-shape="arrow"] .shape-ico-arrow,
+.draw-shape-btn[data-active-shape="line"] .shape-ico-line,
+.draw-shape-btn[data-active-shape="rect"] .shape-ico-rect,
+.draw-shape-btn[data-active-shape="ellipse"] .shape-ico-ellipse {
+  display: block;
+}
+
+.draw-caret {
+  font-size: 0.65rem;
+  opacity: 0.75;
+  line-height: 1;
+}
+
+/* Tool Popovers */
+.draw-popover-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.drawboard-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-elevated);
+}
+
+.draw-shape-opt {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 48px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.draw-shape-opt:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.draw-shape-opt.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-on-solid);
+}
+
+.drawboard-qimg-popover {
+  flex-direction: column;
+  min-width: 150px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.drawboard-qimg-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: right;
+}
+
+.drawboard-qimg-option:hover {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.drawboard-qimg-option img {
+  width: 38px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #FFFFFF;
+  border: 1px solid var(--border);
+}
+
+/* Color Swatches */
+.draw-color-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.draw-color-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  background: var(--swatch);
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--border-strong);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.draw-color-dot:hover {
+  transform: scale(1.12);
+}
+
+.draw-color-dot.active {
+  transform: scale(1.12);
+  box-shadow: 0 0 0 2px var(--primary);
+}
+
+/* Stroke Width Selector */
+.draw-size-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.draw-size-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.draw-size-btn:hover {
+  background: var(--surface-hover);
+}
+
+.draw-size-btn.active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+}
+
+.draw-size-dot {
+  border-radius: 50%;
+  background: var(--text);
+  display: block;
+}
+
+.draw-size-dot.sm { width: 5px; height: 5px; }
+.draw-size-dot.md { width: 9px; height: 9px; }
+.draw-size-dot.lg { width: 13px; height: 13px; }
+
+.draw-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Canvas Stage — White-Plate Rule (#FFFFFF in Light & Dark) */
+.drawboard-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 240px;
+  background: #FFFFFF;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.drawboard-stage.drag-over {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+#drawboardCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: crosshair;
+}
+
+#drawboardCanvas[data-tool="select"] {
+  cursor: default;
+}
+
+#drawboardCanvas[data-tool="text"] {
+  cursor: text;
+}
+
+#drawboardCanvas[data-tool="eraser"] {
+  cursor: none;
+}
+
+.drawboard-empty-hint {
+  position: absolute;
+  inset: auto 12px 12px 12px;
+  pointer-events: none;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #64748B;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 5px 10px;
+  border-radius: 8px;
+}
+
+.drawboard-empty-hint kbd {
+  background: #F2EFE6;
+  color: #111827;
+  border-color: #C9C3B5;
+  font-size: 0.72rem;
+  padding: 1px 5px;
+}
+
+/* Floating Selection Action Bar */
+.drawboard-selection-bar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #C9C3B5;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(17, 24, 39, 0.12);
+}
+
+/* Floating Inline Text Editor */
+.drawboard-text-editor-wrap {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 170px;
+  padding: 6px;
+  background: #FFFFFF;
+  border: 1.5px solid #1D4ED8;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.16);
+}
+
+#drawboardTextEditor {
+  width: 100%;
+  min-width: 156px;
+  border: none;
+  outline: none;
+  resize: both;
+  background: transparent;
+  font-family: "Heebo", "Segoe UI", "Arial", sans-serif;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #111827;
+}
+
+.drawboard-text-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+@media (max-width: 720px) {
+  .drawboard-btn-label {
+    display: none;
+  }
+
+  .drawboard-save-status {
+    display: none;
+  }
+
+  .draw-tool-btn {
+    min-width: 34px;
+    height: 34px;
+  }
+
+  .draw-color-dot {
+    width: 24px;
+    height: 24px;
+  }
+
+  .lightbox-controls {
+    flex-wrap: wrap;
+  }
+}
