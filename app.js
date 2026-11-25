@@ -3751,7 +3751,7 @@
     saveProgress({ syncCloud });
   }
 
-  function recomputeFilteredList({ preserveShuffle = false } = {}) {
+  function recomputeFilteredList({ preserveShuffle = false, pinnedQId = null } = {}) {
     const isDrill = currentMode === "drill";
     const activeFilters = getActiveFilters();
 
@@ -3759,7 +3759,11 @@
       setActiveShuffledOrder(null);
     }
 
-    const basePool = isDrill ? getDrillQuestions() : QUESTIONS;
+    let basePool = isDrill ? getDrillQuestions() : QUESTIONS;
+    if (isDrill && pinnedQId && !basePool.some((q) => q.id === pinnedQId)) {
+      const pinnedQ = Q_MAP.get(pinnedQId);
+      if (pinnedQ) basePool = [...basePool, pinnedQ];
+    }
     const term = activeFilters.search.trim().toLowerCase();
 
     filteredList = basePool.filter((q) => {
@@ -3772,8 +3776,9 @@
       const myNote = getMyNoteText(q.id).trim();
       const qCommNotes = getQuestionCommunityNotesList(q.id);
       const qProblems = getQuestionProblemsList(q.id);
+      const isPinnedCurrent = Boolean(pinnedQId && q.id === pinnedQId);
 
-      if (!isDrill && filters.statuses.size > 0) {
+      if (!isDrill && !isPinnedCurrent && filters.statuses.size > 0) {
         let anyStatusMatch = false;
         for (const st of filters.statuses) {
           if (matchesQuestionStatus(st, q, att, fl, myNote, qCommNotes, qProblems)) {
@@ -3854,8 +3859,8 @@
     el("filterActiveDot").classList.toggle("hidden", !hasCustomFilter);
   }
 
-  function applyFilters(keepCurrentId = null, { preserveShuffle = false, fallbackIndex = null } = {}) {
-    recomputeFilteredList({ preserveShuffle });
+  function applyFilters(keepCurrentId = null, { preserveShuffle = false, fallbackIndex = null, pinnedQId = null } = {}) {
+    recomputeFilteredList({ preserveShuffle, pinnedQId });
 
     if (keepCurrentId) {
       const idx = filteredList.findIndex((q) => q.id === keepCurrentId);
@@ -4443,8 +4448,30 @@
   }
 
   function prevQuestion() {
+    hasUserInteractedWithNav = true;
+    if (currentMode !== "drill" && filters.statuses.size > 0) {
+      const prevId = filteredList[currentIndex]?.id;
+      const prevIdx = currentIndex;
+      recomputeFilteredList({ preserveShuffle: true });
+      if (filteredList.length === 0) {
+        currentIndex = 0;
+        renderQuestion();
+        persistStudySession();
+        return;
+      }
+      const idxOfPrev = prevId ? filteredList.findIndex((q) => q.id === prevId) : -1;
+      if (idxOfPrev > 0) {
+        currentIndex = idxOfPrev - 1;
+      } else if (idxOfPrev === 0) {
+        currentIndex = 0;
+      } else {
+        currentIndex = prevIdx > 0 ? Math.min(filteredList.length - 1, prevIdx - 1) : 0;
+      }
+      renderQuestion();
+      persistStudySession();
+      return;
+    }
     if (currentIndex > 0) {
-      hasUserInteractedWithNav = true;
       currentIndex--;
       renderQuestion();
       persistStudySession();
@@ -4477,6 +4504,35 @@
       }
       renderQuestion();
       persistStudySession();
+      return;
+    }
+    if (filters.statuses.size > 0) {
+      const prevId = filteredList[currentIndex]?.id;
+      const prevIdx = currentIndex;
+      recomputeFilteredList({ preserveShuffle: true });
+      if (filteredList.length === 0) {
+        currentIndex = 0;
+        renderQuestion();
+        persistStudySession();
+        return;
+      }
+      const idxOfPrev = prevId ? filteredList.findIndex((q) => q.id === prevId) : -1;
+      if (idxOfPrev >= 0) {
+        if (idxOfPrev < filteredList.length - 1) {
+          currentIndex = idxOfPrev + 1;
+          renderQuestion();
+          persistStudySession();
+        } else {
+          currentIndex = idxOfPrev;
+          renderQuestion();
+          persistStudySession();
+          showToast("הגעת לסוף הרשימה!");
+        }
+      } else {
+        currentIndex = prevIdx < filteredList.length ? prevIdx : filteredList.length - 1;
+        renderQuestion();
+        persistStudySession();
+      }
       return;
     }
     if (currentIndex < filteredList.length - 1) {
@@ -5801,7 +5857,8 @@
     if (currentMode === "analytics") renderAnalytics();
     else if (currentMode === "leaderboard") renderLeaderboard();
     else if (currentMode !== "exam") {
-      applyFilters(filteredList[currentIndex]?.id, { preserveShuffle: true, fallbackIndex: currentIndex });
+      const curId = filteredList[currentIndex]?.id || null;
+      applyFilters(curId, { preserveShuffle: true, fallbackIndex: currentIndex, pinnedQId: curId });
     }
     renderResumeSimBanner();
   }
@@ -7845,11 +7902,15 @@
       } else if (currentMode === "leaderboard") {
         renderLeaderboard();
       } else if (currentMode !== "exam") {
-        if (activeTag === "qNoteInput") {
-          // Avoid interrupting an active note draft; refresh on next navigation
+        const isTypingNoteOrReply =
+          activeTag === "qNoteInput" ||
+          Boolean(document.activeElement?.classList?.contains("note-reply-textarea"));
+        if (isTypingNoteOrReply) {
+          // Avoid interrupting an active note/reply draft; refresh on next navigation
           updateDrillBadge();
         } else {
-          applyFilters(filteredList[currentIndex]?.id, { preserveShuffle: true, fallbackIndex: currentIndex });
+          const curId = filteredList[currentIndex]?.id || null;
+          applyFilters(curId, { preserveShuffle: true, fallbackIndex: currentIndex, pinnedQId: curId });
         }
       }
     }
