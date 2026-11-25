@@ -955,6 +955,42 @@ button,
   font-weight: 700;
 }
 
+.chip.chip-practice {
+  background: #F0FDFA;
+  border-color: #5EEAD4;
+  color: #0F766E;
+  font-weight: 600;
+}
+
+.chip.chip-practice:hover {
+  background: #CCFBF1;
+  border-color: #0F766E;
+}
+
+.chip.chip-practice.active {
+  background: #0F766E;
+  border-color: #0F766E;
+  color: #FFFFFF;
+  font-weight: 700;
+}
+
+[data-theme="dark"] .chip.chip-practice {
+  background: rgba(20, 184, 166, 0.16);
+  border-color: rgba(45, 212, 191, 0.45);
+  color: #5EEAD4;
+}
+
+[data-theme="dark"] .chip.chip-practice:hover {
+  background: rgba(20, 184, 166, 0.28);
+  border-color: #5EEAD4;
+}
+
+[data-theme="dark"] .chip.chip-practice.active {
+  background: #0D9488;
+  border-color: #14B8A6;
+  color: #FFFFFF;
+}
+
 .chip.chip-empty {
   opacity: 0.52;
 }
@@ -1021,6 +1057,28 @@ button,
 .exam-badge {
   background: var(--primary-soft);
   color: var(--primary-ink);
+}
+
+.q-badge.practice-badge,
+.exam-badge.practice-badge {
+  background: #CCFBF1;
+  border: 1px solid #5EEAD4;
+  color: #0F766E;
+}
+
+[data-theme="dark"] .q-badge.practice-badge,
+[data-theme="dark"] .exam-badge.practice-badge {
+  background: rgba(20, 184, 166, 0.18);
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  color: #5EEAD4;
+}
+
+.readiness-matrix th.practice-row-head {
+  color: #0F766E;
+}
+
+[data-theme="dark"] .readiness-matrix th.practice-row-head {
+  color: #5EEAD4;
 }
 
 .subject-badge {
@@ -1557,6 +1615,35 @@ button,
   border-radius: 6px;
   font-weight: 600;
   display: inline-block;
+}
+
+.q-explanation {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text);
+}
+
+.q-topic-tag {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.q-explanation-text {
+  font-size: 0.91rem;
+  line-height: 1.65;
+  white-space: pre-line;
 }
 
 .flashcard-controls {

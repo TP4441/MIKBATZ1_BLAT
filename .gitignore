@@ -7,6 +7,7 @@ fetch_gemini_quizzes.py
 
 # קובץ JSON גולמי (האתר טוען את questions_data.js)
 questions_data.json
+practice_questions.json
 
 # התקדמות אישית של המשתמש המקומי וקבצי מערכת
 user_progress.json

@@ -3553,6 +3553,8 @@
     }
   }
 
+  const PRACTICE_EXAM_NAME = "תרגוליישן";
+
   const SUBJECT_EMOJIS = {
     "אונקולוגיה": "🎗️",
     "מבואות": "📚",
@@ -3605,8 +3607,9 @@
     EXAMS.forEach((ex) => {
       const count = isDrill ? (drillExamCounts.get(ex.name) || 0) : ex.expectedCount;
       const isSelected = activeFilters.exams.has(ex.name);
+      const isPractice = ex.name === PRACTICE_EXAM_NAME;
       const btn = document.createElement("button");
-      btn.className = "chip" + (isSelected ? " active" : "") + (isDrill && count === 0 && !isSelected ? " chip-empty" : "");
+      btn.className = "chip" + (isPractice ? " chip-practice" : "") + (isSelected ? " active" : "") + (isDrill && count === 0 && !isSelected ? " chip-empty" : "");
       btn.textContent = `${ex.name} (${count})`;
       btn.onclick = () => {
         hasUserInteractedWithNav = true;
@@ -3809,7 +3812,8 @@
           commText + " " +
           probText + " " +
           q.exam + " " +
-          q.subject
+          q.subject + " " +
+          (q.topic || "")
         ).toLowerCase();
         if (!hay.includes(term)) return false;
       }
@@ -4175,7 +4179,9 @@
     const struckSet = new Set(progress.struck[q.id] || []);
     flashcardRevealed = false;
 
-    el("qExamBadge").textContent = `${q.exam} · שאלה ${q.num}`;
+    const examBadge = el("qExamBadge");
+    examBadge.textContent = `${q.exam} · שאלה ${q.num}`;
+    examBadge.classList.toggle("practice-badge", q.exam === PRACTICE_EXAM_NAME);
     el("qSubjectBadge").textContent = formatSubject(getSubject(q));
     el("qAppealBadge").classList.toggle("hidden", !(q.correct.length > 1 || q.allAccepted));
 
@@ -4329,6 +4335,12 @@
       html += `<div class="appeal-note">⚖️ הערת ערעור: כל התשובות התקבלו בשאלה זו.</div>`;
     } else if (q.appealNote) {
       html += `<div class="appeal-note">⚖️ הערת ערעור: ${escapeHtml(q.appealNote)}</div>`;
+    }
+
+    if (q.explanation || q.topic) {
+      const topicHtml = q.topic ? `<span class="q-topic-tag">📌 ${escapeHtml(q.topic)}</span>` : "";
+      const expHtml = q.explanation ? `<div class="q-explanation-text">${escapeHtml(q.explanation)}</div>` : "";
+      html += `<div class="q-explanation">${topicHtml}${expHtml}</div>`;
     }
 
     fb.innerHTML = html;
@@ -5016,7 +5028,7 @@
         <div class="q-header">
           <div class="q-meta">
             <span class="q-badge exam-badge">שאלה ${simState.currentIndex + 1} מתוך ${simState.questions.length}</span>
-            <span class="q-badge subject-badge">${escapeHtml(formatSubject(getSubject(q)))} · ${escapeHtml(q.exam)}</span>
+            <span class="q-badge subject-badge${q.exam === PRACTICE_EXAM_NAME ? " practice-badge" : ""}">${escapeHtml(formatSubject(getSubject(q)))} · ${escapeHtml(q.exam)}</span>
           </div>
           <div class="q-flags">
             <button type="button" class="flag-btn marker-toggle-btn" id="simMarkerBtn" title="מרקר צהוב — סמן מילות מפתח בשאלה (M)" aria-label="מצב מרקר צהוב" aria-pressed="false">🖍️</button>
@@ -5308,7 +5320,8 @@
         }
         return `<td style="background:${bg}"><button class="matrix-cell-btn" data-exam="${escapeHtml(ex.name)}" data-subj="${escapeHtml(s)}">${solved.length}/${qs.length}</button></td>`;
       }).join("");
-      return `<tr><th>${escapeHtml(ex.name)}</th>${cells}</tr>`;
+      const rowCls = ex.name === PRACTICE_EXAM_NAME ? ' class="practice-row-head"' : "";
+      return `<tr><th${rowCls}>${escapeHtml(ex.name)}</th>${cells}</tr>`;
     }).join("");
 
     table.innerHTML = `<thead>${head}</thead><tbody>${rows}</tbody>`;
