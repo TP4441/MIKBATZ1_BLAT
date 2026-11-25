@@ -6092,7 +6092,14 @@
     // Year quick buttons
     el("btnRecentYears").onclick = () => {
       hasUserInteractedWithNav = true;
-      getActiveFilters().exams = new Set(["2026", "2025", "2024", "2022", "2021"]);
+      getActiveFilters().exams = new Set(
+        EXAMS.map((ex) => ex.name).filter((name) => {
+          const m = String(name).match(/^(\d{4})/);
+          if (!m) return false;
+          const yr = Number(m[1]);
+          return yr >= 2017 && yr <= 2026;
+        })
+      );
       renderFilterChips();
       applyFilters();
       persistStudySession();
