@@ -1933,6 +1933,20 @@ button,
   border-top: 1px solid var(--border);
 }
 
+/* Spoiler-free Exam Focus Mode during active simulation */
+body.exam-sim-active #drillCountBadge,
+body.exam-focus-mode #modeTabs,
+body.exam-focus-mode #resumeSimBanner,
+body.exam-focus-mode #btnExportObsidian,
+body.exam-focus-mode #btnBackupMenu,
+body.exam-focus-mode #btnAdminPanel {
+  display: none !important;
+}
+
+body.exam-focus-mode .topbar-brand-row {
+  padding-bottom: 2px;
+}
+
 /* Exam Simulation */
 .section-head h2 {
   font-size: 1.25rem;

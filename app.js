@@ -3668,8 +3668,19 @@
   }
 
   function updateDrillBadge() {
+    if (simState.active) return;
     const count = getDrillQuestions().length;
     el("drillCountBadge").textContent = count;
+  }
+
+  function updateExamFocusModeUI() {
+    const simActive = Boolean(simState.active);
+    const examFocus = simActive && currentMode === "exam";
+    document.body.classList.toggle("exam-sim-active", simActive);
+    document.body.classList.toggle("exam-focus-mode", examFocus);
+    if (!simActive) {
+      updateDrillBadge();
+    }
   }
 
   function isStudyMode(mode = currentMode) {
@@ -4827,6 +4838,7 @@
     el("examResults").classList.add("hidden");
     el("examActive").classList.remove("hidden");
 
+    updateExamFocusModeUI();
     renderResumeSimBanner();
     startSimTimer();
     renderSimQuestion();
@@ -4879,9 +4891,24 @@
     el("examResults").classList.add("hidden");
     el("examActive").classList.remove("hidden");
 
+    updateExamFocusModeUI();
     startSimTimer();
     persistActiveSimulation({ syncCloud: true });
     renderSimQuestion();
+  }
+
+  function pauseSimulation() {
+    if (!simState.active) return;
+    clearInterval(simState.timerId);
+    simState.timerId = null;
+    persistActiveSimulation({ syncCloud: true });
+    simState.active = false;
+    updateExamFocusModeUI();
+    el("examActive").classList.add("hidden");
+    el("examResults").classList.add("hidden");
+    el("examSetup").classList.remove("hidden");
+    renderResumeSimBanner();
+    showToast("⏸️ הסימולציה הושהתה ונשמרה — ניתן להמשיך בכל עת.");
   }
 
   function updateSimTimerDisplay() {
@@ -5065,6 +5092,7 @@
     clearInterval(simState.timerId);
     simState.timerId = null;
     simState.active = false;
+    updateExamFocusModeUI();
 
     let correctCount = 0;
     const bySubj = {};
@@ -5766,6 +5794,7 @@
     if (persist && !isRestoringSession) {
       persistStudySession();
     }
+    updateExamFocusModeUI();
   }
 
   function renderCurrentView() {
@@ -6212,6 +6241,7 @@
 
     // Exam Simulation
     el("btnStartSim").onclick = startSimulation;
+    el("btnPauseSim")?.addEventListener("click", pauseSimulation);
     el("btnToggleSimGrid").onclick = () => el("simGridPanel").classList.toggle("hidden");
     el("btnSubmitSim").onclick = () => {
       if (confirm("להגיש את המבחן ולראות תוצאות?")) submitSimulation();
