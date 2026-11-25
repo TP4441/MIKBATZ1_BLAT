@@ -204,6 +204,23 @@ async function run() {
     });
     assert.equal(hijackProbDel.status, 403);
 
+    // Student A edits their problem report, then deletes it -> 200
+    const editProb = await req("/api/problems/2026_q001", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        type: "question_issue",
+        text: "ניסוח מעודכן לבעיה",
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+      },
+    });
+    assert.equal(editProb.status, 200);
+    assert.equal(editProb.data.problem.type, "question_issue");
+    assert.equal(editProb.data.problem.text, "ניסוח מעודכן לבעיה");
+
     // Student A deletes their own note & problem -> 200
     const delOwnNote = await req("/api/notes/2026_q001", {
       method: "DELETE",
@@ -757,7 +774,53 @@ async function run() {
         "Notes sort must be non-increasing by notesCount"
       );
     }
-    console.log("✓ Leaderboard answers/notes sorting & privacy checks OK");
+
+    // Deleting a note (by user or admin) must decrement leaderboard notesCount and clear user_progress.notes
+    await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        progress: {
+          notes: {
+            "2026_q010": "הערת מקור של תפוח",
+            "2026_q011": "הערה ייחודית של תות שתעבור לתפוח",
+            "2026_q012": "הערה ממכשיר ב",
+            "2026_q013": "הערה ממכשיר א",
+          },
+          noteUpdatedAt: {
+            "2026_q010": Date.now(),
+            "2026_q011": Date.now(),
+            "2026_q012": Date.now(),
+            "2026_q013": Date.now(),
+          },
+        },
+      },
+    });
+    const delUserNote = await req("/api/notes/2026_q012", {
+      method: "DELETE",
+      body: { userId: studentA.userId, clientSecret: studentA.clientSecret },
+    });
+    assert.equal(delUserNote.status, 200);
+    const delAdminNote = await req(`/api/admin/notes/2026_q013/${studentA.userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(delAdminNote.status, 200);
+
+    const lbAfterDeletes = await req("/api/leaderboard?sort=notes");
+    assert.equal(lbAfterDeletes.status, 200);
+    const entryAAfterDeletes = lbAfterDeletes.data.entries.find((e) => e.userId === studentA.userId);
+    assert.equal(entryAAfterDeletes.notesCount, 2, "Leaderboard notesCount must reflect only existing notes");
+
+    const progAfterAdminDel = await req("/api/progress", {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+    });
+    assert.equal(progAfterAdminDel.status, 200);
+    assert.equal(progAfterAdminDel.data.progress.notes["2026_q012"], undefined);
+    assert.equal(progAfterAdminDel.data.progress.notes["2026_q013"], undefined);
+
+    console.log("✓ Leaderboard answers/notes sorting, deletion counts & privacy checks OK");
   }
 
   // 8c. Conditional smart polling (/api/poll)

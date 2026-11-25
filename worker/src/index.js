@@ -586,6 +586,61 @@ async function bumpCommunityVersion(db, now = Date.now()) {
     .run();
 }
 
+async function syncDeletionToUserProgress(db, userId, qId, kind, now = Date.now()) {
+  if (!userId || !qId) return;
+  const row = await db
+    .prepare("SELECT progress_json, version FROM user_progress WHERE user_id = ?")
+    .bind(userId)
+    .first();
+  if (!row) return;
+  const prog = parseJsonSafe(row.progress_json, null);
+  if (!prog || typeof prog !== "object") return;
+
+  let changed = false;
+  if (kind === "note") {
+    const hadNote = Boolean(prog.notes && Object.prototype.hasOwnProperty.call(prog.notes, qId));
+    const prevTs = Number(prog.noteUpdatedAt?.[qId]) || 0;
+    if (hadNote || prevTs < now) {
+      if (prog.notes && typeof prog.notes === "object") {
+        delete prog.notes[qId];
+      }
+      if (!prog.noteUpdatedAt || typeof prog.noteUpdatedAt !== "object") {
+        prog.noteUpdatedAt = {};
+      }
+      prog.noteUpdatedAt[qId] = now;
+      changed = true;
+    }
+  } else if (kind === "problem") {
+    const hadFlag = Boolean(prog.flags?.[qId]?.problem);
+    const prevTs = Number(prog.flagUpdatedAt?.[qId]?.problem) || 0;
+    if (hadFlag || prevTs < now) {
+      if (prog.flags?.[qId] && typeof prog.flags[qId] === "object") {
+        delete prog.flags[qId].problem;
+        if (Object.keys(prog.flags[qId]).length === 0) {
+          delete prog.flags[qId];
+        }
+      }
+      if (!prog.flagUpdatedAt || typeof prog.flagUpdatedAt !== "object") {
+        prog.flagUpdatedAt = {};
+      }
+      if (!prog.flagUpdatedAt[qId] || typeof prog.flagUpdatedAt[qId] !== "object") {
+        prog.flagUpdatedAt[qId] = {};
+      }
+      prog.flagUpdatedAt[qId].problem = now;
+      changed = true;
+    }
+  }
+
+  if (!changed) return;
+  const serialized = JSON.stringify(prog);
+  if (serialized.length > MAX_PROGRESS_JSON_BYTES) return;
+  const nextVersion = (Number(row.version) || 1) + 1;
+  await db
+    .prepare("UPDATE user_progress SET progress_json = ?, updated_at = ?, version = ? WHERE user_id = ?")
+    .bind(serialized, now, nextVersion, userId)
+    .run();
+}
+
 async function fetchCommunityData(db) {
   const [notesRes, probsRes, overridesRes] = await Promise.all([
     db.prepare("SELECT q_id, user_id, author, emoji, category, text, updated_at FROM community_notes").all(),
@@ -918,12 +973,14 @@ async function handlePutNote(request, env, qId) {
 
   const trimmed = text.trim();
   if (!trimmed) {
+    const now = Date.now();
     const delRes = await env.DB
       .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
       .bind(qId, userId)
       .run();
     if ((delRes?.meta?.changes ?? 1) > 0) {
-      await bumpCommunityVersion(env.DB);
+      await bumpCommunityVersion(env.DB, now);
+      await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
     }
     return jsonResponse({ ok: true, deleted: true });
   }
@@ -971,11 +1028,13 @@ async function handleDeleteNote(request, env, qId) {
     .first();
 
   if (existingNote) {
+    const now = Date.now();
     await env.DB
       .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
       .bind(qId, userId)
       .run();
-    await bumpCommunityVersion(env.DB);
+    await bumpCommunityVersion(env.DB, now);
+    await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
   }
 
   return jsonResponse({ ok: true, deleted: Boolean(existingNote) });
@@ -1055,11 +1114,13 @@ async function handleDeleteProblem(request, env, qId) {
     .first();
 
   if (existing) {
+    const now = Date.now();
     await env.DB
       .prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?")
       .bind(qId, userId)
       .run();
-    await bumpCommunityVersion(env.DB);
+    await bumpCommunityVersion(env.DB, now);
+    await syncDeletionToUserProgress(env.DB, userId, qId, "problem", now);
   }
 
   return jsonResponse({ ok: true, deleted: Boolean(existing) });
@@ -1658,7 +1719,7 @@ async function handleAdminUsers(env) {
        FROM identities i
        LEFT JOIN user_progress up
          ON i.user_id = up.user_id
-       LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_notes GROUP BY user_id) n
+       LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_notes WHERE TRIM(text) != '' GROUP BY user_id) n
          ON i.user_id = n.user_id
        LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_problems GROUP BY user_id) p
          ON i.user_id = p.user_id
@@ -2004,12 +2065,14 @@ export default {
         if (adminNoteMatch && method === "DELETE") {
           const qId = decodeURIComponent(adminNoteMatch[1]);
           const userId = decodeURIComponent(adminNoteMatch[2]);
+          const now = Date.now();
           const delRes = await env.DB
             .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
             .bind(qId, userId)
             .run();
           if ((delRes?.meta?.changes ?? 1) > 0) {
-            await bumpCommunityVersion(env.DB);
+            await bumpCommunityVersion(env.DB, now);
+            await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
           }
           return jsonResponse({ ok: true, qId, userId });
         }
@@ -2018,12 +2081,14 @@ export default {
         if (adminProblemMatch && method === "DELETE") {
           const qId = decodeURIComponent(adminProblemMatch[1]);
           const userId = decodeURIComponent(adminProblemMatch[2]);
+          const now = Date.now();
           const delRes = await env.DB
             .prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?")
             .bind(qId, userId)
             .run();
           if ((delRes?.meta?.changes ?? 1) > 0) {
-            await bumpCommunityVersion(env.DB);
+            await bumpCommunityVersion(env.DB, now);
+            await syncDeletionToUserProgress(env.DB, userId, qId, "problem", now);
           }
           return jsonResponse({ ok: true, qId, userId });
         }

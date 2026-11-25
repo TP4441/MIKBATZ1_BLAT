@@ -332,6 +332,8 @@
   let leaderboardError = false;
   let leaderboardSort = "answers"; // "answers" | "notes"
   let leaderboardLastFetchedAt = 0;
+  let cloudCommunityLoaded = false;
+  let lastNoteMutationAt = 0;
   let identityRegisteredInCloud = false;
   let filteredList = [];
   let currentIndex = 0;
@@ -1045,6 +1047,7 @@
   function getMyNoteText(qId) {
     const cloudMine = communityNotes[qId]?.[userIdentity.userId]?.text;
     if (typeof cloudMine === "string") return cloudMine;
+    if (cloudCommunityLoaded && !pendingDirtyQIds.has(qId)) return "";
     return progress.notes[qId] || "";
   }
 
@@ -1138,6 +1141,8 @@
     }
 
     pendingDirtyQIds.add(qId);
+    lastNoteMutationAt = Date.now();
+    leaderboardLastFetchedAt = 0;
     saveCommunityNotesCache();
     noteSyncState = "saving";
     const q = Q_MAP.get(qId);
@@ -1593,6 +1598,7 @@
       communityVersion = 0,
       mirrorToLocalServer = false,
       runIdentityCheck = false,
+      fromCloud = false,
     } = {}
   ) {
     if (communityVersion > 0) {
@@ -1616,6 +1622,37 @@
     }
     if (problems && typeof problems === "object") {
       mergeCloudProblemsIntoLocal({ version: 1, problems });
+    }
+    if (fromCloud) {
+      cloudCommunityLoaded = true;
+      let progressReconciled = false;
+      if (notes && typeof notes === "object" && progress.notes && typeof progress.notes === "object") {
+        Object.keys(progress.notes).forEach((qId) => {
+          if (pendingDirtyQIds.has(qId)) return;
+          const cloudMine = communityNotes[qId]?.[userIdentity.userId];
+          if (!cloudMine || typeof cloudMine.text !== "string" || !cloudMine.text.trim()) {
+            delete progress.notes[qId];
+            progressReconciled = true;
+          }
+        });
+      }
+      if (problems && typeof problems === "object" && progress.flags && typeof progress.flags === "object") {
+        Object.keys(progress.flags).forEach((qId) => {
+          if (pendingProblemDirtyQIds.has(qId)) return;
+          if (progress.flags[qId]?.problem && !isValidProblemEntry(communityProblems[qId]?.[userIdentity.userId])) {
+            delete progress.flags[qId].problem;
+            if (Object.keys(progress.flags[qId]).length === 0) {
+              delete progress.flags[qId];
+            }
+            progressReconciled = true;
+          }
+        });
+      }
+      if (progressReconciled) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+        } catch {}
+      }
     }
     if (takenNames && typeof takenNames === "object") {
       takenNamesMap = takenNames;
@@ -1692,6 +1729,7 @@
         communityVersion: Number(data.communityVersion) || 0,
         mirrorToLocalServer: data.source === "cloud",
         runIdentityCheck: true,
+        fromCloud: data.source === "cloud",
       });
 
       if (showFeedback) showToast("🔄 הנתונים המשותפים רועננו מהענן!");
@@ -1759,7 +1797,8 @@
     const problems = getQuestionProblemsList(q.id);
     const fl = progress.flags[q.id] || {};
     const hasMine = problems.some((p) => p.isMine);
-    btnEl.classList.toggle("active", hasMine || !!fl.problem);
+    const hasLegacyFlag = !cloudCommunityLoaded && !!fl.problem;
+    btnEl.classList.toggle("active", hasMine || hasLegacyFlag);
     btnEl.classList.toggle("has-problems", problems.length > 0);
     if (countEl) {
       if (problems.length > 0) {
@@ -1838,14 +1877,14 @@
         editBtn.type = "button";
         editBtn.className = "note-card-action-btn";
         editBtn.title = "ערוך דיווח";
-        editBtn.textContent = "✏️";
+        editBtn.textContent = "✏️ ערוך";
         editBtn.onclick = () => openProblemModal(q.id);
 
         const delBtn = document.createElement("button");
         delBtn.type = "button";
         delBtn.className = "note-card-action-btn danger";
-        delBtn.title = "מחק דיווח";
-        delBtn.textContent = "🗑️";
+        delBtn.title = "הסר דיווח";
+        delBtn.textContent = "🗑️ הסר";
         delBtn.onclick = () => deleteMyProblemReport(q.id);
 
         meta.append(editBtn, delBtn);
@@ -1896,6 +1935,7 @@
 
     const mine = communityProblems[qId]?.[userIdentity.userId];
     const hasValidMine = isValidProblemEntry(mine);
+    const hasProblemFlag = Boolean(progress.flags[qId]?.problem);
     const chosenType = hasValidMine && PROBLEM_TYPES[mine.type] ? mine.type : "question_issue";
 
     document.querySelectorAll('input[name="problemType"]').forEach((r) => {
@@ -1903,7 +1943,9 @@
     });
     el("problemDetailInput").value = hasValidMine ? (mine.text || "") : "";
     el("btnSubmitProblem").textContent = hasValidMine ? "💾 עדכן אזהרה" : "⚠️ פרסם אזהרה לכולם";
-    el("btnDeleteMyProblem").classList.toggle("hidden", !hasValidMine);
+    const delBtn = el("btnDeleteMyProblem");
+    delBtn.textContent = hasValidMine ? "🗑️ הסר דיווח שלי" : "🗑️ הסר סימון בעיה";
+    delBtn.classList.toggle("hidden", !(hasValidMine || hasProblemFlag));
 
     updateProblemModalFields();
     updateProblemSyncBadge();
@@ -1985,28 +2027,36 @@
 
   async function deleteMyProblemReport(qId) {
     if (!qId) return;
-    if (progress.flags[qId]) {
-      progress.flags[qId].problem = false;
+    const hadCommunityProblem = Boolean(communityProblems[qId]?.[userIdentity.userId]);
+    if (progress.flags[qId]?.problem) {
+      delete progress.flags[qId].problem;
+      if (Object.keys(progress.flags[qId]).length === 0) {
+        delete progress.flags[qId];
+      }
       if (!progress.flagUpdatedAt) progress.flagUpdatedAt = {};
       if (!progress.flagUpdatedAt[qId]) progress.flagUpdatedAt[qId] = {};
       progress.flagUpdatedAt[qId].problem = Date.now();
       saveProgress();
     }
-    if (communityProblems[qId]) {
+    if (hadCommunityProblem) {
       delete communityProblems[qId][userIdentity.userId];
       if (Object.keys(communityProblems[qId]).length === 0) {
         delete communityProblems[qId];
       }
-    }
-    pendingProblemDirtyQIds.add(qId);
-    saveCommunityProblemsCache();
-    problemSyncState = "saving";
-    if (activeProblemModalQId === qId) closeProblemModal();
-    refreshActiveQuestionProblemViews();
+      pendingProblemDirtyQIds.add(qId);
+      saveCommunityProblemsCache();
+      problemSyncState = "saving";
+      if (activeProblemModalQId === qId) closeProblemModal();
+      refreshActiveQuestionProblemViews();
 
-    await enqueueProblemCloudSync();
-    if (problemSyncState === "synced") {
-      showToast("🗑️ הדיווח שלך הוסר.");
+      await enqueueProblemCloudSync();
+      if (problemSyncState === "synced") {
+        showToast("🗑️ הדיווח שלך הוסר.");
+      }
+    } else {
+      if (activeProblemModalQId === qId) closeProblemModal();
+      refreshActiveQuestionProblemViews();
+      showToast("🗑️ סימון הבעיה הוסר.");
     }
   }
 
@@ -2403,7 +2453,7 @@
       case "wrong": return !!att && !att.isCorrect;
       case "starred": return !!fl.star;
       case "unsure": return !!fl.unsure;
-      case "problematic": return !!fl.problem || qProblems.length > 0;
+      case "problematic": return qProblems.length > 0 || (!cloudCommunityLoaded && !!fl.problem);
       case "with_image": return q.images.length > 0;
       case "with_note": return !!myNote;
       case "with_any_note": return qCommNotes.length > 0 || !!myNote;
@@ -3270,25 +3320,21 @@
 
   // Leaderboard
   function getMyLocalNotesCount() {
-    const notedQIds = new Set();
-    Object.entries(communityNotes || {}).forEach(([qId, byUser]) => {
+    let count = 0;
+    Object.values(communityNotes || {}).forEach((byUser) => {
       const entry = byUser?.[userIdentity.userId];
       if (entry && typeof entry.text === "string" && entry.text.trim()) {
-        notedQIds.add(qId);
+        count += 1;
       }
     });
-    Object.entries(progress.notes || {}).forEach(([qId, text]) => {
-      if (typeof text === "string" && text.trim()) {
-        notedQIds.add(qId);
-      }
-    });
-    return notedQIds.size;
+    return count;
   }
 
   function getMergedLeaderboardEntries() {
     const onlineSet = new Set((onlineUsersList || []).map((u) => u.userId));
     const localSolved = Object.keys(progress.attempts || {}).length;
     const localNotes = getMyLocalNotesCount();
+    const useLocalNotes = pendingDirtyQIds.size > 0 || lastNoteMutationAt > leaderboardLastFetchedAt;
     const byId = new Map();
 
     (leaderboardEntries || []).forEach((item) => {
@@ -3298,7 +3344,7 @@
         ? (cloudProgressDirty ? localSolved : Math.max(Number(item.solvedCount) || 0, localSolved))
         : (Number(item.solvedCount) || 0);
       const notesCount = isMe
-        ? Math.max(Number(item.notesCount) || 0, localNotes)
+        ? (useLocalNotes ? localNotes : (Number(item.notesCount) || 0))
         : (Number(item.notesCount) || 0);
       byId.set(item.userId, {
         userId: item.userId,
@@ -3384,7 +3430,7 @@
 
   function openLeaderboardView() {
     renderLeaderboard();
-    fetchLeaderboard({ force: !leaderboardLoaded });
+    fetchLeaderboard({ force: !leaderboardLoaded || lastNoteMutationAt > leaderboardLastFetchedAt });
   }
 
   function setLeaderboardSort(sortBy) {
@@ -3702,7 +3748,7 @@
       const qComm = getQuestionCommunityNotesList(q.id);
       const qProbs = getQuestionProblemsList(q.id);
       const fl = progress.flags[q.id] || {};
-      return (att && !att.isCorrect) || note || qComm.length > 0 || qProbs.length > 0 || fl.star || fl.problem;
+      return (att && !att.isCorrect) || note || qComm.length > 0 || qProbs.length > 0 || fl.star || (!cloudCommunityLoaded && !!fl.problem);
     });
 
     if (wrongOrNoted.length === 0) {
@@ -4034,6 +4080,8 @@
       el("qNoteInput").value = "";
 
       pendingDirtyQIds.add(q.id);
+      lastNoteMutationAt = Date.now();
+      leaderboardLastFetchedAt = 0;
       saveCommunityNotesCache();
       noteSyncState = "saving";
       renderNotesSection(q, false);
@@ -4828,6 +4876,16 @@
         delete communityNotes[qId][targetUserId];
         if (Object.keys(communityNotes[qId]).length === 0) delete communityNotes[qId];
       }
+      if (targetUserId === userIdentity.userId && progress.notes && Object.prototype.hasOwnProperty.call(progress.notes, qId)) {
+        delete progress.notes[qId];
+        if (!progress.noteUpdatedAt) progress.noteUpdatedAt = {};
+        progress.noteUpdatedAt[qId] = Date.now();
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+        } catch {}
+      }
+      lastNoteMutationAt = Date.now();
+      leaderboardLastFetchedAt = 0;
       saveCommunityNotesCache();
       if (filteredList.length > 0 && filteredList[currentIndex]?.id === qId) {
         renderNotesSection(filteredList[currentIndex], true);
@@ -4850,6 +4908,16 @@
       if (communityProblems[qId]) {
         delete communityProblems[qId][targetUserId];
         if (Object.keys(communityProblems[qId]).length === 0) delete communityProblems[qId];
+      }
+      if (targetUserId === userIdentity.userId && progress.flags?.[qId]?.problem) {
+        delete progress.flags[qId].problem;
+        if (Object.keys(progress.flags[qId]).length === 0) delete progress.flags[qId];
+        if (!progress.flagUpdatedAt) progress.flagUpdatedAt = {};
+        if (!progress.flagUpdatedAt[qId]) progress.flagUpdatedAt[qId] = {};
+        progress.flagUpdatedAt[qId].problem = Date.now();
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
+        } catch {}
       }
       saveCommunityProblemsCache();
       refreshActiveQuestionProblemViews();
@@ -5336,7 +5404,7 @@
     const statsEl = el("syncProfileStats");
     if (statsEl) {
       const solved = countSolvedQuestions(progress);
-      const myNotesCount = Object.values(communityNotes || {}).filter((byU) => byU && byU[userIdentity.userId]).length;
+      const myNotesCount = getMyLocalNotesCount();
       statsEl.textContent = `${solved} שאלות פתורות · ${myNotesCount} הערות קהילה`;
     }
     const codeEl = el("syncCodeDisplay");
@@ -5722,6 +5790,7 @@
             overrides: data.overrides && typeof data.overrides === "object" ? data.overrides : {},
             communityVersion: Number(data.communityVersion) || 0,
             mirrorToLocalServer: true,
+            fromCloud: true,
           });
         } else if (Number(data.communityVersion) > 0) {
           lastCommunityVersion = Number(data.communityVersion);
