@@ -2542,10 +2542,21 @@
         const pRes = await fetch("/api/progress");
         if (pRes.ok) {
           const srvProg = await pRes.json();
-          if (srvProg && Object.keys(srvProg.attempts || {}).length > Object.keys(progress.attempts || {}).length) {
+          const srvAttempts = Object.keys(srvProg?.attempts || {}).length;
+          const curAttempts = Object.keys(progress.attempts || {}).length;
+          const srvStudyTs = Number(srvProg?.studySessionUpdatedAt) || 0;
+          const curStudyTs = Number(progress.studySessionUpdatedAt) || 0;
+          const srvSimTs = Number(srvProg?.activeSimUpdatedAt) || 0;
+          const curSimTs = Number(progress.activeSimUpdatedAt) || 0;
+          if (srvProg && (srvAttempts > curAttempts || srvStudyTs > curStudyTs || srvSimTs > curSimTs)) {
             progress = { ...defaultProgress(), ...mergeProgressPayloads(progress, srvProg) };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
-            renderCurrentView();
+            const nextStudyTs = Number(progress.studySessionUpdatedAt) || 0;
+            if (!hasUserInteractedWithNav && !simState.active && progress.studySession && nextStudyTs > curStudyTs) {
+              applyStudySessionState(progress.studySession, { showToastInfo: false });
+            } else {
+              renderCurrentView();
+            }
           }
         }
       }
@@ -6155,6 +6166,12 @@
       nextSess.deviceId &&
       nextSess.deviceId !== deviceId
     );
+    const arrivedNewSessionOnStartup = Boolean(
+      nextSess &&
+      prevStudyTs === 0 &&
+      nextStudyTs > 0 &&
+      !hasUserInteractedWithNav
+    );
 
     let handledSessionSwitch = false;
     if (arrivedFromOtherDevice && rerender && !simState.active && !tourState.active) {
@@ -6184,6 +6201,9 @@
           duration: 7000,
         });
       }
+    } else if (arrivedNewSessionOnStartup && rerender && !simState.active && !tourState.active) {
+      applyStudySessionState(nextSess, { showToastInfo: false, fromOtherDevice: false });
+      handledSessionSwitch = true;
     }
 
     if (!handledSessionSwitch && rerender && !simState.active) {
