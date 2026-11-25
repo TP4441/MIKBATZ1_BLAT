@@ -247,6 +247,112 @@ function summarizeProgress(prog) {
   return { solvedCount, notesCount, flagsCount };
 }
 
+const VALID_STUDY_MODES = new Set(["practice", "flashcard", "drill"]);
+const MAX_SESSION_ARRAY_LEN = 2000;
+
+function sanitizeStudySession(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const mode = VALID_STUDY_MODES.has(raw.mode) ? raw.mode : "practice";
+  const rawFilters = raw.filters && typeof raw.filters === "object" && !Array.isArray(raw.filters) ? raw.filters : {};
+  const toStrArray = (val) =>
+    Array.isArray(val)
+      ? val.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
+      : [];
+
+  const lastQIdByMode = {};
+  if (raw.lastQIdByMode && typeof raw.lastQIdByMode === "object" && !Array.isArray(raw.lastQIdByMode)) {
+    for (const m of VALID_STUDY_MODES) {
+      const qid = raw.lastQIdByMode[m];
+      if (typeof qid === "string" && qid.length > 0 && qid.length <= 120) {
+        lastQIdByMode[m] = qid;
+      }
+    }
+  }
+
+  const lastIndexByMode = {};
+  if (raw.lastIndexByMode && typeof raw.lastIndexByMode === "object" && !Array.isArray(raw.lastIndexByMode)) {
+    for (const m of VALID_STUDY_MODES) {
+      const n = Number(raw.lastIndexByMode[m]);
+      if (Number.isFinite(n) && n >= 0) {
+        lastIndexByMode[m] = Math.floor(n);
+      }
+    }
+  }
+
+  return {
+    mode,
+    filters: {
+      exams: toStrArray(rawFilters.exams),
+      subjects: toStrArray(rawFilters.subjects),
+      statuses: toStrArray(rawFilters.statuses),
+      search: typeof rawFilters.search === "string" ? rawFilters.search.slice(0, 500) : "",
+      mergePathology: rawFilters.mergePathology !== undefined ? Boolean(rawFilters.mergePathology) : true,
+    },
+    filterCollapsed: Boolean(raw.filterCollapsed),
+    shuffleOptions: Boolean(raw.shuffleOptions),
+    shuffledOrder: Array.isArray(raw.shuffledOrder) ? toStrArray(raw.shuffledOrder) : null,
+    lastQIdByMode,
+    lastIndexByMode,
+    deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
+  };
+}
+
+function sanitizeActiveSim(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const questionIds = Array.isArray(raw.questionIds)
+    ? raw.questionIds.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
+    : [];
+  if (questionIds.length === 0) return null;
+
+  const answers = {};
+  if (raw.answers && typeof raw.answers === "object" && !Array.isArray(raw.answers)) {
+    for (const [qId, val] of Object.entries(raw.answers).slice(0, MAX_SESSION_ARRAY_LEN)) {
+      const idx = Number(val);
+      if (typeof qId === "string" && qId.length > 0 && qId.length <= 120 && Number.isInteger(idx) && idx >= 0 && idx < 10) {
+        answers[qId] = idx;
+      }
+    }
+  }
+
+  const flagged = Array.isArray(raw.flagged)
+    ? Array.from(
+        new Set(raw.flagged.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120))
+      ).slice(0, MAX_SESSION_ARRAY_LEN)
+    : [];
+
+  const struck = {};
+  if (raw.struck && typeof raw.struck === "object" && !Array.isArray(raw.struck)) {
+    for (const [qId, arr] of Object.entries(raw.struck).slice(0, MAX_SESSION_ARRAY_LEN)) {
+      if (typeof qId !== "string" || qId.length === 0 || qId.length > 120 || !Array.isArray(arr)) continue;
+      const cleanArr = Array.from(
+        new Set(arr.map((x) => Number(x)).filter((x) => Number.isInteger(x) && x >= 0 && x < 10))
+      );
+      if (cleanArr.length > 0) struck[qId] = cleanArr;
+    }
+  }
+
+  const rawIdx = Number(raw.currentIndex);
+  const currentIndex = Number.isFinite(rawIdx)
+    ? Math.max(0, Math.min(questionIds.length - 1, Math.floor(rawIdx)))
+    : 0;
+  const hasTimer = Boolean(raw.hasTimer);
+  const rawSec = Number(raw.secondsLeft);
+  const secondsLeft = hasTimer && Number.isFinite(rawSec) ? Math.max(0, Math.floor(rawSec)) : 0;
+
+  return {
+    label: typeof raw.label === "string" ? raw.label.slice(0, 160) : "",
+    questionIds,
+    answers,
+    flagged,
+    struck,
+    currentIndex,
+    secondsLeft,
+    hasTimer,
+    shuffleOpts: Boolean(raw.shuffleOpts),
+    deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
+  };
+}
+
 function mergeProgressPayloads(base, incoming) {
   const b = base && typeof base === "object" ? base : {};
   const i = incoming && typeof incoming === "object" ? incoming : {};
@@ -267,6 +373,10 @@ function mergeProgressPayloads(base, incoming) {
     dailyStats: {},
     dailyStatsByDevice: {},
     dailyStatsUpdatedAt: 0,
+    studySession: null,
+    studySessionUpdatedAt: 0,
+    activeSim: null,
+    activeSimUpdatedAt: 0,
     resetAt,
   };
 
@@ -442,6 +552,41 @@ function mergeProgressPayloads(base, incoming) {
       merged.dailyStats[dateKey].answered += entry.answered;
       merged.dailyStats[dateKey].correct += entry.correct;
     }
+  }
+
+  // 7. Study session state (LWW by studySessionUpdatedAt)
+  const bSess = sanitizeStudySession(b.studySession);
+  const bSessRawTs = Number(b.studySessionUpdatedAt) || 0;
+  const bSessTs = bSessRawTs > 0 ? bSessRawTs : bSess ? 1 : 0;
+
+  const iSess = sanitizeStudySession(i.studySession);
+  const iSessRawTs = Number(i.studySessionUpdatedAt) || 0;
+  const iSessTs = iSessRawTs > 0 ? iSessRawTs : iSess ? 1 : 0;
+
+  const winSessTs = Math.max(bSessTs, iSessTs);
+  if (winSessTs > resetAt) {
+    merged.studySession =
+      iSessTs > bSessTs ? iSess : bSessTs > iSessTs ? bSess : iSess ?? bSess;
+    merged.studySessionUpdatedAt = winSessTs;
+  }
+
+  // 8. Active exam simulation (LWW with tombstone support via activeSim: null)
+  const bSim = sanitizeActiveSim(b.activeSim);
+  const bSimRawTs = Number(b.activeSimUpdatedAt) || 0;
+  const bSimTs = bSimRawTs > 0 ? bSimRawTs : bSim ? 1 : 0;
+
+  const iSim = sanitizeActiveSim(i.activeSim);
+  const iSimRawTs = Number(i.activeSimUpdatedAt) || 0;
+  const iSimTs = iSimRawTs > 0 ? iSimRawTs : iSim ? 1 : 0;
+
+  const winSimTs = Math.max(bSimTs, iSimTs);
+  if (winSimTs > resetAt) {
+    let winSim;
+    if (iSimTs > bSimTs) winSim = iSim;
+    else if (bSimTs > iSimTs) winSim = bSim;
+    else winSim = iSim === null || bSim === null ? null : iSim ?? bSim;
+    merged.activeSim = winSim;
+    merged.activeSimUpdatedAt = winSimTs;
   }
 
   return merged;

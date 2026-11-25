@@ -339,6 +339,11 @@
   let currentIndex = 0;
   let optionPermutations = new Map(); // qId -> array of original indices
   let shuffleOptionsEnabled = false;
+  let shuffledQuestionOrder = null; // null or array of qIds
+  let lastQIdByMode = {};           // mode -> last viewed qId
+  let lastIndexByMode = {};         // mode -> fallback index
+  let isRestoringSession = false;
+  let hasUserInteractedWithNav = false;
   let flashcardRevealed = false;
   let sessionAnswered = 0;
   let sessionCorrect = 0;
@@ -384,6 +389,8 @@
     struck: new Map(), // qId -> Set of original option idx
     currentIndex: 0,
     secondsLeft: 0,
+    hasTimer: false,
+    label: "",
     timerId: null,
     shuffleOpts: false,
   };
@@ -428,6 +435,10 @@
       dailyStats: {},  // YYYY-MM-DD -> { answered: number, correct: number }
       dailyStatsByDevice: {}, // deviceId -> { YYYY-MM-DD -> { answered, correct } }
       dailyStatsUpdatedAt: 0,
+      studySession: null,
+      studySessionUpdatedAt: 0,
+      activeSim: null,
+      activeSimUpdatedAt: 0,
       resetAt: 0,
     };
   }
@@ -492,6 +503,112 @@
     return formatSyncCode(chars);
   }
 
+  const VALID_STUDY_MODES = new Set(["practice", "flashcard", "drill"]);
+  const MAX_SESSION_ARRAY_LEN = 2000;
+
+  function sanitizeStudySession(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const mode = VALID_STUDY_MODES.has(raw.mode) ? raw.mode : "practice";
+    const rawFilters = raw.filters && typeof raw.filters === "object" && !Array.isArray(raw.filters) ? raw.filters : {};
+    const toStrArray = (val) =>
+      Array.isArray(val)
+        ? val.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
+        : [];
+
+    const lastQIdByMode = {};
+    if (raw.lastQIdByMode && typeof raw.lastQIdByMode === "object" && !Array.isArray(raw.lastQIdByMode)) {
+      for (const m of VALID_STUDY_MODES) {
+        const qid = raw.lastQIdByMode[m];
+        if (typeof qid === "string" && qid.length > 0 && qid.length <= 120) {
+          lastQIdByMode[m] = qid;
+        }
+      }
+    }
+
+    const lastIndexByMode = {};
+    if (raw.lastIndexByMode && typeof raw.lastIndexByMode === "object" && !Array.isArray(raw.lastIndexByMode)) {
+      for (const m of VALID_STUDY_MODES) {
+        const n = Number(raw.lastIndexByMode[m]);
+        if (Number.isFinite(n) && n >= 0) {
+          lastIndexByMode[m] = Math.floor(n);
+        }
+      }
+    }
+
+    return {
+      mode,
+      filters: {
+        exams: toStrArray(rawFilters.exams),
+        subjects: toStrArray(rawFilters.subjects),
+        statuses: toStrArray(rawFilters.statuses),
+        search: typeof rawFilters.search === "string" ? rawFilters.search.slice(0, 500) : "",
+        mergePathology: rawFilters.mergePathology !== undefined ? Boolean(rawFilters.mergePathology) : true,
+      },
+      filterCollapsed: Boolean(raw.filterCollapsed),
+      shuffleOptions: Boolean(raw.shuffleOptions),
+      shuffledOrder: Array.isArray(raw.shuffledOrder) ? toStrArray(raw.shuffledOrder) : null,
+      lastQIdByMode,
+      lastIndexByMode,
+      deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
+    };
+  }
+
+  function sanitizeActiveSim(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const questionIds = Array.isArray(raw.questionIds)
+      ? raw.questionIds.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
+      : [];
+    if (questionIds.length === 0) return null;
+
+    const answers = {};
+    if (raw.answers && typeof raw.answers === "object" && !Array.isArray(raw.answers)) {
+      for (const [qId, val] of Object.entries(raw.answers).slice(0, MAX_SESSION_ARRAY_LEN)) {
+        const idx = Number(val);
+        if (typeof qId === "string" && qId.length > 0 && qId.length <= 120 && Number.isInteger(idx) && idx >= 0 && idx < 10) {
+          answers[qId] = idx;
+        }
+      }
+    }
+
+    const flagged = Array.isArray(raw.flagged)
+      ? Array.from(
+          new Set(raw.flagged.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120))
+        ).slice(0, MAX_SESSION_ARRAY_LEN)
+      : [];
+
+    const struck = {};
+    if (raw.struck && typeof raw.struck === "object" && !Array.isArray(raw.struck)) {
+      for (const [qId, arr] of Object.entries(raw.struck).slice(0, MAX_SESSION_ARRAY_LEN)) {
+        if (typeof qId !== "string" || qId.length === 0 || qId.length > 120 || !Array.isArray(arr)) continue;
+        const cleanArr = Array.from(
+          new Set(arr.map((x) => Number(x)).filter((x) => Number.isInteger(x) && x >= 0 && x < 10))
+        );
+        if (cleanArr.length > 0) struck[qId] = cleanArr;
+      }
+    }
+
+    const rawIdx = Number(raw.currentIndex);
+    const currentIndex = Number.isFinite(rawIdx)
+      ? Math.max(0, Math.min(questionIds.length - 1, Math.floor(rawIdx)))
+      : 0;
+    const hasTimer = Boolean(raw.hasTimer);
+    const rawSec = Number(raw.secondsLeft);
+    const secondsLeft = hasTimer && Number.isFinite(rawSec) ? Math.max(0, Math.floor(rawSec)) : 0;
+
+    return {
+      label: typeof raw.label === "string" ? raw.label.slice(0, 160) : "",
+      questionIds,
+      answers,
+      flagged,
+      struck,
+      currentIndex,
+      secondsLeft,
+      hasTimer,
+      shuffleOpts: Boolean(raw.shuffleOpts),
+      deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
+    };
+  }
+
   function mergeProgressPayloads(base, incoming) {
     const b = base && typeof base === "object" ? base : {};
     const i = incoming && typeof incoming === "object" ? incoming : {};
@@ -512,6 +629,10 @@
       dailyStats: {},
       dailyStatsByDevice: {},
       dailyStatsUpdatedAt: 0,
+      studySession: null,
+      studySessionUpdatedAt: 0,
+      activeSim: null,
+      activeSimUpdatedAt: 0,
       resetAt,
     };
 
@@ -683,6 +804,39 @@
       }
     }
 
+    const bSess = sanitizeStudySession(b.studySession);
+    const bSessRawTs = Number(b.studySessionUpdatedAt) || 0;
+    const bSessTs = bSessRawTs > 0 ? bSessRawTs : bSess ? 1 : 0;
+
+    const iSess = sanitizeStudySession(i.studySession);
+    const iSessRawTs = Number(i.studySessionUpdatedAt) || 0;
+    const iSessTs = iSessRawTs > 0 ? iSessRawTs : iSess ? 1 : 0;
+
+    const winSessTs = Math.max(bSessTs, iSessTs);
+    if (winSessTs > resetAt) {
+      merged.studySession =
+        iSessTs > bSessTs ? iSess : bSessTs > iSessTs ? bSess : iSess ?? bSess;
+      merged.studySessionUpdatedAt = winSessTs;
+    }
+
+    const bSim = sanitizeActiveSim(b.activeSim);
+    const bSimRawTs = Number(b.activeSimUpdatedAt) || 0;
+    const bSimTs = bSimRawTs > 0 ? bSimRawTs : bSim ? 1 : 0;
+
+    const iSim = sanitizeActiveSim(i.activeSim);
+    const iSimRawTs = Number(i.activeSimUpdatedAt) || 0;
+    const iSimTs = iSimRawTs > 0 ? iSimRawTs : iSim ? 1 : 0;
+
+    const winSimTs = Math.max(bSimTs, iSimTs);
+    if (winSimTs > resetAt) {
+      let winSim;
+      if (iSimTs > bSimTs) winSim = iSim;
+      else if (bSimTs > iSimTs) winSim = bSim;
+      else winSim = iSim === null || bSim === null ? null : iSim ?? bSim;
+      merged.activeSim = winSim;
+      merged.activeSimUpdatedAt = winSimTs;
+    }
+
     return merged;
   }
 
@@ -766,13 +920,35 @@
     progress.dailyStatsUpdatedAt = Date.now();
   }
 
-  function showToast(msg) {
+  function showToast(msg, options = {}) {
+    const { actionLabel = "", onAction = null, duration = 3200 } = options || {};
     const container = el("toastContainer");
+    if (!container) return;
     const t = document.createElement("div");
     t.className = "toast";
-    t.textContent = msg;
+
+    const textSpan = document.createElement("span");
+    textSpan.className = "toast-msg";
+    textSpan.textContent = msg;
+    t.appendChild(textSpan);
+
+    let timerId = null;
+    if (actionLabel && typeof onAction === "function") {
+      t.classList.add("has-action");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "toast-action-btn";
+      btn.textContent = actionLabel;
+      btn.onclick = () => {
+        if (timerId) clearTimeout(timerId);
+        t.remove();
+        onAction();
+      };
+      t.appendChild(btn);
+    }
+
     container.appendChild(t);
-    setTimeout(() => t.remove(), 3200);
+    timerId = setTimeout(() => t.remove(), duration);
   }
 
   // Identity & Community Notes helpers
@@ -2419,10 +2595,12 @@
       btn.className = "chip" + (filters.exams.has(ex.name) ? " active" : "");
       btn.textContent = `${ex.name} (${ex.expectedCount})`;
       btn.onclick = () => {
+        hasUserInteractedWithNav = true;
         if (filters.exams.has(ex.name)) filters.exams.delete(ex.name);
         else filters.exams.add(ex.name);
         renderFilterChips();
         applyFilters();
+        persistStudySession();
       };
       examWrap.appendChild(btn);
     });
@@ -2434,10 +2612,12 @@
       btn.className = "chip" + (filters.subjects.has(subj) ? " active" : "");
       btn.textContent = formatSubject(subj);
       btn.onclick = () => {
+        hasUserInteractedWithNav = true;
         if (filters.subjects.has(subj)) filters.subjects.delete(subj);
         else filters.subjects.add(subj);
         renderFilterChips();
         applyFilters();
+        persistStudySession();
       };
       subjWrap.appendChild(btn);
     });
@@ -2476,7 +2656,73 @@
     el("drillCountBadge").textContent = count;
   }
 
-  function applyFilters(keepCurrentId = null) {
+  function isStudyMode(mode = currentMode) {
+    return VALID_STUDY_MODES.has(mode);
+  }
+
+  function setFilterPanelCollapsed(collapsed) {
+    const body = el("filterBody");
+    const btn = el("btnToggleFilters");
+    const label = el("filterToggleLabel");
+    if (body) body.classList.toggle("hidden", Boolean(collapsed));
+    if (btn) btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (label) label.textContent = collapsed ? "סינון" : "צמצם";
+  }
+
+  function setShuffleOptionsEnabled(enabled) {
+    shuffleOptionsEnabled = Boolean(enabled);
+    optionPermutations.clear();
+    ["btnShuffleOptions", "btnShuffleOptionsMobile"].forEach((id) => {
+      const b = el(id);
+      if (!b) return;
+      b.classList.toggle("btn-primary", shuffleOptionsEnabled);
+      b.classList.toggle("btn-secondary", !shuffleOptionsEnabled);
+    });
+  }
+
+  function recordCurrentModePosition() {
+    if (!isStudyMode(currentMode)) return;
+    const curQ = filteredList[currentIndex];
+    if (curQ?.id) {
+      lastQIdByMode[currentMode] = curQ.id;
+    }
+    lastIndexByMode[currentMode] = Math.max(0, currentIndex);
+  }
+
+  function persistStudySession({ syncCloud = true } = {}) {
+    if (isRestoringSession) return;
+    recordCurrentModePosition();
+    const prevMode = progress.studySession?.mode;
+    const activeStudyMode = isStudyMode(currentMode)
+      ? currentMode
+      : isStudyMode(prevMode)
+      ? prevMode
+      : "practice";
+    progress.studySession = {
+      mode: activeStudyMode,
+      filters: {
+        exams: Array.from(filters.exams),
+        subjects: Array.from(filters.subjects),
+        statuses: Array.from(filters.statuses),
+        search: filters.search,
+        mergePathology: Boolean(filters.mergePathology),
+      },
+      filterCollapsed: Boolean(el("filterBody")?.classList.contains("hidden")),
+      shuffleOptions: Boolean(shuffleOptionsEnabled),
+      shuffledOrder: Array.isArray(shuffledQuestionOrder) ? [...shuffledQuestionOrder] : null,
+      lastQIdByMode: { ...lastQIdByMode },
+      lastIndexByMode: { ...lastIndexByMode },
+      deviceId,
+    };
+    progress.studySessionUpdatedAt = Date.now();
+    saveProgress({ syncCloud });
+  }
+
+  function applyFilters(keepCurrentId = null, { preserveShuffle = false, fallbackIndex = null } = {}) {
+    if (!preserveShuffle && currentMode !== "drill") {
+      shuffledQuestionOrder = null;
+    }
+
     if (currentMode === "drill") {
       filteredList = getDrillQuestions();
     } else {
@@ -2522,11 +2768,28 @@
         }
         return true;
       });
+
+      if (preserveShuffle && Array.isArray(shuffledQuestionOrder) && shuffledQuestionOrder.length > 0) {
+        const orderMap = new Map(shuffledQuestionOrder.map((id, idx) => [id, idx]));
+        filteredList.sort((a, b) => {
+          const ia = orderMap.has(a.id) ? orderMap.get(a.id) : Number.MAX_SAFE_INTEGER;
+          const ib = orderMap.has(b.id) ? orderMap.get(b.id) : Number.MAX_SAFE_INTEGER;
+          return ia - ib;
+        });
+      }
     }
 
     if (keepCurrentId) {
       const idx = filteredList.findIndex((q) => q.id === keepCurrentId);
-      currentIndex = idx >= 0 ? idx : 0;
+      if (idx >= 0) {
+        currentIndex = idx;
+      } else if (Number.isInteger(fallbackIndex) && filteredList.length > 0) {
+        currentIndex = Math.max(0, Math.min(filteredList.length - 1, fallbackIndex));
+      } else {
+        currentIndex = 0;
+      }
+    } else if (Number.isInteger(fallbackIndex) && filteredList.length > 0) {
+      currentIndex = Math.max(0, Math.min(filteredList.length - 1, fallbackIndex));
     } else {
       currentIndex = 0;
     }
@@ -2748,6 +3011,7 @@
   }
 
   function handleAnswer(q, origIdx) {
+    hasUserInteractedWithNav = true;
     const now = Date.now();
     const isCorrect = q.correct.includes(origIdx);
     const firstTime = !progress.attempts[q.id];
@@ -2778,7 +3042,7 @@
       recordDaily(isCorrect);
     }
 
-    saveProgress();
+    persistStudySession();
     renderQuestion();
   }
 
@@ -2825,6 +3089,7 @@
 
   function rateFlashcard(knew) {
     if (filteredList.length === 0) return;
+    hasUserInteractedWithNav = true;
     const q = filteredList[currentIndex];
     const now = Date.now();
     progress.attempts[q.id] = {
@@ -2836,61 +3101,148 @@
     sessionAnswered += 1;
     if (knew) sessionCorrect += 1;
     recordDaily(knew);
-    saveProgress();
+    saveProgress({ syncCloud: false });
     nextQuestion();
   }
 
   function prevQuestion() {
     if (currentIndex > 0) {
+      hasUserInteractedWithNav = true;
       currentIndex--;
       renderQuestion();
+      persistStudySession();
     }
   }
 
   function nextQuestion() {
+    hasUserInteractedWithNav = true;
     if (currentMode === "drill") {
       const prevId = filteredList[currentIndex]?.id;
       filteredList = getDrillQuestions();
       if (filteredList.length === 0) {
         renderQuestion();
+        persistStudySession();
         return;
       }
       const nextIdx = filteredList.findIndex((q) => q.id !== prevId);
       currentIndex = (currentIndex + 1) % filteredList.length;
       if (filteredList[currentIndex]?.id === prevId && nextIdx >= 0) currentIndex = nextIdx;
       renderQuestion();
+      persistStudySession();
       return;
     }
     if (currentIndex < filteredList.length - 1) {
       currentIndex++;
       renderQuestion();
+      persistStudySession();
     } else {
+      persistStudySession();
       showToast("הגעת לסוף הרשימה!");
     }
   }
 
   // Shuffle
   function shuffleFilteredQuestions() {
+    hasUserInteractedWithNav = true;
     for (let i = filteredList.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [filteredList[i], filteredList[j]] = [filteredList[j], filteredList[i]];
     }
+    shuffledQuestionOrder = filteredList.map((q) => q.id);
     currentIndex = 0;
     renderQuestion();
+    persistStudySession();
     showToast("🔀 סדר השאלות עורבב!");
   }
 
   function toggleShuffleOptions() {
-    shuffleOptionsEnabled = !shuffleOptionsEnabled;
-    optionPermutations.clear();
-    ["btnShuffleOptions", "btnShuffleOptionsMobile"].forEach((id) => {
-      const b = el(id);
-      if (!b) return;
-      b.classList.toggle("btn-primary", shuffleOptionsEnabled);
-      b.classList.toggle("btn-secondary", !shuffleOptionsEnabled);
-    });
+    hasUserInteractedWithNav = true;
+    setShuffleOptionsEnabled(!shuffleOptionsEnabled);
     renderQuestion();
+    persistStudySession();
     showToast(shuffleOptionsEnabled ? "🎲 ערבוב מסיחים הופעל" : "סדר מסיחים מקורי");
+  }
+
+  function resetStudySessionToStart() {
+    hasUserInteractedWithNav = true;
+    filters.exams.clear();
+    filters.subjects.clear();
+    filters.statuses.clear();
+    filters.search = "";
+    filters.mergePathology = true;
+    if (el("mergePathologyToggle")) el("mergePathologyToggle").checked = true;
+    if (el("searchInput")) el("searchInput").value = "";
+    el("clearSearchBtn")?.classList.add("hidden");
+    setShuffleOptionsEnabled(false);
+    shuffledQuestionOrder = null;
+    lastQIdByMode = {};
+    lastIndexByMode = {};
+    renderFilterChips();
+    initExamSetup();
+    switchMode("practice", { persist: false });
+    persistStudySession({ syncCloud: true });
+    showToast("🔄 התחלת מהתחלה (שאלה 1)");
+  }
+
+  function applyStudySessionState(session, { showToastInfo = false, fromOtherDevice = false } = {}) {
+    if (!session || typeof session !== "object") return false;
+    const clean = sanitizeStudySession(session);
+    if (!clean) return false;
+
+    isRestoringSession = true;
+    try {
+      const f = clean.filters || {};
+      filters.mergePathology = f.mergePathology !== undefined ? Boolean(f.mergePathology) : true;
+      if (el("mergePathologyToggle")) {
+        el("mergePathologyToggle").checked = filters.mergePathology;
+      }
+
+      const validExamNames = new Set(EXAMS.map((ex) => ex.name));
+      filters.exams = new Set((f.exams || []).filter((x) => validExamNames.has(x)));
+
+      const validSubjects = new Set(getUniqueSubjects());
+      filters.subjects = new Set((f.subjects || []).filter((x) => validSubjects.has(x)));
+
+      const validStatuses = new Set(getStatusKeys());
+      filters.statuses = new Set((f.statuses || []).filter((x) => validStatuses.has(x)));
+
+      filters.search = typeof f.search === "string" ? f.search : "";
+      if (el("searchInput")) el("searchInput").value = filters.search;
+      el("clearSearchBtn")?.classList.toggle("hidden", !filters.search);
+
+      setFilterPanelCollapsed(Boolean(clean.filterCollapsed));
+      setShuffleOptionsEnabled(Boolean(clean.shuffleOptions));
+      shuffledQuestionOrder = Array.isArray(clean.shuffledOrder) && clean.shuffledOrder.length > 0
+        ? [...clean.shuffledOrder]
+        : null;
+      lastQIdByMode = { ...(clean.lastQIdByMode || {}) };
+      lastIndexByMode = { ...(clean.lastIndexByMode || {}) };
+
+      renderFilterChips();
+      initExamSetup();
+      switchMode(clean.mode, { persist: false });
+    } finally {
+      isRestoringSession = false;
+    }
+
+    if (showToastInfo) {
+      const curQ = filteredList[currentIndex];
+      const loc = curQ ? `${curQ.exam} שאלה ${curQ.num}` : "";
+      if (fromOtherDevice) {
+        showToast(loc ? `☁️ המשכת מהמכשיר האחר · ${loc}` : "☁️ המשכת מהמכשיר האחר", {
+          actionLabel: "התחל מהתחלה",
+          onAction: resetStudySessionToStart,
+          duration: 6000,
+        });
+      } else {
+        showToast(loc ? `📌 חזרת אל ${loc}` : "📌 חזרת למקום בו עצרת", {
+          actionLabel: "התחל מהתחלה",
+          onAction: resetStudySessionToStart,
+          duration: 5000,
+        });
+      }
+    }
+    return true;
   }
 
   // Lightbox Pan & Zoom
@@ -2972,12 +3324,168 @@
     });
   }
 
+  function formatMmSs(totalSec) {
+    const sec = Math.max(0, Math.floor(Number(totalSec) || 0));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  function persistActiveSimulation({ syncCloud = true } = {}) {
+    if (!simState.active || !Array.isArray(simState.questions) || simState.questions.length === 0) return;
+    const answersObj = {};
+    simState.answers.forEach((val, qId) => {
+      if (Number.isInteger(val)) answersObj[qId] = val;
+    });
+    const struckObj = {};
+    simState.struck.forEach((setVal, qId) => {
+      if (setVal && setVal.size > 0) struckObj[qId] = Array.from(setVal);
+    });
+    progress.activeSim = {
+      label: simState.label || `סימולציה (${simState.questions.length} שאלות)`,
+      questionIds: simState.questions.map((q) => q.id),
+      answers: answersObj,
+      flagged: Array.from(simState.flagged),
+      struck: struckObj,
+      currentIndex: simState.currentIndex,
+      secondsLeft: simState.hasTimer ? Math.max(0, simState.secondsLeft) : 0,
+      hasTimer: Boolean(simState.hasTimer),
+      shuffleOpts: Boolean(simState.shuffleOpts),
+      deviceId,
+    };
+    progress.activeSimUpdatedAt = Date.now();
+    saveProgress({ syncCloud });
+    renderResumeSimBanner();
+  }
+
+  function clearActiveSimulation({ syncCloud = true } = {}) {
+    progress.activeSim = null;
+    progress.activeSimUpdatedAt = Date.now();
+    saveProgress({ syncCloud });
+    renderResumeSimBanner();
+  }
+
+  function renderResumeSimBanner() {
+    const banner = el("resumeSimBanner");
+    const textEl = el("resumeSimText");
+    if (!banner || !textEl) return;
+
+    const saved = progress.activeSim;
+    if (!saved || simState.active || !Array.isArray(saved.questionIds) || saved.questionIds.length === 0) {
+      banner.classList.add("hidden");
+      return;
+    }
+
+    const validSet = new Set(saved.questionIds.filter((id) => Q_MAP.has(id)));
+    if (validSet.size === 0) {
+      banner.classList.add("hidden");
+      return;
+    }
+
+    const answeredCount = saved.answers && typeof saved.answers === "object"
+      ? Object.keys(saved.answers).filter((id) => validSet.has(id)).length
+      : 0;
+    const totalCount = validSet.size;
+    const timerPart = saved.hasTimer ? ` · נותרו ${formatMmSs(saved.secondsLeft)}` : " · ללא טיימר";
+    const labelPart = saved.label ? ` · ${saved.label}` : "";
+    textEl.textContent = `יש לך סימולציה שלא הושלמה${labelPart} (${answeredCount}/${totalCount} שאלות${timerPart})`;
+    banner.classList.remove("hidden");
+  }
+
+  function startSimTimer() {
+    clearInterval(simState.timerId);
+    simState.timerId = null;
+    if (simState.hasTimer && simState.secondsLeft > 0) {
+      updateSimTimerDisplay();
+      simState.timerId = setInterval(() => {
+        simState.secondsLeft--;
+        updateSimTimerDisplay();
+        if (simState.secondsLeft <= 0) {
+          clearInterval(simState.timerId);
+          simState.timerId = null;
+          submitSimulation();
+        } else if (simState.secondsLeft % 5 === 0) {
+          persistActiveSimulation({ syncCloud: false });
+        }
+      }, 1000);
+    } else {
+      el("simTimerDisplay").textContent = "ללא הגבלה";
+    }
+  }
+
+  function resumeSavedSimulation() {
+    const saved = progress.activeSim;
+    if (!saved || !Array.isArray(saved.questionIds)) return;
+
+    const questions = saved.questionIds.map((id) => Q_MAP.get(id)).filter(Boolean);
+    if (questions.length === 0) {
+      clearActiveSimulation({ syncCloud: true });
+      showToast("לא נמצאו שאלות לשחזור הסימולציה.");
+      return;
+    }
+
+    hasUserInteractedWithNav = true;
+    const qIdSet = new Set(questions.map((q) => q.id));
+    const answers = new Map();
+    if (saved.answers && typeof saved.answers === "object") {
+      Object.entries(saved.answers).forEach(([qId, idx]) => {
+        if (qIdSet.has(qId) && Number.isInteger(idx) && idx >= 0) {
+          answers.set(qId, idx);
+        }
+      });
+    }
+    const flagged = new Set(
+      Array.isArray(saved.flagged) ? saved.flagged.filter((id) => qIdSet.has(id)) : []
+    );
+    const struck = new Map();
+    if (saved.struck && typeof saved.struck === "object") {
+      Object.entries(saved.struck).forEach(([qId, arr]) => {
+        if (qIdSet.has(qId) && Array.isArray(arr) && arr.length > 0) {
+          struck.set(qId, new Set(arr.filter((i) => Number.isInteger(i) && i >= 0)));
+        }
+      });
+    }
+
+    const safeIdx = Math.max(0, Math.min(questions.length - 1, Number(saved.currentIndex) || 0));
+    const hasTimer = Boolean(saved.hasTimer);
+    const secondsLeft = hasTimer ? Math.max(1, Number(saved.secondsLeft) || 1) : 0;
+
+    clearInterval(simState.timerId);
+    simState = {
+      active: true,
+      questions,
+      answers,
+      flagged,
+      struck,
+      currentIndex: safeIdx,
+      secondsLeft,
+      hasTimer,
+      label: saved.label || `סימולציה (${questions.length} שאלות)`,
+      timerId: null,
+      shuffleOpts: Boolean(saved.shuffleOpts),
+    };
+
+    optionPermutations.clear();
+    switchMode("exam", { persist: false });
+    el("examSetup").classList.add("hidden");
+    el("examResults").classList.add("hidden");
+    el("examActive").classList.remove("hidden");
+
+    renderResumeSimBanner();
+    startSimTimer();
+    renderSimQuestion();
+    showToast("⏱️ הסימולציה שוחזרה מהמקום שבו עצרת!");
+  }
+
   function startSimulation() {
+    hasUserInteractedWithNav = true;
     const simType = document.querySelector('input[name="simType"]:checked').value;
     let pool = [];
+    let label = "";
     if (simType === "full") {
       const examName = el("simExamSelect").value;
       pool = QUESTIONS.filter((q) => q.exam === examName);
+      label = `${examName} (${pool.length} שאלות)`;
     } else {
       const chosenSubjs = new Set(
         Array.from(el("simSubjectChips").querySelectorAll(".chip.active")).map((b) => b.dataset.subj)
@@ -2986,6 +3494,7 @@
       let candidates = QUESTIONS.filter((q) => chosenSubjs.size === 0 || chosenSubjs.has(getSubject(q)));
       candidates = [...candidates].sort(() => Math.random() - 0.5);
       pool = candidates.slice(0, count);
+      label = `סימולציה מותאמת (${pool.length} שאלות)`;
     }
 
     if (pool.length === 0) {
@@ -2994,6 +3503,7 @@
     }
 
     const mins = parseInt(el("simMinutes").value, 10) || 0;
+    clearInterval(simState.timerId);
     simState = {
       active: true,
       questions: pool,
@@ -3002,6 +3512,8 @@
       struck: new Map(),
       currentIndex: 0,
       secondsLeft: mins * 60,
+      hasTimer: mins > 0,
+      label,
       timerId: null,
       shuffleOpts: el("simShuffleOpts").checked,
     };
@@ -3011,20 +3523,8 @@
     el("examResults").classList.add("hidden");
     el("examActive").classList.remove("hidden");
 
-    if (simState.secondsLeft > 0) {
-      updateSimTimerDisplay();
-      simState.timerId = setInterval(() => {
-        simState.secondsLeft--;
-        updateSimTimerDisplay();
-        if (simState.secondsLeft <= 0) {
-          clearInterval(simState.timerId);
-          submitSimulation();
-        }
-      }, 1000);
-    } else {
-      el("simTimerDisplay").textContent = "ללא הגבלה";
-    }
-
+    startSimTimer();
+    persistActiveSimulation({ syncCloud: true });
     renderSimQuestion();
   }
 
@@ -3046,6 +3546,7 @@
       cell.textContent = idx + 1;
       cell.onclick = () => {
         simState.currentIndex = idx;
+        persistActiveSimulation({ syncCloud: true });
         renderSimQuestion();
       };
       grid.appendChild(cell);
@@ -3098,6 +3599,7 @@
     el("simFlagBtn").onclick = () => {
       if (simState.flagged.has(q.id)) simState.flagged.delete(q.id);
       else simState.flagged.add(q.id);
+      persistActiveSimulation({ syncCloud: true });
       renderSimQuestion();
     };
     el("simProblemBtn").onclick = () => openProblemModal(q.id);
@@ -3124,6 +3626,7 @@
       btn.innerHTML = `<span class="option-letter">${HEBREW_LETTERS[dispIdx]}.</span><span>${escapeHtml(opt.text)}</span>`;
       btn.onclick = () => {
         simState.answers.set(q.id, origIdx);
+        persistActiveSimulation({ syncCloud: true });
         renderSimQuestion();
       };
       btn.oncontextmenu = (e) => {
@@ -3131,6 +3634,7 @@
         if (!simState.struck.has(q.id)) simState.struck.set(q.id, new Set());
         const st = simState.struck.get(q.id);
         if (st.has(origIdx)) st.delete(origIdx); else st.add(origIdx);
+        persistActiveSimulation({ syncCloud: true });
         renderSimQuestion();
       };
 
@@ -3143,6 +3647,7 @@
         if (!simState.struck.has(q.id)) simState.struck.set(q.id, new Set());
         const st = simState.struck.get(q.id);
         if (st.has(origIdx)) st.delete(origIdx); else st.add(origIdx);
+        persistActiveSimulation({ syncCloud: true });
         renderSimQuestion();
       };
 
@@ -3151,15 +3656,24 @@
     });
 
     el("simPrevBtn").onclick = () => {
-      if (simState.currentIndex > 0) { simState.currentIndex--; renderSimQuestion(); }
+      if (simState.currentIndex > 0) {
+        simState.currentIndex--;
+        persistActiveSimulation({ syncCloud: true });
+        renderSimQuestion();
+      }
     };
     el("simNextBtn").onclick = () => {
-      if (simState.currentIndex < simState.questions.length - 1) { simState.currentIndex++; renderSimQuestion(); }
+      if (simState.currentIndex < simState.questions.length - 1) {
+        simState.currentIndex++;
+        persistActiveSimulation({ syncCloud: true });
+        renderSimQuestion();
+      }
     };
   }
 
   function submitSimulation() {
     clearInterval(simState.timerId);
+    simState.timerId = null;
     simState.active = false;
 
     let correctCount = 0;
@@ -3186,7 +3700,7 @@
         recordDaily(isOk);
       }
     });
-    saveProgress();
+    clearActiveSimulation({ syncCloud: true });
 
     const pct = Math.round((correctCount / simState.questions.length) * 100);
     const resEl = el("examResults");
@@ -3802,7 +4316,12 @@
   }
 
   // Mode switching
-  function switchMode(mode) {
+  function switchMode(mode, { persist = true, fromUser = false } = {}) {
+    if (fromUser) hasUserInteractedWithNav = true;
+    if (isStudyMode(currentMode) && currentMode !== mode && !isRestoringSession) {
+      recordCurrentModePosition();
+    }
+
     currentMode = mode;
     notesExpanded = false;
     lastRenderedQId = null;
@@ -3810,22 +4329,35 @@
       b.classList.toggle("active", b.dataset.mode === mode);
     });
 
-    const isStudy = mode === "practice" || mode === "drill" || mode === "flashcard";
+    const isStudy = isStudyMode(mode);
     el("filterPanel").classList.toggle("hidden", !(mode === "practice" || mode === "flashcard"));
     el("studyView").classList.toggle("hidden", !isStudy);
     el("examView").classList.toggle("hidden", mode !== "exam");
     el("analyticsView").classList.toggle("hidden", mode !== "analytics");
     el("leaderboardView")?.classList.toggle("hidden", mode !== "leaderboard");
 
-    if (isStudy) applyFilters();
-    else if (mode === "analytics") renderAnalytics();
-    else if (mode === "leaderboard") openLeaderboardView();
+    if (isStudy) {
+      const savedQId = lastQIdByMode[mode] || null;
+      const savedIdx = Number.isInteger(lastIndexByMode[mode]) ? lastIndexByMode[mode] : null;
+      applyFilters(savedQId, { preserveShuffle: true, fallbackIndex: savedIdx });
+    } else if (mode === "analytics") {
+      renderAnalytics();
+    } else if (mode === "leaderboard") {
+      openLeaderboardView();
+    }
+
+    if (persist && !isRestoringSession) {
+      persistStudySession();
+    }
   }
 
   function renderCurrentView() {
     if (currentMode === "analytics") renderAnalytics();
     else if (currentMode === "leaderboard") renderLeaderboard();
-    else if (currentMode !== "exam") applyFilters(filteredList[currentIndex]?.id);
+    else if (currentMode !== "exam") {
+      applyFilters(filteredList[currentIndex]?.id, { preserveShuffle: true, fallbackIndex: currentIndex });
+    }
+    renderResumeSimBanner();
   }
 
   function escapeHtml(str) {
@@ -3839,7 +4371,15 @@
   // Event bindings
   function bindEvents() {
     document.querySelectorAll("#modeTabs .tab-btn").forEach((btn) => {
-      btn.onclick = () => switchMode(btn.dataset.mode);
+      btn.onclick = () => switchMode(btn.dataset.mode, { fromUser: true });
+    });
+
+    el("btnResumeSim")?.addEventListener("click", () => resumeSavedSimulation());
+    el("btnDiscardSim")?.addEventListener("click", () => {
+      if (confirm("למחוק את הסימולציה השמורה? פעולה זו תמחק אותה בכל המכשירים המחוברים.")) {
+        clearActiveSimulation({ syncCloud: true });
+        showToast("🗑️ הסימולציה השמורה נמחקה.");
+      }
     });
 
     el("btnLbSortAnswers")?.addEventListener("click", () => setLeaderboardSort("answers"));
@@ -3859,31 +4399,36 @@
 
     // Search
     el("searchInput").addEventListener("input", (e) => {
+      hasUserInteractedWithNav = true;
       filters.search = e.target.value;
       el("clearSearchBtn").classList.toggle("hidden", !filters.search);
       applyFilters();
+      persistStudySession();
     });
     el("clearSearchBtn").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.search = "";
       el("searchInput").value = "";
       el("clearSearchBtn").classList.add("hidden");
       applyFilters();
+      persistStudySession();
     };
 
     // Merge pathology toggle
     el("mergePathologyToggle").onchange = (e) => {
+      hasUserInteractedWithNav = true;
       filters.mergePathology = e.target.checked;
       filters.subjects.clear();
       renderFilterChips();
       initExamSetup();
       applyFilters();
+      persistStudySession();
     };
 
     el("btnToggleFilters").onclick = () => {
-      const body = el("filterBody");
-      const hidden = body.classList.toggle("hidden");
-      el("btnToggleFilters").setAttribute("aria-expanded", hidden ? "false" : "true");
-      el("filterToggleLabel").textContent = hidden ? "סינון" : "צמצם";
+      const hidden = !el("filterBody")?.classList.contains("hidden");
+      setFilterPanelCollapsed(hidden);
+      persistStudySession();
     };
 
     if (el("btnShuffleOptionsMobile")) {
@@ -3892,53 +4437,70 @@
 
     // Year quick buttons
     el("btnRecentYears").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.exams = new Set(["2026", "2025", "2024", "2022", "2021"]);
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
     el("btnAllYears").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.exams = new Set(EXAMS.map((ex) => ex.name));
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
     el("btnClearYears").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.exams.clear();
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
     el("btnAllSubjects").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.subjects = new Set(getUniqueSubjects());
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
     el("btnClearSubjects").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.subjects.clear();
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
     el("btnAllStatuses").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.statuses = new Set(getStatusKeys());
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
     el("btnClearStatuses").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.statuses.clear();
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
 
     // Status chips (multi-select toggle)
     el("statusChips").querySelectorAll(".chip[data-status]").forEach((c) => {
       c.onclick = () => {
+        hasUserInteractedWithNav = true;
         const st = c.dataset.status;
         if (filters.statuses.has(st)) filters.statuses.delete(st);
         else filters.statuses.add(st);
         renderFilterChips();
         applyFilters();
+        persistStudySession();
       };
     });
 
     el("btnResetFiltersEmpty").onclick = () => {
+      hasUserInteractedWithNav = true;
       filters.exams.clear();
       filters.subjects.clear();
       filters.statuses.clear();
@@ -3947,6 +4509,7 @@
       el("clearSearchBtn").classList.add("hidden");
       renderFilterChips();
       applyFilters();
+      persistStudySession();
     };
 
     el("btnShuffleQuestions").onclick = shuffleFilteredQuestions;
@@ -3955,8 +4518,10 @@
     el("btnJump").onclick = () => {
       const v = parseInt(el("jumpInput").value, 10);
       if (v >= 1 && v <= filteredList.length) {
+        hasUserInteractedWithNav = true;
         currentIndex = v - 1;
         renderQuestion();
+        persistStudySession();
       }
     };
 
@@ -4266,7 +4831,12 @@
           }
           progress = { ...defaultProgress(), ...normalized };
           saveProgress({ syncCloud: true, immediateCloud: true });
-          renderCurrentView();
+          if (progress.studySession && !simState.active) {
+            applyStudySessionState(progress.studySession, { showToastInfo: false });
+          } else {
+            renderCurrentView();
+          }
+          renderResumeSimBanner();
           el("backupModal").classList.add("hidden");
           showToast("✅ הגיבוי שוחזר ויסתנכרן עם הענן!");
         } catch {
@@ -4280,8 +4850,22 @@
       if (confirm("בטוח שברצונך למחוק את כל ההתקדמות, הסימונים וההערות?")) {
         progress = defaultProgress();
         progress.resetAt = Date.now();
+        shuffledQuestionOrder = null;
+        lastQIdByMode = {};
+        lastIndexByMode = {};
+        setShuffleOptionsEnabled(false);
+        filters.exams.clear();
+        filters.subjects.clear();
+        filters.statuses.clear();
+        filters.search = "";
+        if (el("searchInput")) el("searchInput").value = "";
+        el("clearSearchBtn")?.classList.add("hidden");
+        renderFilterChips();
         saveProgress({ syncCloud: true, immediateCloud: true });
-        renderCurrentView();
+        renderResumeSimBanner();
+        if (currentMode === "analytics") renderAnalytics();
+        else if (currentMode === "leaderboard") renderLeaderboard();
+        else if (currentMode !== "exam") applyFilters();
         el("backupModal").classList.add("hidden");
         showToast("ההתקדמות אופסה.");
       }
@@ -5340,6 +5924,7 @@
     if (Object.values(prog?.notes || {}).some((t) => typeof t === "string" && t.trim())) return true;
     if (Object.values(prog?.struck || {}).some((a) => Array.isArray(a) && a.length > 0)) return true;
     if (Object.values(prog?.drillStreak || {}).some((n) => Number(n) > 0)) return true;
+    if (prog?.activeSim && Array.isArray(prog.activeSim.questionIds) && prog.activeSim.questionIds.length > 0) return true;
     if (Object.values(communityNotes || {}).some((byU) => byU && byU[userIdentity.userId])) return true;
     if (Object.values(communityProblems || {}).some((byU) => byU && byU[userIdentity.userId])) return true;
     return false;
@@ -5536,6 +6121,10 @@
 
   function applyMergedCloudProgress(serverProgress, { rerender = true } = {}) {
     if (!serverProgress || typeof serverProgress !== "object") return false;
+    const prevStudyTs = Number(progress.studySessionUpdatedAt) || 0;
+    const prevActiveSimJson = JSON.stringify(progress.activeSim || null);
+    const prevActiveSimTs = Number(progress.activeSimUpdatedAt) || 0;
+
     const beforeJson = JSON.stringify(progress);
     const merged = mergeProgressPayloads(progress, serverProgress);
     merged.identity = {
@@ -5551,7 +6140,53 @@
       localStorage.setItem(STORAGE_KEY, afterJson);
     } catch {}
     updateDrillBadge();
-    if (rerender && !simState.active) {
+
+    const nextActiveSimJson = JSON.stringify(progress.activeSim || null);
+    const nextActiveSimTs = Number(progress.activeSimUpdatedAt) || 0;
+    if (nextActiveSimJson !== prevActiveSimJson || nextActiveSimTs !== prevActiveSimTs) {
+      renderResumeSimBanner();
+    }
+
+    const nextStudyTs = Number(progress.studySessionUpdatedAt) || 0;
+    const nextSess = progress.studySession;
+    const arrivedFromOtherDevice = Boolean(
+      nextSess &&
+      nextStudyTs > prevStudyTs &&
+      nextSess.deviceId &&
+      nextSess.deviceId !== deviceId
+    );
+
+    let handledSessionSwitch = false;
+    if (arrivedFromOtherDevice && rerender && !simState.active && !tourState.active) {
+      const targetMode = nextSess.mode || "practice";
+      const targetQId = nextSess.lastQIdByMode?.[targetMode];
+      const targetQ = targetQId ? Q_MAP.get(targetQId) : null;
+      const locLabel = targetQ ? `${targetQ.exam} שאלה ${targetQ.num}` : "";
+
+      if (!hasUserInteractedWithNav) {
+        applyStudySessionState(nextSess, { showToastInfo: true, fromOtherDevice: true });
+        handledSessionSwitch = true;
+      } else {
+        const msg = locLabel
+          ? `☁️ התקדמות חדשה ממכשיר אחר (${locLabel})`
+          : "☁️ התקדמות חדשה ממכשיר אחר";
+        showToast(msg, {
+          actionLabel: "עבור לשם",
+          onAction: () => {
+            if (simState.active) {
+              showToast("⏱️ לא ניתן לעבור בזמן סימולציה פעילה");
+              return;
+            }
+            if (progress.studySession) {
+              applyStudySessionState(progress.studySession, { showToastInfo: false });
+            }
+          },
+          duration: 7000,
+        });
+      }
+    }
+
+    if (!handledSessionSwitch && rerender && !simState.active) {
       const activeTag = document.activeElement?.id;
       if (currentMode === "analytics") {
         renderAnalytics();
@@ -5562,7 +6197,7 @@
           // Avoid interrupting an active note draft; refresh on next navigation
           updateDrillBadge();
         } else {
-          applyFilters(filteredList[currentIndex]?.id);
+          applyFilters(filteredList[currentIndex]?.id, { preserveShuffle: true, fallbackIndex: currentIndex });
         }
       }
     }
@@ -6036,7 +6671,13 @@
       updateSyncStatusUI();
       await bootstrapCloudState(false);
       lastCloudPollAt = Date.now();
-      renderCurrentView();
+      if (progress.studySession && !simState.active && !hasUserInteractedWithNav) {
+        const fromOther = Boolean(progress.studySession.deviceId && progress.studySession.deviceId !== deviceId);
+        applyStudySessionState(progress.studySession, { showToastInfo: fromOther, fromOtherDevice: fromOther });
+      } else {
+        renderCurrentView();
+      }
+      renderResumeSimBanner();
       renderSyncModal();
       showToast(`✅ התחברת לפרופיל ${userIdentity.emoji} ${userIdentity.name}!`);
     } catch (err) {
@@ -6408,12 +7049,12 @@
 
     const previousMode = currentMode;
     if (currentMode !== "practice") {
-      switchMode("practice");
+      switchMode("practice", { persist: false });
     }
 
     const steps = getTourSteps().filter((s) => !s.target || Boolean(getTourTargetElement(s)));
     if (steps.length === 0) {
-      if (previousMode !== currentMode) switchMode(previousMode);
+      if (previousMode !== currentMode) switchMode(previousMode, { persist: false });
       return false;
     }
 
@@ -6461,7 +7102,7 @@
       markOnboardingSeen();
     }
     if (wasReturnMode && wasReturnMode !== currentMode) {
-      switchMode(wasReturnMode);
+      switchMode(wasReturnMode, { persist: false });
     }
     if (wasManual) {
       el("btnHelpTour")?.focus();
@@ -6478,7 +7119,25 @@
   initExamSetup();
   updateDrillBadge();
   bindEvents();
-  applyFilters();
+  if (progress.studySession) {
+    const s = progress.studySession;
+    const f = s.filters || {};
+    const curModeKey = s.mode || "practice";
+    const hasNonDefault =
+      (s.mode && s.mode !== "practice") ||
+      (Array.isArray(f.exams) && f.exams.length > 0) ||
+      (Array.isArray(f.subjects) && f.subjects.length > 0) ||
+      (Array.isArray(f.statuses) && f.statuses.length > 0) ||
+      (typeof f.search === "string" && f.search.trim().length > 0) ||
+      (Array.isArray(s.shuffledOrder) && s.shuffledOrder.length > 0) ||
+      Boolean(s.shuffleOptions) ||
+      Boolean(s.filterCollapsed) ||
+      (s.lastIndexByMode?.[curModeKey] || 0) > 0;
+    applyStudySessionState(s, { showToastInfo: hasNonDefault, fromOtherDevice: false });
+  } else {
+    applyFilters();
+  }
+  renderResumeSimBanner();
   checkServer();
 
   (async () => {
@@ -6521,15 +7180,23 @@
     document.addEventListener(evt, markUserActivity, { passive: true, capture: true });
   });
 
+  function flushPendingCloudSyncOnExit() {
+    if (simState.active) {
+      persistActiveSimulation({ syncCloud: false });
+      cloudProgressDirty = true;
+    }
+    if (cloudProgressDirty || cloudProgressPushTimer) {
+      if (cloudProgressPushTimer) {
+        clearTimeout(cloudProgressPushTimer);
+        cloudProgressPushTimer = null;
+      }
+      pushCloudProgress({ keepalive: true });
+    }
+  }
+
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
-      if (cloudProgressDirty || cloudProgressPushTimer) {
-        if (cloudProgressPushTimer) {
-          clearTimeout(cloudProgressPushTimer);
-          cloudProgressPushTimer = null;
-        }
-        pushCloudProgress({ keepalive: true });
-      }
+      flushPendingCloudSyncOnExit();
     } else if (document.visibilityState === "visible") {
       const now = Date.now();
       lastUserActivityAt = now;
@@ -6541,13 +7208,7 @@
   });
 
   window.addEventListener("pagehide", () => {
-    if (cloudProgressDirty || cloudProgressPushTimer) {
-      if (cloudProgressPushTimer) {
-        clearTimeout(cloudProgressPushTimer);
-        cloudProgressPushTimer = null;
-      }
-      pushCloudProgress({ keepalive: true });
-    }
+    flushPendingCloudSyncOnExit();
   });
 
   setInterval(() => {

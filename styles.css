@@ -666,6 +666,59 @@ button,
   gap: 12px;
 }
 
+/* Resume Active Simulation Banner */
+.resume-sim-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  padding: 10px 14px;
+  background: var(--warning-soft);
+  border: 1.5px solid var(--warning);
+  color: var(--warning-ink);
+}
+
+.resume-sim-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 240px;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.resume-sim-icon {
+  flex-shrink: 0;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.resume-sim-text {
+  line-height: 1.4;
+}
+
+.resume-sim-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.resume-sim-banner .btn-ghost {
+  color: var(--warning-ink);
+}
+
+.resume-sim-banner .btn-ghost:hover {
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--warning-ink);
+}
+
+[data-theme="dark"] .resume-sim-banner .btn-ghost:hover {
+  background: rgba(251, 191, 36, 0.16);
+}
+
 /* Collapsible Exam Index Strip */
 .filter-panel {
   padding: 10px 14px;
@@ -2148,6 +2201,44 @@ kbd {
   font-size: 0.88rem;
   font-weight: 600;
   box-shadow: var(--shadow-elevated);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  max-width: min(460px, calc(100vw - 24px));
+}
+
+.toast-msg {
+  line-height: 1.35;
+}
+
+.toast-action-btn {
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--shell-text);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.toast-action-btn:hover {
+  background: rgba(255, 255, 255, 0.24);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+[data-theme="dark"] .toast-action-btn {
+  background: rgba(147, 197, 253, 0.16);
+  border-color: rgba(147, 197, 253, 0.36);
+  color: #E0F2FE;
+}
+
+[data-theme="dark"] .toast-action-btn:hover {
+  background: rgba(147, 197, 253, 0.28);
+  border-color: rgba(147, 197, 253, 0.55);
 }
 
 .muted {
@@ -2335,6 +2426,21 @@ kbd {
 
   .card {
     padding: 12px 14px;
+  }
+
+  .resume-sim-banner {
+    padding: 9px 12px;
+    gap: 8px;
+  }
+
+  .resume-sim-info {
+    font-size: 0.84rem;
+    flex-basis: 100%;
+  }
+
+  .resume-sim-actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .filter-panel {

@@ -924,6 +924,67 @@ async function run() {
     assert.equal(pollRevoked.data.progressChanged, false);
     assert.equal(pollRevoked.data.progress, undefined);
 
+    // 6. studySession & activeSim roundtrip + tombstone over PUT/GET /api/progress
+    const sessPut = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        progress: {
+          studySession: {
+            mode: "flashcard",
+            filters: { exams: ["2026"], subjects: ["קרדיולוגיה"], statuses: [], search: "", mergePathology: true },
+            filterCollapsed: true,
+            shuffleOptions: false,
+            shuffledOrder: ["2026_q003", "2026_q001"],
+            lastQIdByMode: { flashcard: "2026_q001" },
+            lastIndexByMode: { flashcard: 1 },
+            deviceId: "dev_test_a",
+          },
+          studySessionUpdatedAt: 12000,
+          activeSim: {
+            label: "2026 (2 שאלות)",
+            questionIds: ["2026_q001", "2026_q002"],
+            answers: { "2026_q001": 1 },
+            flagged: ["2026_q002"],
+            struck: { "2026_q001": [0] },
+            currentIndex: 1,
+            secondsLeft: 1800,
+            hasTimer: true,
+            shuffleOpts: false,
+            deviceId: "dev_test_a",
+          },
+          activeSimUpdatedAt: 12000,
+        },
+      },
+    });
+    assert.equal(sessPut.status, 200);
+    assert.equal(sessPut.data.progress.studySession.mode, "flashcard");
+    assert.equal(sessPut.data.progress.activeSim.secondsLeft, 1800);
+
+    const simTombstonePut = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        progress: {
+          activeSim: null,
+          activeSimUpdatedAt: 13000,
+        },
+      },
+    });
+    assert.equal(simTombstonePut.status, 200);
+    assert.equal(simTombstonePut.data.progress.activeSim, null);
+    assert.equal(simTombstonePut.data.progress.activeSimUpdatedAt, 13000);
+    assert.equal(simTombstonePut.data.progress.studySession.lastQIdByMode.flashcard, "2026_q001");
+
+    const sessGet = await req("/api/progress", {
+      headers: { "X-User-Id": studentA.userId, "X-Client-Secret": studentA.clientSecret },
+    });
+    assert.equal(sessGet.status, 200);
+    assert.equal(sessGet.data.progress.activeSim, null);
+    assert.equal(sessGet.data.progress.studySession.mode, "flashcard");
+
     console.log("✓ Smart polling (/api/poll) conditional sync & 403 handling OK");
   }
 

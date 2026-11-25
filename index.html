@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261125a" />
+  <link rel="stylesheet" href="styles.css?v=20261125b" />
 </head>
 <body>
   <header class="topbar">
@@ -189,6 +189,18 @@
   </header>
 
   <main class="main-container">
+    <!-- Active Exam Simulation Resume Banner (local + cross-device) -->
+    <section class="resume-sim-banner card hidden" id="resumeSimBanner" role="region" aria-label="סימולציה פעילה להמשך">
+      <div class="resume-sim-info">
+        <span class="resume-sim-icon" aria-hidden="true">⏱️</span>
+        <span class="resume-sim-text tabular-text" id="resumeSimText">יש לך סימולציה שלא הושלמה</span>
+      </div>
+      <div class="resume-sim-actions">
+        <button type="button" class="btn-primary btn-sm" id="btnResumeSim">המשך סימולציה</button>
+        <button type="button" class="btn-ghost btn-sm" id="btnDiscardSim">מחק</button>
+      </div>
+    </section>
+
     <!-- Collapsible Exam Index Strip (shown in Practice & Flashcard modes) -->
     <section class="filter-panel card" id="filterPanel" aria-label="חיפוש וסינון שאלות">
       <div class="filter-header">
@@ -939,6 +951,6 @@
 
   <script src="questions_data.js"></script>
   <script src="qr.js?v=20261124d"></script>
-  <script src="app.js?v=20261125a"></script>
+  <script src="app.js?v=20261125b"></script>
 </body>
 </html>
