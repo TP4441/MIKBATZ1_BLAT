@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261125m" />
+  <link rel="stylesheet" href="styles.css?v=20261125n" />
 </head>
 <body>
   <header class="topbar">
@@ -107,6 +107,13 @@
               <polyline points="7 3 7 8 15 8" />
             </svg>
             <span class="btn-label-desktop">גיבוי</span>
+          </button>
+          <button type="button" class="icon-btn icon-only" id="btnFeedback" title="הצעות / תלונות" aria-label="הצעות ותלונות">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              <path d="M8 9h8" />
+              <path d="M8 13h5" />
+            </svg>
           </button>
           <button type="button" class="icon-btn icon-only hide-mobile" id="btnShortcuts" title="קיצורי מקלדת" aria-label="קיצורי מקלדת">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -944,6 +951,42 @@
     </div>
   </div>
 
+  <!-- Feedback (Suggestions / Complaints) Modal -->
+  <div class="modal-overlay hidden" id="feedbackModal" role="dialog" aria-modal="true" aria-labelledby="feedbackModalTitle">
+    <div class="modal-box card feedback-modal-box">
+      <div class="modal-header">
+        <h2 id="feedbackModalTitle">💬 הצעות / תלונות</h2>
+        <button type="button" class="icon-btn icon-only" id="btnCloseFeedbackModal" aria-label="סגור חלון">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <form id="feedbackFormWrap" class="feedback-form-wrap">
+        <p class="muted feedback-modal-desc">יש לך הצעה לשיפור או תלונה? אפשר לכתוב כאן עד 500 תווים:</p>
+        <div class="feedback-field">
+          <textarea id="feedbackInput" rows="4" maxlength="500" placeholder="כתוב כאן הצעה או תלונה..." required></textarea>
+          <div class="feedback-meta-row">
+            <span class="muted" id="feedbackAuthorLabel"></span>
+            <span class="feedback-char-count tabular-text" id="feedbackCharCount">0 / 500</span>
+          </div>
+        </div>
+        <div class="admin-form-error hidden" id="feedbackError" role="alert"></div>
+        <div class="feedback-modal-footer">
+          <button type="submit" class="btn-primary" id="btnSubmitFeedback">שלח</button>
+          <button type="button" class="btn-secondary" id="btnCancelFeedbackModal">ביטול</button>
+        </div>
+      </form>
+
+      <div id="feedbackThanksWrap" class="feedback-thanks-wrap hidden">
+        <div id="feedbackThanksMedia" class="feedback-thanks-media"></div>
+        <div class="feedback-thanks-caption">תודה :)</div>
+        <div class="feedback-modal-footer">
+          <button type="button" class="btn-primary" id="btnCloseFeedbackThanks">סגור</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Problem Report Modal -->
   <div class="modal-overlay hidden" id="problemReportModal" role="dialog" aria-modal="true" aria-labelledby="problemModalTitle">
     <div class="modal-box card problem-modal-box">
@@ -1099,6 +1142,7 @@
         <button type="button" class="admin-tab-btn active" data-admin-tab="users" role="tab" aria-selected="true">👥 משתמשים וכינויים</button>
         <button type="button" class="admin-tab-btn" data-admin-tab="overrides" role="tab" aria-selected="false">📝 שאלות ששונו/הוסרו</button>
         <button type="button" class="admin-tab-btn" data-admin-tab="moderation" role="tab" aria-selected="false">💬 מודרציית תגובות ודיווחים</button>
+        <button type="button" class="admin-tab-btn" data-admin-tab="feedback" role="tab" aria-selected="false">📬 הצעות ותלונות <span class="badge-pill hidden" id="adminFeedbackCountBadge">0</span></button>
       </div>
 
       <!-- Users & Nicknames Tab -->
@@ -1140,6 +1184,15 @@
           <input type="text" id="adminModerationSearch" class="admin-search-input" placeholder="חיפוש לפי מחבר, תוכן או שאלה..." />
         </div>
         <div class="admin-feed-list" id="adminModerationList"></div>
+      </div>
+
+      <!-- Feedback Tab -->
+      <div class="admin-tab-panel hidden" id="adminTabFeedback">
+        <div class="admin-toolbar">
+          <input type="text" id="adminFeedbackSearch" class="admin-search-input" placeholder="חיפוש לפי תוכן או כינוי..." />
+          <button type="button" class="btn-secondary btn-sm" id="btnAdminRefreshFeedback">🔄 רענן הודעות</button>
+        </div>
+        <div class="admin-feed-list" id="adminFeedbackList"></div>
       </div>
     </div>
   </div>
@@ -1185,6 +1238,6 @@
   <script src="questions_data.js?v=20261125j"></script>
   <script src="qr.js?v=20261124d"></script>
   <script src="drawboard.js?v=20261125m"></script>
-  <script src="app.js?v=20261125n"></script>
+  <script src="app.js?v=20261125o"></script>
 </body>
 </html>

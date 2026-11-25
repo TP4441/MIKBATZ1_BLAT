@@ -390,7 +390,9 @@
     expiresAt: 0,
   };
   let adminUsersCache = [];
+  let adminFeedbackCache = [];
   let adminActiveTab = "users";
+  let feedbackAudioEl = null;
   let adminOverridesFilter = "all";
   let adminModerationFilter = "all";
   let activeAdminEditQId = null;
@@ -6538,6 +6540,17 @@
     el("btnShortcuts").onclick = () => el("shortcutsModal").classList.remove("hidden");
     el("btnCloseShortcuts").onclick = () => el("shortcutsModal").classList.add("hidden");
 
+    // Feedback (Suggestions / Complaints) Modal
+    el("btnFeedback")?.addEventListener("click", openFeedbackModal);
+    el("btnCloseFeedbackModal")?.addEventListener("click", closeFeedbackModal);
+    el("btnCancelFeedbackModal")?.addEventListener("click", closeFeedbackModal);
+    el("btnCloseFeedbackThanks")?.addEventListener("click", closeFeedbackModal);
+    el("feedbackModal")?.addEventListener("click", (e) => {
+      if (e.target === el("feedbackModal")) closeFeedbackModal();
+    });
+    el("feedbackInput")?.addEventListener("input", updateFeedbackCharCount);
+    el("feedbackFormWrap")?.addEventListener("submit", submitFeedbackForm);
+
     // Onboarding Spotlight Tour
     el("btnHelpTour")?.addEventListener("click", () => startOnboardingTour({ manual: true }));
     el("btnTourNext")?.addEventListener("click", nextTourStep);
@@ -6665,9 +6678,11 @@
     });
     el("btnAdminLogout")?.addEventListener("click", adminLogout);
     el("btnAdminRefreshUsers")?.addEventListener("click", () => loadAdminUsers(true));
+    el("btnAdminRefreshFeedback")?.addEventListener("click", () => loadAdminFeedback(true));
     el("adminUsersSearch")?.addEventListener("input", renderAdminUsersTab);
     el("adminOverridesSearch")?.addEventListener("input", renderAdminOverridesTab);
     el("adminModerationSearch")?.addEventListener("input", renderAdminModerationTab);
+    el("adminFeedbackSearch")?.addEventListener("input", renderAdminFeedbackTab);
 
     document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => switchAdminTab(btn.dataset.adminTab));
@@ -6715,6 +6730,7 @@
         const hasOpenModal =
           !el("lightboxModal").classList.contains("hidden") ||
           !el("onlineUsersPopover")?.classList.contains("hidden") ||
+          !el("feedbackModal")?.classList.contains("hidden") ||
           !el("problemReportModal").classList.contains("hidden") ||
           !el("syncModal")?.classList.contains("hidden") ||
           !el("adminLoginModal").classList.contains("hidden") ||
@@ -6728,6 +6744,7 @@
         }
         closeLightbox();
         closeOnlineUsersPopover();
+        closeFeedbackModal();
         closeProblemModal();
         closeSyncModal();
         closeAdminLoginModal();
@@ -6738,6 +6755,7 @@
         return;
       }
       if (
+        !el("feedbackModal")?.classList.contains("hidden") ||
         !el("problemReportModal").classList.contains("hidden") ||
         !el("syncModal")?.classList.contains("hidden") ||
         !el("adminLoginModal").classList.contains("hidden") ||
@@ -7359,6 +7377,7 @@
     el("adminDashboardModal").classList.remove("hidden");
     switchAdminTab(adminActiveTab);
     loadAdminUsers(false);
+    loadAdminFeedback(false);
   }
 
   function closeAdminDashboardModal() {
@@ -7375,10 +7394,12 @@
     el("adminTabUsers").classList.toggle("hidden", adminActiveTab !== "users");
     el("adminTabOverrides").classList.toggle("hidden", adminActiveTab !== "overrides");
     el("adminTabModeration").classList.toggle("hidden", adminActiveTab !== "moderation");
+    el("adminTabFeedback")?.classList.toggle("hidden", adminActiveTab !== "feedback");
 
     if (adminActiveTab === "users") renderAdminUsersTab();
     else if (adminActiveTab === "overrides") renderAdminOverridesTab();
     else if (adminActiveTab === "moderation") renderAdminModerationTab();
+    else if (adminActiveTab === "feedback") renderAdminFeedbackTab();
   }
 
   async function loadAdminUsers(showFeedback = false) {
@@ -7771,6 +7792,282 @@
       card.append(head, textDiv);
       listWrap.appendChild(card);
     });
+  }
+
+  function updateAdminFeedbackBadge() {
+    const badge = el("adminFeedbackCountBadge");
+    if (!badge) return;
+    const count = adminFeedbackCache.length;
+    badge.textContent = String(count);
+    badge.classList.toggle("hidden", count === 0);
+  }
+
+  async function loadAdminFeedback(showFeedback = false) {
+    if (!adminState.authenticated) return;
+    try {
+      const data = await adminFetch("/api/admin/feedback");
+      adminFeedbackCache = Array.isArray(data.feedback) ? data.feedback : [];
+      updateAdminFeedbackBadge();
+      renderAdminFeedbackTab();
+      if (showFeedback) showToast("🔄 רשימת ההצעות והתלונות רועננה.");
+    } catch (err) {
+      if (showFeedback) showToast(`❌ שגיאה בטעינת הודעות: ${err.message}`);
+    }
+  }
+
+  async function adminDeleteFeedback(feedbackId) {
+    if (!confirm("למחוק הודעה זו לצמיתות?")) return;
+    try {
+      await adminFetch(`/api/admin/feedback/${encodeURIComponent(feedbackId)}`, {
+        method: "DELETE",
+      });
+      adminFeedbackCache = adminFeedbackCache.filter((item) => item.feedbackId !== feedbackId);
+      updateAdminFeedbackBadge();
+      renderAdminFeedbackTab();
+      showToast("🗑️ ההודעה נמחקה.");
+    } catch (err) {
+      showToast(`❌ שגיאה במחיקת הודעה: ${err.message}`);
+    }
+  }
+
+  function renderAdminFeedbackTab() {
+    const listWrap = el("adminFeedbackList");
+    if (!listWrap) return;
+    const term = (el("adminFeedbackSearch")?.value || "").trim().toLowerCase();
+    listWrap.innerHTML = "";
+
+    const filtered = adminFeedbackCache.filter((item) => {
+      if (!term) return true;
+      const hay = `${item.author || ""} ${item.category || ""} ${item.userId || ""} ${item.text || ""}`.toLowerCase();
+      return hay.includes(term);
+    });
+
+    if (filtered.length === 0) {
+      listWrap.innerHTML = `<div class="community-notes-empty" style="padding:16px;">${
+        adminFeedbackCache.length === 0 ? "אין עדיין הצעות או תלונות." : "לא נמצאו הודעות תואמות לחיפוש."
+      }</div>`;
+      return;
+    }
+
+    filtered.forEach((item) => {
+      const card = document.createElement("div");
+      card.className = "admin-feed-card";
+
+      const head = document.createElement("div");
+      head.className = "admin-feed-head";
+
+      const badges = document.createElement("div");
+      badges.className = "admin-feed-badges";
+
+      const authorStrong = document.createElement("strong");
+      authorStrong.textContent = `${item.emoji || "💬"} ${item.author || "אנונימי"}`;
+
+      const timeSpan = document.createElement("span");
+      timeSpan.className = "muted";
+      timeSpan.textContent = formatNoteTime(item.createdAt);
+
+      badges.append(authorStrong, timeSpan);
+
+      const actions = document.createElement("div");
+      actions.className = "admin-feed-actions";
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "note-card-action-btn danger admin-del";
+      delBtn.textContent = "🗑️ מחק";
+      delBtn.onclick = () => adminDeleteFeedback(item.feedbackId);
+
+      actions.appendChild(delBtn);
+      head.append(badges, actions);
+
+      const textDiv = document.createElement("div");
+      textDiv.className = "admin-feed-text";
+      textDiv.textContent = item.text || "";
+
+      card.append(head, textDiv);
+      listWrap.appendChild(card);
+    });
+  }
+
+  // ============================================================
+  // User Feedback (Suggestions / Complaints) Modal
+  // ============================================================
+
+  function stopFeedbackMedia() {
+    if (feedbackAudioEl) {
+      try {
+        feedbackAudioEl.pause();
+        feedbackAudioEl.currentTime = 0;
+      } catch {}
+      feedbackAudioEl = null;
+    }
+    const mediaWrap = el("feedbackThanksMedia");
+    if (mediaWrap) mediaWrap.innerHTML = "";
+  }
+
+  function updateFeedbackCharCount() {
+    const input = el("feedbackInput");
+    const counter = el("feedbackCharCount");
+    if (!input || !counter) return;
+    if (input.value.length > 500) {
+      input.value = input.value.slice(0, 500);
+    }
+    const len = input.value.length;
+    counter.textContent = `${len} / 500`;
+    counter.classList.toggle("is-limit", len >= 500);
+  }
+
+  function openFeedbackModal() {
+    stopFeedbackMedia();
+    const formWrap = el("feedbackFormWrap");
+    const thanksWrap = el("feedbackThanksWrap");
+    const input = el("feedbackInput");
+    const errEl = el("feedbackError");
+    const authorEl = el("feedbackAuthorLabel");
+    if (formWrap) formWrap.classList.remove("hidden");
+    if (thanksWrap) thanksWrap.classList.add("hidden");
+    if (input) input.value = "";
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    if (authorEl) {
+      authorEl.textContent = `נשלח בשם: ${userIdentity.emoji} ${userIdentity.name}`;
+    }
+    updateFeedbackCharCount();
+    el("feedbackModal")?.classList.remove("hidden");
+    setTimeout(() => input?.focus(), 30);
+  }
+
+  function closeFeedbackModal() {
+    stopFeedbackMedia();
+    el("feedbackModal")?.classList.add("hidden");
+  }
+
+  function showFeedbackThanks() {
+    stopFeedbackMedia();
+    el("feedbackFormWrap")?.classList.add("hidden");
+    el("feedbackThanksWrap")?.classList.remove("hidden");
+
+    const mediaWrap = el("feedbackThanksMedia");
+    if (!mediaWrap) return;
+
+    const img = document.createElement("img");
+    img.className = "feedback-thanks-img";
+    img.src = "assets/feedback/thanks.webp";
+    img.alt = "תודה :)";
+
+    const audio = document.createElement("audio");
+    audio.className = "feedback-thanks-audio";
+    audio.controls = true;
+    audio.preload = "none";
+
+    const srcWebm = document.createElement("source");
+    srcWebm.src = "assets/feedback/thanks.webm";
+    srcWebm.type = "audio/webm; codecs=opus";
+
+    const srcMp3 = document.createElement("source");
+    srcMp3.src = "assets/feedback/thanks.mp3";
+    srcMp3.type = "audio/mpeg";
+
+    audio.append(srcWebm, srcMp3);
+    mediaWrap.append(img, audio);
+
+    feedbackAudioEl = audio;
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {});
+    }
+  }
+
+  async function submitFeedbackForm(e, retried = false) {
+    if (e && typeof e.preventDefault === "function") e.preventDefault();
+    const input = el("feedbackInput");
+    const errEl = el("feedbackError");
+    const submitBtn = el("btnSubmitFeedback");
+    const text = (input?.value || "").trim();
+
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+
+    if (!text) {
+      if (errEl) {
+        errEl.textContent = "נא לכתוב הודעה לפני השליחה.";
+        errEl.classList.remove("hidden");
+      }
+      input?.focus();
+      return;
+    }
+
+    if (text.length > 500) {
+      if (errEl) {
+        errEl.textContent = "ניתן לכתוב עד 500 תווים בלבד.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    if (!isCloudApiConfigured()) {
+      if (errEl) {
+        errEl.textContent = "שירות הענן אינו מוגדר כרגע.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "שולח...";
+    }
+
+    try {
+      const res = await fetch(`${CLOUD_API_BASE}/api/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: userIdentity.userId,
+          clientSecret: userIdentity.clientSecret,
+          author: userIdentity.name,
+          emoji: userIdentity.emoji,
+          category: userIdentity.category,
+          text,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if ((res.status === 409 || data.conflict) && !retried) {
+        if (data.takenNames && typeof data.takenNames === "object") {
+          takenNamesMap = data.takenNames;
+          saveTakenNamesCache();
+        }
+        const fresh = pickRandomIdentity(true);
+        userIdentity = {
+          ...userIdentity,
+          name: fresh.name,
+          emoji: fresh.emoji,
+          category: fresh.category,
+          locked: true,
+        };
+        saveUserIdentity();
+        renderIdentityBadge();
+        return await submitFeedbackForm(null, true);
+      }
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      showFeedbackThanks();
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = `שגיאה בשליחה: ${err?.message || "נסה שוב"}`;
+        errEl.classList.remove("hidden");
+      }
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "שלח";
+      }
+    }
   }
 
   // ============================================================
@@ -8643,6 +8940,7 @@
       "syncModal",
       "backupModal",
       "shortcutsModal",
+      "feedbackModal",
       "problemReportModal",
       "adminLoginModal",
       "adminQuestionModal",

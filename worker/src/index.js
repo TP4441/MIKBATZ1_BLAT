@@ -6,6 +6,7 @@ const SYNC_RATE_LIMIT_LOCK_MS = 10 * 60 * 1000; // 10 minutes
 const SYNC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
 const MAX_PROGRESS_JSON_BYTES = 1500 * 1024;
+const MAX_FEEDBACK_CHARS = 500;
 const VALID_PROBLEM_TYPES = new Set(["question_issue", "distractor_issue", "out_of_material"]);
 const ONLINE_WINDOW_MS = 3 * 60 * 1000; // 3 minutes active presence window
 const PRESENCE_TOUCH_INTERVAL_MS = 60 * 1000; // Throttle last_seen_at writes to once per minute
@@ -2311,6 +2312,73 @@ async function handleAdminUsers(env) {
   return jsonResponse({ ok: true, users });
 }
 
+async function handlePostFeedback(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || "").trim();
+  const author = String(body.author || "").trim();
+  const emoji = String(body.emoji || "💬").trim();
+  const category = String(body.category || "").trim();
+  const text = typeof body.text === "string" ? body.text.trim() : "";
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+
+  if (!text) return errorResponse("Feedback text is required", 400);
+  if (text.length > MAX_FEEDBACK_CHARS) {
+    return errorResponse(`Feedback is too long (max ${MAX_FEEDBACK_CHARS} chars)`, 400);
+  }
+
+  const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret, {
+    name: author,
+    emoji,
+    category,
+  });
+  if (!auth.ok) {
+    if (auth.conflict) {
+      const takenNames = await getTakenNamesMap(env.DB);
+      return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
+    }
+    return errorResponse(auth.error, auth.status);
+  }
+
+  const now = Date.now();
+  const feedbackId = `fb_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const finalAuthor = author || "אנונימי";
+
+  await env.DB
+    .prepare(
+      `INSERT INTO user_feedback (feedback_id, user_id, author, emoji, category, text, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(feedbackId, userId, finalAuthor, emoji, category, text, now)
+    .run();
+
+  return jsonResponse({ ok: true, feedbackId, createdAt: now });
+}
+
+async function handleAdminFeedback(env) {
+  const { results } = await env.DB
+    .prepare(
+      `SELECT feedback_id, user_id, author, emoji, category, text, created_at
+       FROM user_feedback
+       ORDER BY created_at DESC
+       LIMIT 500`
+    )
+    .all();
+
+  const feedback = (results || []).map((row) => ({
+    feedbackId: row.feedback_id,
+    userId: row.user_id,
+    author: row.author || "אנונימי",
+    emoji: row.emoji || "💬",
+    category: row.category || "",
+    text: row.text || "",
+    createdAt: Number(row.created_at) || 0,
+  }));
+
+  return jsonResponse({ ok: true, feedback });
+}
+
 async function handleAdminPutOverride(request, env, qId) {
   const body = await readJsonBody(request);
   if (!body) return errorResponse("Invalid JSON", 400);
@@ -2558,6 +2626,10 @@ export default {
         return await handleIdentityPing(request, env);
       }
 
+      if (method === "POST" && path === "/api/feedback") {
+        return await handlePostFeedback(request, env);
+      }
+
       if (path === "/api/progress") {
         if (method === "GET") return await handleGetProgress(request, env);
         if (method === "PUT") return await handlePutProgress(request, env);
@@ -2632,6 +2704,17 @@ export default {
 
         if (method === "GET" && path === "/api/admin/users") {
           return await handleAdminUsers(env);
+        }
+
+        if (method === "GET" && path === "/api/admin/feedback") {
+          return await handleAdminFeedback(env);
+        }
+
+        const adminFeedbackMatch = path.match(/^\/api\/admin\/feedback\/([^/]+)$/);
+        if (adminFeedbackMatch && method === "DELETE") {
+          const feedbackId = decodeURIComponent(adminFeedbackMatch[1]);
+          await env.DB.prepare("DELETE FROM user_feedback WHERE feedback_id = ?").bind(feedbackId).run();
+          return jsonResponse({ ok: true, deletedId: feedbackId });
         }
 
         const adminUserMatch = path.match(/^\/api\/admin\/users\/([^/]+)$/);

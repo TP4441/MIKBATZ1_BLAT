@@ -119,5 +119,17 @@ CREATE TABLE IF NOT EXISTS sync_meta (
   updated_at INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS user_feedback (
+  feedback_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  author TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  category TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_feedback_created ON user_feedback(created_at DESC);
+
 INSERT OR IGNORE INTO sync_meta (id, community_version, updated_at)
 VALUES (1, 1, 0);

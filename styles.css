@@ -3091,6 +3091,17 @@ kbd {
   color: var(--primary-on-solid);
 }
 
+.admin-tab-btn .badge-pill {
+  margin-inline-start: 4px;
+  font-size: 0.72rem;
+  padding: 1px 6px;
+}
+
+.admin-tab-btn.active .badge-pill {
+  background: rgba(255, 255, 255, 0.22);
+  color: var(--primary-on-solid);
+}
+
 .admin-tab-panel {
   display: flex;
   flex-direction: column;
@@ -5073,4 +5084,118 @@ body.drawboard-resizing {
   .lightbox-controls {
     flex-wrap: wrap;
   }
+}
+
+/* ============================================================
+   Feedback (Suggestions / Complaints) Modal
+   ============================================================ */
+
+.feedback-modal-box {
+  max-width: 480px;
+}
+
+.feedback-form-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.feedback-modal-desc {
+  font-size: 0.86rem;
+}
+
+.feedback-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.feedback-field textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.94rem;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 104px;
+}
+
+.feedback-field textarea:focus {
+  border-color: var(--primary-ink);
+  background: var(--surface);
+  outline: none;
+}
+
+.feedback-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.78rem;
+}
+
+.feedback-char-count {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.feedback-char-count.is-limit {
+  color: var(--danger);
+}
+
+.feedback-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.feedback-modal-footer .btn-primary {
+  flex: 1 1 auto;
+}
+
+.feedback-thanks-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.feedback-thanks-media {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.feedback-thanks-img {
+  width: 220px;
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #FFFFFF;
+}
+
+.feedback-thanks-audio {
+  width: 100%;
+  max-width: 340px;
+  height: 38px;
+}
+
+.feedback-thanks-caption {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.feedback-thanks-wrap .feedback-modal-footer {
+  width: 100%;
 }

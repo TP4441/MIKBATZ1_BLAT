@@ -59,6 +59,8 @@ async function run() {
     const routes = [
       ["GET", "/api/admin/verify"],
       ["GET", "/api/admin/users"],
+      ["GET", "/api/admin/feedback"],
+      ["DELETE", "/api/admin/feedback/fb_fake"],
       ["DELETE", "/api/admin/users/u_fake"],
       ["PUT", "/api/admin/overrides/2026_q001", { hidden: true }],
       ["DELETE", "/api/admin/overrides/2026_q001"],
@@ -1203,6 +1205,62 @@ async function run() {
     assert.equal(bootAfterDelNote.data.noteReplies["2026_q010"]?.[studentA.userId], undefined);
 
     console.log("✓ Problem inaccuracy flags & threaded note replies OK");
+  }
+
+  // 8b. User feedback (suggestions / complaints)
+  {
+    const studentFb = {
+      userId: "u_fb_test_1",
+      clientSecret: "fb-secret-12345678",
+      name: "מלון",
+      emoji: "🍈",
+      category: "פירות",
+    };
+
+    const emptyFb = await req("/api/feedback", {
+      method: "POST",
+      body: { ...studentFb, author: studentFb.name, text: "   " },
+    });
+    assert.equal(emptyFb.status, 400);
+
+    const tooLongFb = await req("/api/feedback", {
+      method: "POST",
+      body: { ...studentFb, author: studentFb.name, text: "א".repeat(501) },
+    });
+    assert.equal(tooLongFb.status, 400);
+
+    const validFb = await req("/api/feedback", {
+      method: "POST",
+      body: { ...studentFb, author: studentFb.name, text: "הצעה מעולה לשיפור האתר!" },
+    });
+    assert.equal(validFb.status, 200);
+    assert.equal(validFb.data.ok, true);
+    assert.ok(validFb.data.feedbackId);
+
+    const listFb = await req("/api/admin/feedback", {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(listFb.status, 200);
+    const found = listFb.data.feedback.find((f) => f.feedbackId === validFb.data.feedbackId);
+    assert.ok(found, "Submitted feedback should appear in admin feedback list");
+    assert.equal(found.text, "הצעה מעולה לשיפור האתר!");
+    assert.equal(found.author, "מלון");
+
+    const delFb = await req(`/api/admin/feedback/${encodeURIComponent(validFb.data.feedbackId)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(delFb.status, 200);
+
+    const listAfterDel = await req("/api/admin/feedback", {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(listAfterDel.status, 200);
+    assert.equal(
+      listAfterDel.data.feedback.some((f) => f.feedbackId === validFb.data.feedbackId),
+      false
+    );
+    console.log("✓ User feedback submit, list & admin delete OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts
