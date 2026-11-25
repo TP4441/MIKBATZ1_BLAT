@@ -310,7 +310,7 @@
   const CLOUD_POLL_INTERVAL_MS = 90000;
   const USER_IDLE_TIMEOUT_MS = 180000;
   const VISIBILITY_POLL_COOLDOWN_MS = 15000;
-  let cloudProgressSyncState = isCloudApiConfigured() ? "idle" : "offline";
+  let cloudProgressSyncState = isCloudApiConfigured() ? "synced" : "offline";
   let cloudProgressDirty = false;
   let cloudProgressPushTimer = null;
   let cloudProgressSyncPromise = null;
@@ -5949,18 +5949,15 @@
     let label = "שמירה בדפדפן";
 
     if (isCloudApiConfigured()) {
-      if (cloudProgressSyncState === "syncing") {
-        cls = "syncing";
-        label = "מסנכרן...";
-      } else if (cloudProgressSyncState === "synced") {
-        cls = "online";
-        label = "מסונכרן בענן";
-      } else if (cloudProgressSyncState === "error") {
+      if (cloudProgressSyncState === "error") {
         cls = "error";
         label = "ממתין לסנכרון";
-      } else {
+      } else if (cloudProgressSyncState === "offline") {
         cls = "offline";
         label = "שמירה בדפדפן";
+      } else {
+        cls = "online";
+        label = "מסונכרן בענן";
       }
     } else if (serverOnline) {
       cls = "online";
@@ -6252,8 +6249,6 @@
     }
 
     const snapshotJson = JSON.stringify(progress);
-    cloudProgressSyncState = "syncing";
-    updateSyncStatusUI();
 
     const runPush = async () => {
       try {
@@ -6470,8 +6465,6 @@
       showToast("⚠️ סנכרון הענן אינו זמין כרגע.");
       return;
     }
-    cloudProgressSyncState = "syncing";
-    updateSyncStatusUI();
     await registerIdentityPing(false);
     await ensureSyncCodeRegistered();
     const okProg = cloudProgressDirty ? await pushCloudProgress() : await pullCloudProgress({ silent: false });
