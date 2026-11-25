@@ -1648,6 +1648,38 @@ button,
   background: var(--surface);
 }
 
+.community-note-card.is-flagged {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning-soft) 28%, var(--surface));
+}
+
+.note-inaccuracy-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.note-card-action-btn.note-flag-btn.active {
+  background: var(--warning-soft);
+  border-color: var(--warning);
+  color: var(--warning-ink);
+}
+
+.note-card-action-btn.note-flag-btn:hover {
+  border-color: var(--warning);
+  color: var(--warning-ink);
+  background: var(--warning-soft);
+}
+
 .community-note-head {
   display: flex;
   justify-content: space-between;

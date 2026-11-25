@@ -9,6 +9,7 @@
   const SYNC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
   const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
   const COMMUNITY_NOTES_CACHE_KEY = "med_exam_community_notes_cache_v1";
+  const COMMUNITY_NOTE_FLAGS_CACHE_KEY = "med_exam_community_note_flags_cache_v1";
   const COMMUNITY_PROBLEMS_CACHE_KEY = "med_exam_community_problems_cache_v1";
   const QUESTION_OVERRIDES_CACHE_KEY = "med_exam_question_overrides_cache_v1";
   const TAKEN_NAMES_CACHE_KEY = "med_exam_taken_names_cache_v1";
@@ -300,6 +301,7 @@
   let serverOnline = false;
   let currentMode = "practice"; // practice | exam | drill | flashcard | analytics | leaderboard
   let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
+  let communityNoteFlags = loadCommunityNoteFlagsCache(); // { qId: { noteUserId: { flaggerUserId: { author, emoji, category, createdAt } } } }
   let communityProblems = loadCommunityProblemsCache(); // { qId: { userId: { type, text, author, emoji, category, updatedAt } } }
   let questionOverrides = loadQuestionOverridesCache(); // { qId: { hidden, stem, options, correct, allAccepted, appealNote, subject, updatedAt } }
   let takenNamesMap = loadTakenNamesCache(); // { name: userId }
@@ -360,8 +362,10 @@
   const noteDrafts = {}; // qId -> unsent draft text
   const editingNoteQIds = new Set();
   const pendingDirtyQIds = new Set();
+  const pendingNoteFlagDirtyKeys = new Set(); // `${qId}\0${noteUserId}`
   const pendingProblemDirtyQIds = new Set();
   let cloudWriteQueue = Promise.resolve();
+  let noteFlagWriteQueue = Promise.resolve();
   let problemWriteQueue = Promise.resolve();
   let adminState = {
     authenticated: false,
@@ -1033,6 +1037,23 @@
     } catch {}
   }
 
+  function loadCommunityNoteFlagsCache() {
+    try {
+      const raw = localStorage.getItem(COMMUNITY_NOTE_FLAGS_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveCommunityNoteFlagsCache() {
+    try {
+      localStorage.setItem(COMMUNITY_NOTE_FLAGS_CACHE_KEY, JSON.stringify(communityNoteFlags));
+    } catch {}
+  }
+
   function loadCommunityProblemsCache() {
     try {
       const raw = localStorage.getItem(COMMUNITY_PROBLEMS_CACHE_KEY);
@@ -1318,6 +1339,73 @@
     return list;
   }
 
+  function getNoteFlagsList(qId, noteUserId) {
+    const byFlagger = communityNoteFlags[qId]?.[noteUserId];
+    const list = [];
+    if (byFlagger && typeof byFlagger === "object") {
+      Object.entries(byFlagger).forEach(([flaggerUserId, flagObj]) => {
+        if (!flagObj || typeof flagObj !== "object") return;
+        list.push({
+          flaggerUserId,
+          author: flagObj.author || "אנונימי",
+          emoji: flagObj.emoji || "⚠️",
+          category: flagObj.category || "",
+          createdAt: Number(flagObj.createdAt) || 0,
+          isMine: flaggerUserId === userIdentity.userId,
+        });
+      });
+    }
+    list.sort((a, b) => {
+      if (a.isMine !== b.isMine) return a.isMine ? -1 : 1;
+      return b.createdAt - a.createdAt;
+    });
+    return list;
+  }
+
+  async function toggleNoteFlag(qId, noteUserId) {
+    if (!qId || !noteUserId || noteUserId === userIdentity.userId) return;
+    if (!communityNotes[qId]?.[noteUserId]?.text?.trim()) return;
+
+    identityNeedsCloudCheck = false;
+    const currentlyFlagged = Boolean(communityNoteFlags[qId]?.[noteUserId]?.[userIdentity.userId]);
+    if (currentlyFlagged) {
+      delete communityNoteFlags[qId][noteUserId][userIdentity.userId];
+      if (Object.keys(communityNoteFlags[qId][noteUserId]).length === 0) {
+        delete communityNoteFlags[qId][noteUserId];
+      }
+      if (Object.keys(communityNoteFlags[qId]).length === 0) {
+        delete communityNoteFlags[qId];
+      }
+    } else {
+      if (!communityNoteFlags[qId] || typeof communityNoteFlags[qId] !== "object") {
+        communityNoteFlags[qId] = {};
+      }
+      if (!communityNoteFlags[qId][noteUserId] || typeof communityNoteFlags[qId][noteUserId] !== "object") {
+        communityNoteFlags[qId][noteUserId] = {};
+      }
+      communityNoteFlags[qId][noteUserId][userIdentity.userId] = {
+        author: userIdentity.name,
+        emoji: userIdentity.emoji,
+        category: userIdentity.category,
+        createdAt: Date.now(),
+      };
+    }
+
+    pendingNoteFlagDirtyKeys.add(`${qId}\0${noteUserId}`);
+    saveCommunityNoteFlagsCache();
+    const q = Q_MAP.get(qId);
+    if (q && filteredList[currentIndex]?.id === qId) {
+      renderNotesSection(q, true);
+    }
+
+    const syncOk = await enqueueNoteFlagCloudSync();
+    if (currentlyFlagged) {
+      showToast(syncOk ? "הסימון הוסר מההערה." : "הסימון הוסר מקומית.");
+    } else {
+      showToast(syncOk ? "⚠️ ההערה סומנה כלא מדויקת." : "⚠️ ההערה סומנה מקומית (תסונכרן בענן).");
+    }
+  }
+
   function formatNoteTime(ts) {
     if (!ts) return "";
     try {
@@ -1378,6 +1466,13 @@
       if (Object.keys(communityNotes[qId]).length === 0) {
         delete communityNotes[qId];
       }
+    }
+    if (communityNoteFlags[qId]?.[userIdentity.userId]) {
+      delete communityNoteFlags[qId][userIdentity.userId];
+      if (Object.keys(communityNoteFlags[qId]).length === 0) {
+        delete communityNoteFlags[qId];
+      }
+      saveCommunityNoteFlagsCache();
     }
 
     pendingDirtyQIds.add(qId);
@@ -1441,8 +1536,11 @@
       listEl.appendChild(emptyMsg);
     } else {
       notesList.forEach((n) => {
+        const flagsList = getNoteFlagsList(q.id, n.userId);
+        const hasMyFlag = flagsList.some((f) => f.isMine);
+
         const card = document.createElement("div");
-        card.className = "community-note-card" + (n.isMine ? " is-mine" : "");
+        card.className = "community-note-card" + (n.isMine ? " is-mine" : "") + (flagsList.length > 0 ? " is-flagged" : "");
 
         const head = document.createElement("div");
         head.className = "community-note-head";
@@ -1481,23 +1579,54 @@
           delBtn.onclick = () => deleteMyNote(q.id);
 
           headActions.append(editBtn, delBtn);
-        } else if (adminState.authenticated) {
-          const adminDelBtn = document.createElement("button");
-          adminDelBtn.type = "button";
-          adminDelBtn.className = "note-card-action-btn danger admin-del";
-          adminDelBtn.title = "מחק הערה כמנהל";
-          adminDelBtn.textContent = "🗑️ הסר";
-          adminDelBtn.onclick = () => adminDeleteNote(q.id, n.userId);
-          headActions.appendChild(adminDelBtn);
+        } else {
+          const flagBtn = document.createElement("button");
+          flagBtn.type = "button";
+          flagBtn.className = "note-card-action-btn note-flag-btn" + (hasMyFlag ? " active" : "");
+          flagBtn.title = hasMyFlag ? "בטל סימון אי-דיוק" : "סמן הערה זו כלא מדויקת";
+          flagBtn.setAttribute("aria-pressed", hasMyFlag ? "true" : "false");
+          flagBtn.textContent = hasMyFlag ? "⚠️ סומן כלא מדויק" : "⚠️ לא מדויק";
+          flagBtn.onclick = () => toggleNoteFlag(q.id, n.userId);
+          headActions.appendChild(flagBtn);
+
+          if (adminState.authenticated) {
+            if (flagsList.length > 0) {
+              const clearFlagsBtn = document.createElement("button");
+              clearFlagsBtn.type = "button";
+              clearFlagsBtn.className = "note-card-action-btn";
+              clearFlagsBtn.title = "נקה סימוני אי-דיוק מהערה זו כמנהל";
+              clearFlagsBtn.textContent = "✓ נקה סימונים";
+              clearFlagsBtn.onclick = () => adminClearNoteFlags(q.id, n.userId);
+              headActions.appendChild(clearFlagsBtn);
+            }
+            const adminDelBtn = document.createElement("button");
+            adminDelBtn.type = "button";
+            adminDelBtn.className = "note-card-action-btn danger admin-del";
+            adminDelBtn.title = "מחק הערה כמנהל";
+            adminDelBtn.textContent = "🗑️ הסר";
+            adminDelBtn.onclick = () => adminDeleteNote(q.id, n.userId);
+            headActions.appendChild(adminDelBtn);
+          }
         }
 
         head.append(authorSpan, headActions);
+        card.appendChild(head);
+
+        if (flagsList.length > 0) {
+          const banner = document.createElement("div");
+          banner.className = "note-inaccuracy-banner";
+          const maxNames = 3;
+          const namesText = flagsList.slice(0, maxNames).map((f) => `${f.emoji} ${f.author}`).join(", ");
+          const extra = flagsList.length > maxNames ? ` +${flagsList.length - maxNames}` : "";
+          banner.textContent = `⚠️ סומנה כלא מדויקת (${flagsList.length}) · ${namesText}${extra}`;
+          card.appendChild(banner);
+        }
 
         const textDiv = document.createElement("div");
         textDiv.className = "community-note-text";
         textDiv.textContent = n.text;
 
-        card.append(head, textDiv);
+        card.appendChild(textDiv);
         listEl.appendChild(card);
       });
     }
@@ -1555,6 +1684,56 @@
 
     communityNotes = merged;
     saveCommunityNotesCache();
+  }
+
+  function normalizeCloudNoteFlagsPayload(raw) {
+    if (raw && typeof raw === "object" && raw.noteFlags && typeof raw.noteFlags === "object") {
+      return { version: 1, noteFlags: raw.noteFlags };
+    }
+    return { version: 1, noteFlags: {} };
+  }
+
+  function mergeCloudNoteFlagsIntoLocal(cloudPayload) {
+    const normalized = normalizeCloudNoteFlagsPayload(cloudPayload);
+    const merged = {};
+
+    Object.entries(normalized.noteFlags).forEach(([qId, byNoteUser]) => {
+      if (!byNoteUser || typeof byNoteUser !== "object") return;
+      merged[qId] = {};
+      Object.entries(byNoteUser).forEach(([noteUserId, byFlagger]) => {
+        if (!byFlagger || typeof byFlagger !== "object") return;
+        if (!communityNotes[qId]?.[noteUserId]?.text?.trim()) return;
+        merged[qId][noteUserId] = {};
+        Object.entries(byFlagger).forEach(([flaggerUserId, flagObj]) => {
+          if (!flagObj || typeof flagObj !== "object") return;
+          merged[qId][noteUserId][flaggerUserId] = { ...flagObj };
+        });
+        if (Object.keys(merged[qId][noteUserId]).length === 0) {
+          delete merged[qId][noteUserId];
+        }
+      });
+      if (Object.keys(merged[qId]).length === 0) delete merged[qId];
+    });
+
+    pendingNoteFlagDirtyKeys.forEach((dirtyKey) => {
+      const sepIdx = dirtyKey.indexOf("\0");
+      if (sepIdx <= 0) return;
+      const qId = dirtyKey.slice(0, sepIdx);
+      const noteUserId = dirtyKey.slice(sepIdx + 1);
+      const localMine = communityNoteFlags[qId]?.[noteUserId]?.[userIdentity.userId];
+      if (!merged[qId]) merged[qId] = {};
+      if (!merged[qId][noteUserId]) merged[qId][noteUserId] = {};
+      if (localMine && communityNotes[qId]?.[noteUserId]?.text?.trim()) {
+        merged[qId][noteUserId][userIdentity.userId] = { ...localMine };
+      } else {
+        delete merged[qId][noteUserId][userIdentity.userId];
+        if (Object.keys(merged[qId][noteUserId]).length === 0) delete merged[qId][noteUserId];
+        if (Object.keys(merged[qId]).length === 0) delete merged[qId];
+      }
+    });
+
+    communityNoteFlags = merged;
+    saveCommunityNoteFlagsCache();
   }
 
   async function registerIdentityPing(retried = false) {
@@ -1801,6 +1980,7 @@
             source: "cloud",
             communityVersion: Number(data?.communityVersion) || 0,
             notes: data?.notes && typeof data.notes === "object" ? data.notes : {},
+            noteFlags: data?.noteFlags && typeof data.noteFlags === "object" ? data.noteFlags : {},
             problems: data?.problems && typeof data.problems === "object" ? data.problems : {},
             overrides: data?.overrides && typeof data.overrides === "object" ? data.overrides : {},
             takenNames: data?.takenNames && typeof data.takenNames === "object" ? data.takenNames : {},
@@ -1811,18 +1991,20 @@
       } catch {}
     }
     if (serverOnline) {
-      const [nRes, pRes, oRes] = await Promise.all([
+      const [nRes, nfRes, pRes, oRes] = await Promise.all([
         fetch("/api/community-notes", { cache: "no-store" }).catch(() => null),
+        fetch("/api/community-note-flags", { cache: "no-store" }).catch(() => null),
         fetch("/api/community-problems", { cache: "no-store" }).catch(() => null),
         fetch("/api/question-overrides", { cache: "no-store" }).catch(() => null),
       ]);
       const notes = nRes && nRes.ok ? normalizeCloudPayload(await nRes.json()).notes : communityNotes;
+      const noteFlags = nfRes && nfRes.ok ? normalizeCloudNoteFlagsPayload(await nfRes.json()).noteFlags : communityNoteFlags;
       const problems = pRes && pRes.ok ? normalizeCloudProblemsPayload(await pRes.json()).problems : communityProblems;
       const overridesRaw = oRes && oRes.ok ? await oRes.json() : null;
       const overrides = overridesRaw?.overrides && typeof overridesRaw.overrides === "object"
         ? overridesRaw.overrides
         : questionOverrides;
-      return { source: "local", communityVersion: 0, notes, problems, overrides, takenNames: takenNamesMap };
+      return { source: "local", communityVersion: 0, notes, noteFlags, problems, overrides, takenNames: takenNamesMap };
     }
     throw new Error("Cloud API unreachable");
   }
@@ -1830,6 +2012,7 @@
   function applyCloudCommunityPayload(
     {
       notes = null,
+      noteFlags = null,
       problems = null,
       overrides = null,
       takenNames = null,
@@ -1852,13 +2035,16 @@
       });
     }
 
-    const hasCommunityData = Boolean(notes || problems || overrides || takenNames);
+    const hasCommunityData = Boolean(notes || noteFlags || problems || overrides || takenNames);
     if (!hasCommunityData) return;
 
     const prevOverridesJson = JSON.stringify(questionOverrides);
 
     if (notes && typeof notes === "object") {
       mergeCloudIntoLocal({ version: 1, notes });
+    }
+    if (noteFlags && typeof noteFlags === "object") {
+      mergeCloudNoteFlagsIntoLocal({ version: 1, noteFlags });
     }
     if (problems && typeof problems === "object") {
       mergeCloudProblemsIntoLocal({ version: 1, problems });
@@ -1932,6 +2118,11 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ version: 1, notes: communityNotes }),
       }).catch(() => {});
+      fetch("/api/community-note-flags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: 1, noteFlags: communityNoteFlags }),
+      }).catch(() => {});
       fetch("/api/community-problems", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1961,6 +2152,7 @@
       const data = await fetchBootstrapPayload();
       applyCloudCommunityPayload({
         notes: data.notes,
+        noteFlags: data.noteFlags,
         problems: data.problems,
         overrides: data.overrides,
         takenNames: data.takenNames,
@@ -2457,6 +2649,111 @@
         updateProblemSyncBadge();
       });
     return problemWriteQueue;
+  }
+
+  function enqueueNoteFlagCloudSync() {
+    let lastSyncOk = false;
+    noteFlagWriteQueue = noteFlagWriteQueue
+      .then(async () => {
+        if (pendingNoteFlagDirtyKeys.size === 0) {
+          lastSyncOk = true;
+          return;
+        }
+
+        const syncSnapshot = new Map();
+        pendingNoteFlagDirtyKeys.forEach((dirtyKey) => {
+          const sepIdx = dirtyKey.indexOf("\0");
+          if (sepIdx <= 0) return;
+          const qId = dirtyKey.slice(0, sepIdx);
+          const noteUserId = dirtyKey.slice(sepIdx + 1);
+          const entry = communityNoteFlags[qId]?.[noteUserId]?.[userIdentity.userId];
+          syncSnapshot.set(dirtyKey, { qId, noteUserId, entry: entry ? { ...entry } : null });
+        });
+
+        let anySaved = false;
+        let allSaved = true;
+
+        if (isCloudApiConfigured()) {
+          for (const [dirtyKey, item] of syncSnapshot.entries()) {
+            try {
+              const url = `${CLOUD_API_BASE}/api/note-flags/${encodeURIComponent(item.qId)}/${encodeURIComponent(item.noteUserId)}`;
+              let res;
+              if (item.entry) {
+                const putPayload = () => JSON.stringify({
+                  userId: userIdentity.userId,
+                  clientSecret: userIdentity.clientSecret,
+                  author: userIdentity.name,
+                  emoji: userIdentity.emoji,
+                  category: userIdentity.category,
+                });
+                res = await fetch(url, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: putPayload(),
+                });
+                if (res.status === 409) {
+                  await registerIdentityPing(false);
+                  if (communityNoteFlags[item.qId]?.[item.noteUserId]?.[userIdentity.userId]) {
+                    communityNoteFlags[item.qId][item.noteUserId][userIdentity.userId].author = userIdentity.name;
+                    communityNoteFlags[item.qId][item.noteUserId][userIdentity.userId].emoji = userIdentity.emoji;
+                    communityNoteFlags[item.qId][item.noteUserId][userIdentity.userId].category = userIdentity.category;
+                  }
+                  res = await fetch(url, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: putPayload(),
+                  });
+                }
+              } else {
+                res = await fetch(url, {
+                  method: "DELETE",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    userId: userIdentity.userId,
+                    clientSecret: userIdentity.clientSecret,
+                  }),
+                });
+              }
+
+              if (res.ok) {
+                anySaved = true;
+                const resData = await res.json().catch(() => ({}));
+                if (resData?.flag && communityNoteFlags[item.qId]?.[item.noteUserId]?.[userIdentity.userId]) {
+                  communityNoteFlags[item.qId][item.noteUserId][userIdentity.userId] = resData.flag;
+                }
+                const currentEntry = communityNoteFlags[item.qId]?.[item.noteUserId]?.[userIdentity.userId] || null;
+                if (Boolean(item.entry) === Boolean(currentEntry)) {
+                  pendingNoteFlagDirtyKeys.delete(dirtyKey);
+                }
+              } else {
+                allSaved = false;
+              }
+            } catch {
+              allSaved = false;
+            }
+          }
+          saveCommunityNoteFlagsCache();
+        } else {
+          allSaved = false;
+        }
+
+        if (serverOnline) {
+          fetch("/api/community-note-flags", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version: 1, noteFlags: communityNoteFlags }),
+          }).catch(() => {});
+        }
+
+        lastSyncOk = (allSaved && anySaved) || (!isCloudApiConfigured() && serverOnline);
+        if (!isCloudApiConfigured() && serverOnline) {
+          pendingNoteFlagDirtyKeys.clear();
+        }
+      })
+      .catch(() => {
+        lastSyncOk = false;
+      });
+    return noteFlagWriteQueue.then(() => lastSyncOk);
   }
 
   function enqueueCloudSync() {
@@ -6050,6 +6347,11 @@
         delete communityNotes[qId][targetUserId];
         if (Object.keys(communityNotes[qId]).length === 0) delete communityNotes[qId];
       }
+      if (communityNoteFlags[qId]?.[targetUserId]) {
+        delete communityNoteFlags[qId][targetUserId];
+        if (Object.keys(communityNoteFlags[qId]).length === 0) delete communityNoteFlags[qId];
+        saveCommunityNoteFlagsCache();
+      }
       if (targetUserId === userIdentity.userId && progress.notes && Object.prototype.hasOwnProperty.call(progress.notes, qId)) {
         delete progress.notes[qId];
         if (!progress.noteUpdatedAt) progress.noteUpdatedAt = {};
@@ -6070,6 +6372,29 @@
       showToast("🗑️ ההערה הוסרה בהצלחה.");
     } catch (err) {
       showToast(`❌ שגיאה במחיקת הערה: ${err.message}`);
+    }
+  }
+
+  async function adminClearNoteFlags(qId, noteUserId) {
+    if (!confirm("לנקות את כל סימוני האי-דיוק מהערה זו?")) return;
+    try {
+      await adminFetch(`/api/admin/note-flags/${encodeURIComponent(qId)}/${encodeURIComponent(noteUserId)}`, {
+        method: "DELETE",
+      });
+      if (communityNoteFlags[qId]?.[noteUserId]) {
+        delete communityNoteFlags[qId][noteUserId];
+        if (Object.keys(communityNoteFlags[qId]).length === 0) delete communityNoteFlags[qId];
+        saveCommunityNoteFlagsCache();
+      }
+      if (filteredList.length > 0 && filteredList[currentIndex]?.id === qId) {
+        renderNotesSection(filteredList[currentIndex], true);
+      }
+      if (!el("adminDashboardModal").classList.contains("hidden")) {
+        renderAdminModerationTab();
+      }
+      showToast("✓ סימוני האי-דיוק נוקו בהצלחה.");
+    } catch (err) {
+      showToast(`❌ שגיאה בניקוי סימונים: ${err.message}`);
     }
   }
 
@@ -6368,11 +6693,13 @@
     listWrap.innerHTML = "";
 
     const feed = [];
-    if (adminModerationFilter === "all" || adminModerationFilter === "notes") {
+    if (adminModerationFilter === "all" || adminModerationFilter === "notes" || adminModerationFilter === "flagged_notes") {
       Object.entries(communityNotes).forEach(([qId, byUser]) => {
         if (!byUser || typeof byUser !== "object") return;
         Object.entries(byUser).forEach(([userId, entry]) => {
           if (!entry || typeof entry.text !== "string" || !entry.text.trim()) return;
+          const flagsList = getNoteFlagsList(qId, userId);
+          if (adminModerationFilter === "flagged_notes" && flagsList.length === 0) return;
           feed.push({
             kind: "note",
             qId,
@@ -6381,6 +6708,7 @@
             emoji: entry.emoji || "💬",
             text: entry.text.trim(),
             updatedAt: Number(entry.updatedAt) || 0,
+            flagsCount: flagsList.length,
           });
         });
       });
@@ -6452,6 +6780,12 @@
       timeSpan.textContent = formatNoteTime(item.updatedAt);
 
       badges.append(kindBadge, authorStrong, qRef, timeSpan);
+      if (item.kind === "note" && item.flagsCount > 0) {
+        const flagBadge = document.createElement("span");
+        flagBadge.className = "problem-type-pill out_of_material";
+        flagBadge.textContent = `⚠️ סומנה כלא מדויקת (${item.flagsCount})`;
+        badges.appendChild(flagBadge);
+      }
 
       const actions = document.createElement("div");
       actions.className = "admin-feed-actions";
@@ -6461,6 +6795,15 @@
       jumpBtn.className = "note-card-action-btn";
       jumpBtn.textContent = "🔍 קפוץ לשאלה";
       jumpBtn.onclick = () => jumpToQuestionFromAdmin(item.qId);
+
+      if (item.kind === "note" && item.flagsCount > 0) {
+        const clearFlagsBtn = document.createElement("button");
+        clearFlagsBtn.type = "button";
+        clearFlagsBtn.className = "note-card-action-btn";
+        clearFlagsBtn.textContent = "✓ נקה סימונים";
+        clearFlagsBtn.onclick = () => adminClearNoteFlags(item.qId, item.userId);
+        actions.appendChild(clearFlagsBtn);
+      }
 
       const delBtn = document.createElement("button");
       delBtn.type = "button";
@@ -7015,6 +7358,7 @@
         if (data.communityChanged) {
           applyCloudCommunityPayload({
             notes: data.notes && typeof data.notes === "object" ? data.notes : {},
+            noteFlags: data.noteFlags && typeof data.noteFlags === "object" ? data.noteFlags : {},
             problems: data.problems && typeof data.problems === "object" ? data.problems : {},
             overrides: data.overrides && typeof data.overrides === "object" ? data.overrides : {},
             communityVersion: Number(data.communityVersion) || 0,

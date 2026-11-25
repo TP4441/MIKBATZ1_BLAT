@@ -837,8 +837,9 @@ async function syncDeletionToUserProgress(db, userId, qId, kind, now = Date.now(
 }
 
 async function fetchCommunityData(db) {
-  const [notesRes, probsRes, overridesRes] = await Promise.all([
+  const [notesRes, noteFlagsRes, probsRes, overridesRes] = await Promise.all([
     db.prepare("SELECT q_id, user_id, author, emoji, category, text, updated_at FROM community_notes").all(),
+    db.prepare("SELECT q_id, note_user_id, flagger_user_id, author, emoji, category, created_at FROM note_flags").all(),
     db.prepare("SELECT q_id, user_id, type, text, author, emoji, category, updated_at FROM community_problems").all(),
     db.prepare(
       "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at FROM question_overrides"
@@ -854,6 +855,19 @@ async function fetchCommunityData(db) {
       category: r.category,
       text: r.text,
       updatedAt: Number(r.updated_at) || 0,
+    };
+  }
+
+  const noteFlags = {};
+  for (const r of noteFlagsRes.results || []) {
+    if (!notes[r.q_id]?.[r.note_user_id]) continue;
+    if (!noteFlags[r.q_id]) noteFlags[r.q_id] = {};
+    if (!noteFlags[r.q_id][r.note_user_id]) noteFlags[r.q_id][r.note_user_id] = {};
+    noteFlags[r.q_id][r.note_user_id][r.flagger_user_id] = {
+      author: r.author,
+      emoji: r.emoji,
+      category: r.category,
+      createdAt: Number(r.created_at) || 0,
     };
   }
 
@@ -875,7 +889,7 @@ async function fetchCommunityData(db) {
     overrides[r.q_id] = formatOverrideRow(r);
   }
 
-  return { notes, problems, overrides };
+  return { notes, noteFlags, problems, overrides };
 }
 
 async function handleBootstrap(env) {
@@ -943,6 +957,7 @@ async function handlePoll(request, env) {
 
   if (communityChanged && communityData) {
     payload.notes = communityData.notes;
+    payload.noteFlags = communityData.noteFlags;
     payload.problems = communityData.problems;
     payload.overrides = communityData.overrides;
   }
@@ -1169,11 +1184,11 @@ async function handlePutNote(request, env, qId) {
   const trimmed = text.trim();
   if (!trimmed) {
     const now = Date.now();
-    const delRes = await env.DB
-      .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
-      .bind(qId, userId)
-      .run();
-    if ((delRes?.meta?.changes ?? 1) > 0) {
+    const [delRes, delFlagsRes] = await env.DB.batch([
+      env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+      env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+    ]);
+    if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
       await bumpCommunityVersion(env.DB, now);
       await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
     }
@@ -1224,15 +1239,95 @@ async function handleDeleteNote(request, env, qId) {
 
   if (existingNote) {
     const now = Date.now();
-    await env.DB
-      .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
-      .bind(qId, userId)
-      .run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+      env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+    ]);
     await bumpCommunityVersion(env.DB, now);
     await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
   }
 
   return jsonResponse({ ok: true, deleted: Boolean(existingNote) });
+}
+
+async function handlePutNoteFlag(request, env, qId, noteUserId) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || "").trim();
+  const author = String(body.author || "").trim();
+  const emoji = String(body.emoji || "⚠️").trim();
+  const category = String(body.category || "").trim();
+  const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+
+  if (!noteUserId) return errorResponse("Missing noteUserId", 400);
+  if (userId && userId === noteUserId) {
+    return errorResponse("Cannot flag your own note", 400);
+  }
+
+  const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret, {
+    name: author,
+    emoji,
+    category,
+  });
+  if (!auth.ok) {
+    if (auth.conflict) {
+      const takenNames = await getTakenNamesMap(env.DB);
+      return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
+    }
+    return errorResponse(auth.error, auth.status);
+  }
+
+  const targetNote = await env.DB
+    .prepare("SELECT q_id FROM community_notes WHERE q_id = ? AND user_id = ? AND TRIM(text) != ''")
+    .bind(qId, noteUserId)
+    .first();
+  if (!targetNote) {
+    return errorResponse("Note not found", 404);
+  }
+
+  const createdAt = Date.now();
+  await env.DB
+    .prepare(
+      `INSERT INTO note_flags (q_id, note_user_id, flagger_user_id, author, emoji, category, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(q_id, note_user_id, flagger_user_id) DO UPDATE SET
+         author = excluded.author,
+         emoji = excluded.emoji,
+         category = excluded.category,
+         created_at = excluded.created_at`
+    )
+    .bind(qId, noteUserId, userId, author || "אנונימי", emoji, category, createdAt)
+    .run();
+  await bumpCommunityVersion(env.DB, createdAt);
+
+  return jsonResponse({
+    ok: true,
+    flag: { author: author || "אנונימי", emoji, category, createdAt },
+  });
+}
+
+async function handleDeleteNoteFlag(request, env, qId, noteUserId) {
+  const body = await readJsonBody(request);
+  if (body === null) return errorResponse("Invalid JSON", 400);
+
+  const userId = String(body.userId || request.headers.get("X-User-Id") || "").trim();
+  const clientSecret = String(body.clientSecret || request.headers.get("X-Client-Secret") || "");
+
+  const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret);
+  if (!auth.ok) return errorResponse(auth.error, auth.status);
+
+  const now = Date.now();
+  const delRes = await env.DB
+    .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ? AND flagger_user_id = ?")
+    .bind(qId, noteUserId, userId)
+    .run();
+  const deleted = (delRes?.meta?.changes ?? 0) > 0;
+  if (deleted) {
+    await bumpCommunityVersion(env.DB, now);
+  }
+
+  return jsonResponse({ ok: true, deleted });
 }
 
 async function handlePutProblem(request, env, qId) {
@@ -1749,11 +1844,12 @@ async function handleSyncLink(request, env) {
     const guestAuth = await verifyExistingClientSecret(env.DB, guestUserId, guestClientSecret);
     if (guestAuth.ok) {
       if (mode === "merge") {
-        const [guestNotesRes, targetNotesRes, guestProbsRes, targetProbsRes] = await Promise.all([
+        const [guestNotesRes, targetNotesRes, guestProbsRes, targetProbsRes, guestFlagsRes] = await Promise.all([
           env.DB.prepare("SELECT q_id, text, updated_at FROM community_notes WHERE user_id = ?").bind(guestUserId).all(),
           env.DB.prepare("SELECT q_id FROM community_notes WHERE user_id = ?").bind(target.user_id).all(),
           env.DB.prepare("SELECT q_id, type, text, updated_at FROM community_problems WHERE user_id = ?").bind(guestUserId).all(),
           env.DB.prepare("SELECT q_id FROM community_problems WHERE user_id = ?").bind(target.user_id).all(),
+          env.DB.prepare("SELECT q_id, note_user_id, created_at FROM note_flags WHERE flagger_user_id = ?").bind(guestUserId).all(),
         ]);
 
         const targetNoteQIds = new Set((targetNotesRes.results || []).map((r) => r.q_id));
@@ -1768,11 +1864,36 @@ async function handleSyncLink(request, env) {
                   `INSERT INTO community_notes (q_id, user_id, author, emoji, category, text, updated_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)`
                 )
-                .bind(gn.q_id, target.user_id, target.name, target.emoji, target.category, gn.text, gn.updated_at)
+                .bind(gn.q_id, target.user_id, target.name, target.emoji, target.category, gn.text, gn.updated_at),
+              env.DB
+                .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ? AND flagger_user_id = ?")
+                .bind(gn.q_id, guestUserId, target.user_id),
+              env.DB
+                .prepare("UPDATE OR IGNORE note_flags SET note_user_id = ? WHERE q_id = ? AND note_user_id = ?")
+                .bind(target.user_id, gn.q_id, guestUserId)
             );
           }
           stmts.push(
+            env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(gn.q_id, guestUserId),
             env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(gn.q_id, guestUserId)
+          );
+        }
+
+        for (const gf of guestFlagsRes.results || []) {
+          if (gf.note_user_id !== target.user_id) {
+            stmts.push(
+              env.DB
+                .prepare(
+                  `INSERT OR IGNORE INTO note_flags (q_id, note_user_id, flagger_user_id, author, emoji, category, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)`
+                )
+                .bind(gf.q_id, gf.note_user_id, target.user_id, target.name, target.emoji, target.category, gf.created_at)
+            );
+          }
+          stmts.push(
+            env.DB
+              .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ? AND flagger_user_id = ?")
+              .bind(gf.q_id, gf.note_user_id, guestUserId)
           );
         }
 
@@ -1810,11 +1931,12 @@ async function handleSyncLink(request, env) {
         }
       }
 
-      const [remNotes, remProbs] = await Promise.all([
+      const [remNotes, remProbs, remFlags] = await Promise.all([
         env.DB.prepare("SELECT COUNT(*) AS cnt FROM community_notes WHERE user_id = ?").bind(guestUserId).first(),
         env.DB.prepare("SELECT COUNT(*) AS cnt FROM community_problems WHERE user_id = ?").bind(guestUserId).first(),
+        env.DB.prepare("SELECT COUNT(*) AS cnt FROM note_flags WHERE flagger_user_id = ? OR note_user_id = ?").bind(guestUserId, guestUserId).first(),
       ]);
-      const remainingCount = (Number(remNotes?.cnt) || 0) + (Number(remProbs?.cnt) || 0);
+      const remainingCount = (Number(remNotes?.cnt) || 0) + (Number(remProbs?.cnt) || 0) + (Number(remFlags?.cnt) || 0);
       if (remainingCount === 0) {
         await env.DB.batch([
           env.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(guestUserId),
@@ -2219,6 +2341,14 @@ export default {
         if (method === "DELETE") return await handleDeleteNote(request, env, qId);
       }
 
+      const noteFlagMatch = path.match(/^\/api\/note-flags\/([^/]+)\/([^/]+)$/);
+      if (noteFlagMatch) {
+        const qId = decodeURIComponent(noteFlagMatch[1]);
+        const noteUserId = decodeURIComponent(noteFlagMatch[2]);
+        if (method === "PUT") return await handlePutNoteFlag(request, env, qId, noteUserId);
+        if (method === "DELETE") return await handleDeleteNoteFlag(request, env, qId, noteUserId);
+      }
+
       const problemMatch = path.match(/^\/api\/problems\/([^/]+)$/);
       if (problemMatch) {
         const qId = decodeURIComponent(problemMatch[1]);
@@ -2261,15 +2391,30 @@ export default {
           const qId = decodeURIComponent(adminNoteMatch[1]);
           const userId = decodeURIComponent(adminNoteMatch[2]);
           const now = Date.now();
-          const delRes = await env.DB
-            .prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?")
-            .bind(qId, userId)
-            .run();
-          if ((delRes?.meta?.changes ?? 1) > 0) {
+          const [delRes, delFlagsRes] = await env.DB.batch([
+            env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+            env.DB.prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+          ]);
+          if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
             await bumpCommunityVersion(env.DB, now);
             await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
           }
           return jsonResponse({ ok: true, qId, userId });
+        }
+
+        const adminNoteFlagsMatch = path.match(/^\/api\/admin\/note-flags\/([^/]+)\/([^/]+)$/);
+        if (adminNoteFlagsMatch && method === "DELETE") {
+          const qId = decodeURIComponent(adminNoteFlagsMatch[1]);
+          const noteUserId = decodeURIComponent(adminNoteFlagsMatch[2]);
+          const now = Date.now();
+          const delRes = await env.DB
+            .prepare("DELETE FROM note_flags WHERE q_id = ? AND note_user_id = ?")
+            .bind(qId, noteUserId)
+            .run();
+          if ((delRes?.meta?.changes ?? 0) > 0) {
+            await bumpCommunityVersion(env.DB, now);
+          }
+          return jsonResponse({ ok: true, qId, noteUserId });
         }
 
         const adminProblemMatch = path.match(/^\/api\/admin\/problems\/([^/]+)\/([^/]+)$/);

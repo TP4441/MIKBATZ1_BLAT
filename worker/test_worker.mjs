@@ -35,6 +35,7 @@ async function run() {
     assert.equal(typeof b.data.communityVersion, "number");
     assert.ok(b.data.communityVersion >= 1);
     assert.equal(typeof b.data.notes, "object");
+    assert.equal(typeof b.data.noteFlags, "object");
     assert.equal(typeof b.data.problems, "object");
     assert.equal(typeof b.data.overrides, "object");
     assert.equal(typeof b.data.takenNames, "object");
@@ -61,6 +62,7 @@ async function run() {
       ["PUT", "/api/admin/overrides/2026_q001", { hidden: true }],
       ["DELETE", "/api/admin/overrides/2026_q001"],
       ["DELETE", "/api/admin/notes/2026_q001/u_fake"],
+      ["DELETE", "/api/admin/note-flags/2026_q001/u_fake"],
       ["DELETE", "/api/admin/problems/2026_q001/u_fake"],
       ["POST", "/api/admin/import-legacy", { notes: {}, problems: {} }],
     ];
@@ -986,6 +988,115 @@ async function run() {
     assert.equal(sessGet.data.progress.studySession.mode, "flashcard");
 
     console.log("✓ Smart polling (/api/poll) conditional sync & 403 handling OK");
+  }
+
+  // 8b. Community note inaccuracy flags
+  {
+    const flagger = {
+      userId: "u_student_c",
+      name: "מנגו",
+      emoji: "🥭",
+      category: "פירות",
+      clientSecret: "secret_ccc_123456",
+    };
+    const pollBefore = await req("/api/poll");
+    const vBefore = pollBefore.data.communityVersion;
+
+    // Student A cannot flag own note (2026_q010 created in step 8)
+    const selfFlag = await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+      },
+    });
+    assert.equal(selfFlag.status, 400, "Cannot flag own note");
+
+    // Flagging non-existent note returns 404
+    const missingNoteFlag = await req(`/api/note-flags/2026_q999/${studentA.userId}`, {
+      method: "PUT",
+      body: {
+        userId: flagger.userId,
+        clientSecret: flagger.clientSecret,
+        author: flagger.name,
+        emoji: flagger.emoji,
+        category: flagger.category,
+      },
+    });
+    assert.equal(missingNoteFlag.status, 404);
+
+    // Flagger flags Student A's note
+    const flagRes = await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+      method: "PUT",
+      body: {
+        userId: flagger.userId,
+        clientSecret: flagger.clientSecret,
+        author: flagger.name,
+        emoji: flagger.emoji,
+        category: flagger.category,
+      },
+    });
+    assert.equal(flagRes.status, 200);
+    assert.equal(flagRes.data.ok, true);
+
+    const pollAfterFlag = await req(`/api/poll?communityVersion=${vBefore}`);
+    assert.equal(pollAfterFlag.status, 200);
+    assert.equal(pollAfterFlag.data.communityChanged, true);
+    assert.equal(pollAfterFlag.data.noteFlags["2026_q010"][studentA.userId][flagger.userId].author, flagger.name);
+
+    // Flagger unflags Student A's note
+    const unflagRes = await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+      method: "DELETE",
+      body: {
+        userId: flagger.userId,
+        clientSecret: flagger.clientSecret,
+      },
+    });
+    assert.equal(unflagRes.status, 200);
+    assert.equal(unflagRes.data.deleted, true);
+
+    // Re-flag then test admin clear flags + note deletion cascade
+    await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+      method: "PUT",
+      body: {
+        userId: flagger.userId,
+        clientSecret: flagger.clientSecret,
+        author: flagger.name,
+        emoji: flagger.emoji,
+        category: flagger.category,
+      },
+    });
+    const adminClearRes = await req(`/api/admin/note-flags/2026_q010/${studentA.userId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(adminClearRes.status, 200);
+    const bootAfterClear = await req("/api/bootstrap");
+    assert.equal(bootAfterClear.data.noteFlags["2026_q010"]?.[studentA.userId], undefined);
+
+    // Re-flag then delete note -> flags cascade-deleted
+    await req(`/api/note-flags/2026_q010/${studentA.userId}`, {
+      method: "PUT",
+      body: {
+        userId: flagger.userId,
+        clientSecret: flagger.clientSecret,
+        author: flagger.name,
+        emoji: flagger.emoji,
+        category: flagger.category,
+      },
+    });
+    const delNoteRes = await req("/api/notes/2026_q010", {
+      method: "DELETE",
+      body: { userId: studentA.userId, clientSecret: studentA.clientSecret },
+    });
+    assert.equal(delNoteRes.status, 200);
+    const bootAfterDelNote = await req("/api/bootstrap");
+    assert.equal(bootAfterDelNote.data.noteFlags["2026_q010"]?.[studentA.userId], undefined);
+
+    console.log("✓ Community note inaccuracy flags (flag/unflag/admin-clear/cascade) OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts
