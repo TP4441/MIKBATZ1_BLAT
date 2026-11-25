@@ -346,6 +346,17 @@
   let shuffledQuestionOrder = null; // null or array of qIds
   let drillShuffledOrder = null;    // null or array of qIds for drill mode
   let drillSessionAttempts = new Map(); // qId -> attempt answered during current Drill visit
+  let drillSessionStruck = new Map();   // qId -> Set of original option indices struck during current Drill visit
+
+  function clearDrillSessionState(qId = null) {
+    if (qId) {
+      drillSessionAttempts.delete(qId);
+      drillSessionStruck.delete(qId);
+    } else {
+      drillSessionAttempts.clear();
+      drillSessionStruck.clear();
+    }
+  }
   let lastQIdByMode = {};           // mode -> last viewed qId
   let lastIndexByMode = {};         // mode -> fallback index
   let isRestoringSession = false;
@@ -4176,7 +4187,9 @@
       ? (drillSessionAttempts.get(q.id) || null)
       : progress.attempts[q.id];
     const fl = progress.flags[q.id] || {};
-    const struckSet = new Set(progress.struck[q.id] || []);
+    const struckSet = currentMode === "drill"
+      ? (drillSessionStruck.get(q.id) || new Set())
+      : new Set(progress.struck[q.id] || []);
     flashcardRevealed = false;
 
     const examBadge = el("qExamBadge");
@@ -4389,6 +4402,15 @@
   }
 
   function toggleStrike(qId, origIdx) {
+    if (currentMode === "drill") {
+      const set = new Set(drillSessionStruck.get(qId) || []);
+      if (set.has(origIdx)) set.delete(origIdx);
+      else set.add(origIdx);
+      if (set.size > 0) drillSessionStruck.set(qId, set);
+      else drillSessionStruck.delete(qId);
+      renderQuestion();
+      return;
+    }
     const arr = new Set(progress.struck[qId] || []);
     if (arr.has(origIdx)) arr.delete(origIdx);
     else arr.add(origIdx);
@@ -4505,13 +4527,13 @@
       if (idxOfPrev >= 0) {
         currentIndex = (idxOfPrev + 1) % filteredList.length;
         if (currentIndex <= idxOfPrev) {
-          drillSessionAttempts.clear();
+          clearDrillSessionState();
         }
       } else {
         const wrapped = prevIdx >= filteredList.length;
         currentIndex = prevIdx % filteredList.length;
         if (wrapped) {
-          drillSessionAttempts.clear();
+          clearDrillSessionState();
         }
       }
       renderQuestion();
@@ -4599,7 +4621,7 @@
     setShuffleOptionsEnabled(false);
     shuffledQuestionOrder = null;
     drillShuffledOrder = null;
-    drillSessionAttempts.clear();
+    clearDrillSessionState();
     lastQIdByMode = {};
     lastIndexByMode = {};
     renderFilterChips();
@@ -5827,7 +5849,7 @@
       recordCurrentModePosition();
     }
     if (mode === "drill" && (prevMode !== "drill" || fromUser)) {
-      drillSessionAttempts.clear();
+      clearDrillSessionState();
     }
 
     currentMode = mode;
@@ -6156,7 +6178,7 @@
       if (filteredList.length === 0) return;
       const q = filteredList[currentIndex];
       if (currentMode === "drill") {
-        drillSessionAttempts.delete(q.id);
+        clearDrillSessionState(q.id);
         renderQuestion();
         return;
       }
@@ -6461,7 +6483,7 @@
         progress.resetAt = Date.now();
         shuffledQuestionOrder = null;
         drillShuffledOrder = null;
-        drillSessionAttempts.clear();
+        clearDrillSessionState();
         lastQIdByMode = {};
         lastIndexByMode = {};
         setShuffleOptionsEnabled(false);
