@@ -2151,15 +2151,49 @@ body.exam-focus-mode .topbar-brand-row {
   display: flex;
   flex-direction: column;
 }
+.hud-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .hud-label {
   font-size: 0.74rem;
   color: var(--text-muted);
   font-weight: 600;
 }
+.hud-timer-toggle {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.hud-timer-toggle:hover,
+.hud-timer-toggle[aria-pressed="true"] {
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  border-color: var(--primary-ink);
+}
 .hud-timer {
   font-size: 1.35rem;
   color: var(--primary-ink);
   font-weight: 800;
+}
+.hud-timer.is-hidden {
+  color: var(--text-muted);
+  font-size: 1rem;
+  font-weight: 700;
+}
+.sim-ratio-hint {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  margin: 2px 0 0;
 }
 .hud-actions {
   display: flex;

@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = "med_exam_cluster1_progress_v1";
   const THEME_KEY = "med_exam_theme_v1";
+  const SIM_HIDE_TIMER_KEY = "med_exam_sim_hide_timer_v1";
   const IDENTITY_KEY = "med_exam_user_identity_v1";
   const DEVICE_ID_KEY = "med_exam_device_id_v1";
   const ONBOARDING_SEEN_KEY = "med_exam_onboarding_v1_seen";
@@ -442,6 +443,7 @@
     initialSeconds: 0,
     elapsedSeconds: 0,
     hasTimer: false,
+    timerHidden: false,
     label: "",
     simType: "full",
     examName: "",
@@ -693,6 +695,7 @@
       initialSeconds,
       elapsedSeconds,
       hasTimer,
+      timerHidden: Boolean(raw.timerHidden),
       shuffleOpts: Boolean(raw.shuffleOpts),
       deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
     };
@@ -5017,6 +5020,178 @@
     }
   }
 
+  const CUSTOM_SIM_SUBJECT_WEIGHTS = {
+    "פתולוגיה": 0,
+    "פתולוגיית ריאות": 0,
+    "פתולוגיית קרדיולוגיה": 0,
+    "מבואות": 1,
+    "אונקולוגיה": 1,
+    "נוירולוגיה": 1,
+    "ריאות": 3,
+    "קרדיולוגיה": 3,
+  };
+
+  function loadSimHideTimerPref() {
+    try {
+      return localStorage.getItem(SIM_HIDE_TIMER_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveSimHideTimerPref(hidden) {
+    try {
+      localStorage.setItem(SIM_HIDE_TIMER_KEY, hidden ? "1" : "0");
+    } catch {}
+  }
+
+  function shuffleArrayInPlace(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  function getCustomSimSubjectWeight(subj) {
+    return Object.prototype.hasOwnProperty.call(CUSTOM_SIM_SUBJECT_WEIGHTS, subj)
+      ? CUSTOM_SIM_SUBJECT_WEIGHTS[subj]
+      : 1;
+  }
+
+  function computeWeightedSubjectPlan(subjects, availableCounts, requestedCount, { deterministic = false } = {}) {
+    const alloc = new Map(subjects.map((s) => [s, 0]));
+    const eligible = subjects.filter((s) => (availableCounts.get(s) || 0) > 0);
+    if (eligible.length === 0 || requestedCount <= 0) return alloc;
+
+    const positive = eligible.filter((s) => getCustomSimSubjectWeight(s) > 0);
+    const active = positive.length > 0 ? positive : eligible;
+    const weightOf = (s) => (positive.length > 0 ? getCustomSimSubjectWeight(s) : 1);
+
+    const totalCap = active.reduce((sum, s) => sum + (availableCounts.get(s) || 0), 0);
+    let remaining = Math.min(requestedCount, totalCap);
+    let unsaturated = [...active];
+
+    while (remaining > 0 && unsaturated.length > 0) {
+      const totalW = unsaturated.reduce((sum, s) => sum + weightOf(s), 0);
+      if (totalW <= 0) break;
+
+      let saturatedAny = false;
+      const floors = new Map();
+      for (const s of unsaturated) {
+        const room = (availableCounts.get(s) || 0) - (alloc.get(s) || 0);
+        const exact = (remaining * weightOf(s)) / totalW;
+        const fl = Math.floor(exact);
+        if (fl >= room && room > 0) {
+          alloc.set(s, (alloc.get(s) || 0) + room);
+          remaining -= room;
+          saturatedAny = true;
+        } else {
+          floors.set(s, { fl, rem: exact - fl });
+        }
+      }
+
+      if (saturatedAny) {
+        unsaturated = unsaturated.filter((s) => (alloc.get(s) || 0) < (availableCounts.get(s) || 0));
+        continue;
+      }
+
+      for (const [s, info] of floors.entries()) {
+        if (info.fl > 0) {
+          alloc.set(s, (alloc.get(s) || 0) + info.fl);
+          remaining -= info.fl;
+        }
+      }
+
+      if (remaining > 0) {
+        const candidates = unsaturated.filter((s) => (alloc.get(s) || 0) < (availableCounts.get(s) || 0));
+        if (!deterministic) shuffleArrayInPlace(candidates);
+        candidates.sort((a, b) => (floors.get(b)?.rem || 0) - (floors.get(a)?.rem || 0));
+        for (const s of candidates) {
+          if (remaining <= 0) break;
+          alloc.set(s, (alloc.get(s) || 0) + 1);
+          remaining--;
+        }
+      }
+      break;
+    }
+
+    return alloc;
+  }
+
+  function buildWeightedCustomSimPool(chosenSubjs, count) {
+    const effectiveSubjs = chosenSubjs.size > 0 ? Array.from(chosenSubjs) : getUniqueSubjects();
+    const buckets = new Map();
+    const availableCounts = new Map();
+    for (const s of effectiveSubjs) {
+      buckets.set(s, []);
+    }
+    for (const q of QUESTIONS) {
+      const s = getSubject(q);
+      if (buckets.has(s)) {
+        buckets.get(s).push(q);
+      }
+    }
+    for (const [s, arr] of buckets.entries()) {
+      shuffleArrayInPlace(arr);
+      availableCounts.set(s, arr.length);
+    }
+    const activeSubjects = effectiveSubjs.filter((s) => (availableCounts.get(s) || 0) > 0);
+    const alloc = computeWeightedSubjectPlan(activeSubjects, availableCounts, count);
+    const pool = [];
+    for (const s of activeSubjects) {
+      const n = alloc.get(s) || 0;
+      if (n > 0) {
+        pool.push(...buckets.get(s).slice(0, n));
+      }
+    }
+    return shuffleArrayInPlace(pool);
+  }
+
+  function updateCustomSimRatioHint() {
+    const hintEl = el("simRatioHint");
+    const simSubjWrap = el("simSubjectChips");
+    if (!hintEl || !simSubjWrap) return;
+
+    const chosenSubjs = new Set(
+      Array.from(simSubjWrap.querySelectorAll(".chip.active")).map((b) => b.dataset.subj)
+    );
+    const effectiveSubjs = chosenSubjs.size > 0 ? Array.from(chosenSubjs) : getUniqueSubjects();
+    const availableCounts = new Map();
+    for (const s of effectiveSubjs) availableCounts.set(s, 0);
+    for (const q of QUESTIONS) {
+      const s = getSubject(q);
+      if (availableCounts.has(s)) {
+        availableCounts.set(s, availableCounts.get(s) + 1);
+      }
+    }
+
+    const activeSubjects = effectiveSubjs.filter((s) => (availableCounts.get(s) || 0) > 0);
+    const count = Math.max(5, Math.min(200, parseInt(el("simCustomCount")?.value, 10) || 30));
+    const alloc = computeWeightedSubjectPlan(activeSubjects, availableCounts, count, { deterministic: true });
+
+    let totalPlanned = 0;
+    alloc.forEach((n) => {
+      totalPlanned += n;
+    });
+
+    if (totalPlanned === 0) {
+      hintEl.textContent = "אין שאלות זמינות למקצועות שנבחרו.";
+      return;
+    }
+
+    const parts = activeSubjects
+      .map((s) => ({ subj: s, n: alloc.get(s) || 0 }))
+      .sort((a, b) => b.n - a.n || a.subj.localeCompare(b.subj, "he"))
+      .map(({ subj, n }) => {
+        if (n === 0) return `${subj} 0`;
+        const pct = Math.round((n / totalPlanned) * 100);
+        return `${subj} ${n} (${pct}%)`;
+      });
+
+    hintEl.textContent = `חלוקה לפי יחס (${totalPlanned} שאלות): ${parts.join(" · ")}`;
+  }
+
   // Exam Simulation
   function initExamSetup() {
     const sel = el("simExamSelect");
@@ -5036,10 +5211,18 @@
       btn.className = "chip active";
       btn.dataset.subj = s;
       btn.textContent = formatSubject(s);
-      btn.onclick = () => btn.classList.toggle("active");
+      btn.onclick = () => {
+        btn.classList.toggle("active");
+        updateCustomSimRatioHint();
+      };
       simSubjWrap.appendChild(btn);
     });
 
+    if (el("simHideTimer")) {
+      el("simHideTimer").checked = loadSimHideTimerPref();
+    }
+
+    updateCustomSimRatioHint();
     renderExamHistory();
   }
 
@@ -5123,6 +5306,7 @@
       initialSeconds: simState.hasTimer ? Math.max(0, simState.initialSeconds || 0) : 0,
       elapsedSeconds: Math.max(0, Math.floor(Number(simState.elapsedSeconds) || 0)),
       hasTimer: Boolean(simState.hasTimer),
+      timerHidden: Boolean(simState.timerHidden),
       shuffleOpts: Boolean(simState.shuffleOpts),
       deviceId,
     };
@@ -5159,7 +5343,11 @@
       ? Object.keys(saved.answers).filter((id) => validSet.has(id)).length
       : 0;
     const totalCount = validSet.size;
-    const timerPart = saved.hasTimer ? ` · נותרו ${formatMmSs(saved.secondsLeft)}` : " · ללא טיימר";
+    const timerPart = saved.hasTimer
+      ? saved.timerHidden
+        ? " · טיימר מוסתר"
+        : ` · נותרו ${formatMmSs(saved.secondsLeft)}`
+      : " · ללא טיימר";
     const labelPart = saved.label ? ` · ${saved.label}` : "";
     textEl.textContent = `יש לך סימולציה שלא הושלמה${labelPart} (${answeredCount}/${totalCount} שאלות${timerPart})`;
     banner.classList.remove("hidden");
@@ -5168,11 +5356,7 @@
   function startSimTimer() {
     clearInterval(simState.timerId);
     simState.timerId = null;
-    if (simState.hasTimer && simState.secondsLeft > 0) {
-      updateSimTimerDisplay();
-    } else {
-      el("simTimerDisplay").textContent = "ללא הגבלה";
-    }
+    updateSimTimerDisplay();
     simState.timerId = setInterval(() => {
       if (!simState.active) {
         clearInterval(simState.timerId);
@@ -5246,6 +5430,7 @@
       initialSeconds: hasTimer ? Math.max(secondsLeft, Number(saved.initialSeconds) || 0) : 0,
       elapsedSeconds: Math.max(0, Number(saved.elapsedSeconds) || 0),
       hasTimer,
+      timerHidden: saved.timerHidden !== undefined ? Boolean(saved.timerHidden) : loadSimHideTimerPref(),
       label: saved.label || `סימולציה (${questions.length} שאלות)`,
       simType: saved.simType === "custom" ? "custom" : "full",
       examName: saved.examName || "",
@@ -5275,6 +5460,7 @@
     customExamName = "",
     customMins = null,
     customShuffleOpts = null,
+    customTimerHidden = null,
   } = {}) {
     hasUserInteractedWithNav = true;
     const selectedRadioType = document.querySelector('input[name="simType"]:checked')?.value || "full";
@@ -5295,9 +5481,7 @@
         Array.from(el("simSubjectChips").querySelectorAll(".chip.active")).map((b) => b.dataset.subj)
       );
       const count = Math.max(5, Math.min(200, parseInt(el("simCustomCount").value, 10) || 30));
-      let candidates = QUESTIONS.filter((q) => chosenSubjs.size === 0 || chosenSubjs.has(getSubject(q)));
-      candidates = [...candidates].sort(() => Math.random() - 0.5);
-      pool = candidates.slice(0, count);
+      pool = buildWeightedCustomSimPool(chosenSubjs, count);
       label = `סימולציה מותאמת (${pool.length} שאלות)`;
     }
 
@@ -5312,6 +5496,9 @@
     const shuffleOpts = customShuffleOpts !== null
       ? Boolean(customShuffleOpts)
       : el("simShuffleOpts").checked;
+    const timerHidden = customTimerHidden !== null
+      ? Boolean(customTimerHidden)
+      : Boolean(el("simHideTimer")?.checked ?? loadSimHideTimerPref());
 
     clearInterval(simState.timerId);
     simReviewState.active = false;
@@ -5326,6 +5513,7 @@
       initialSeconds: mins * 60,
       elapsedSeconds: 0,
       hasTimer: mins > 0,
+      timerHidden,
       label,
       simType: simType === "custom" ? "custom" : "full",
       examName,
@@ -5358,9 +5546,33 @@
   }
 
   function updateSimTimerDisplay() {
-    const m = Math.floor(simState.secondsLeft / 60);
-    const s = simState.secondsLeft % 60;
-    el("simTimerDisplay").textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    const displayEl = el("simTimerDisplay");
+    const toggleBtn = el("btnToggleSimTimer");
+    if (!displayEl) return;
+
+    if (!simState.hasTimer) {
+      displayEl.textContent = "ללא הגבלה";
+      displayEl.classList.remove("is-hidden");
+      if (toggleBtn) toggleBtn.classList.add("hidden");
+      return;
+    }
+
+    if (toggleBtn) {
+      toggleBtn.classList.remove("hidden");
+      toggleBtn.setAttribute("aria-pressed", simState.timerHidden ? "true" : "false");
+      toggleBtn.textContent = simState.timerHidden ? "👁️ הצג" : "הסתר";
+      toggleBtn.title = simState.timerHidden ? "הצג את הטיימר" : "הסתר את הטיימר";
+      toggleBtn.setAttribute("aria-label", simState.timerHidden ? "הצג טיימר" : "הסתר טיימר");
+    }
+
+    if (simState.timerHidden) {
+      displayEl.textContent = "מוסתר";
+      displayEl.classList.add("is-hidden");
+      return;
+    }
+
+    displayEl.classList.remove("is-hidden");
+    displayEl.textContent = formatMmSs(simState.secondsLeft);
   }
 
   function renderSimGrid() {
@@ -7676,6 +7888,18 @@
     el("btnCardForgot").onclick = () => rateFlashcard(false);
 
     // Exam Simulation
+    el("simCustomCount")?.addEventListener("input", updateCustomSimRatioHint);
+    el("simHideTimer")?.addEventListener("change", (e) => {
+      saveSimHideTimerPref(e.target.checked);
+    });
+    el("btnToggleSimTimer")?.addEventListener("click", () => {
+      if (!simState.active || !simState.hasTimer) return;
+      simState.timerHidden = !simState.timerHidden;
+      saveSimHideTimerPref(simState.timerHidden);
+      if (el("simHideTimer")) el("simHideTimer").checked = simState.timerHidden;
+      updateSimTimerDisplay();
+      persistActiveSimulation({ syncCloud: true });
+    });
     el("btnStartSim").onclick = () => startSimulation();
     el("btnPauseSim")?.addEventListener("click", pauseSimulation);
     el("btnToggleSimGrid").onclick = () => el("simGridPanel").classList.toggle("hidden");

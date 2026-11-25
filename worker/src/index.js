@@ -365,6 +365,7 @@ function sanitizeActiveSim(raw) {
     initialSeconds,
     elapsedSeconds,
     hasTimer,
+    timerHidden: Boolean(raw.timerHidden),
     shuffleOpts: Boolean(raw.shuffleOpts),
     deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
   };

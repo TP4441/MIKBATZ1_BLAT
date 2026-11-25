@@ -486,6 +486,7 @@
                 <label>מקצועות:</label>
                 <div class="chips-wrap" id="simSubjectChips"></div>
               </div>
+              <p class="muted sim-ratio-hint" id="simRatioHint"></p>
             </div>
           </div>
 
@@ -495,6 +496,10 @@
               <label for="simMinutes">זמן מבחן (בדקות, 0 = ללא טיימר):</label>
               <input type="number" id="simMinutes" min="0" max="300" value="90" />
             </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="simHideTimer" />
+              <span>הסתר את הטיימר בזמן המבחן</span>
+            </label>
             <label class="checkbox-row">
               <input type="checkbox" id="simShuffleOpts" />
               <span>ערבב סדר מסיחים בכל שאלה</span>
@@ -507,8 +512,11 @@
       <div class="exam-active hidden" id="examActive">
         <div class="exam-hud card">
           <div class="hud-stats">
-            <div class="hud-item">
-              <span class="hud-label">⏱️ זמן שנותר</span>
+            <div class="hud-item hud-timer-item">
+              <div class="hud-label-row">
+                <span class="hud-label">⏱️ זמן שנותר</span>
+                <button type="button" class="hud-timer-toggle" id="btnToggleSimTimer" title="הסתר את הטיימר" aria-label="הסתר טיימר" aria-pressed="false">הסתר</button>
+              </div>
               <strong class="hud-timer tabular-text" id="simTimerDisplay">90:00</strong>
             </div>
             <div class="hud-divider" aria-hidden="true"></div>
