@@ -3435,16 +3435,24 @@
     renderQuestion();
   }
 
+  /**
+   * Toggle a persistent per-question flag ('star' | 'unsure' | 'problem') and sync progress.
+   */
+  function toggleQuestionFlag(qId, flagName) {
+    if (!qId) return;
+    const now = Date.now();
+    if (!progress.flags[qId]) progress.flags[qId] = {};
+    if (!progress.flagUpdatedAt) progress.flagUpdatedAt = {};
+    if (!progress.flagUpdatedAt[qId]) progress.flagUpdatedAt[qId] = {};
+    progress.flags[qId][flagName] = !progress.flags[qId][flagName];
+    progress.flagUpdatedAt[qId][flagName] = now;
+    saveProgress();
+  }
+
   function toggleFlag(flagName) {
     if (filteredList.length === 0) return;
     const q = filteredList[currentIndex];
-    const now = Date.now();
-    if (!progress.flags[q.id]) progress.flags[q.id] = {};
-    if (!progress.flagUpdatedAt) progress.flagUpdatedAt = {};
-    if (!progress.flagUpdatedAt[q.id]) progress.flagUpdatedAt[q.id] = {};
-    progress.flags[q.id][flagName] = !progress.flags[q.id][flagName];
-    progress.flagUpdatedAt[q.id][flagName] = now;
-    saveProgress();
+    toggleQuestionFlag(q.id, flagName);
     if (currentMode === "drill") {
       renderFilterChips();
       updateFilterCountsUI();
@@ -3944,10 +3952,18 @@
     simState.questions.forEach((q, idx) => {
       const cell = document.createElement("button");
       cell.className = "sim-cell";
-      if (simState.answers.has(q.id)) cell.classList.add("answered");
-      if (simState.flagged.has(q.id)) cell.classList.add("flagged");
+      const isAnswered = simState.answers.has(q.id);
+      const isFlagged = simState.flagged.has(q.id);
+      const isUnsure = Boolean(progress.flags[q.id]?.unsure);
+      if (isAnswered) cell.classList.add("answered");
+      if (isFlagged) cell.classList.add("flagged");
+      if (isUnsure) cell.classList.add("unsure");
       if (idx === simState.currentIndex) cell.classList.add("current");
       cell.textContent = idx + 1;
+      const tags = [];
+      if (isFlagged) tags.push("סומנה לבדיקה");
+      if (isUnsure) tags.push("התלבטתי");
+      if (tags.length > 0) cell.title = `שאלה ${idx + 1} (${tags.join(" · ")})`;
       cell.onclick = () => {
         simState.currentIndex = idx;
         persistActiveSimulation({ syncCloud: true });
@@ -3965,6 +3981,8 @@
     const order = getOptionOrder(q, simState.shuffleOpts);
     const selectedOrig = simState.answers.get(q.id);
     const struckSet = simState.struck.get(q.id) || new Set();
+    const isFlagged = simState.flagged.has(q.id);
+    const isUnsure = Boolean(progress.flags[q.id]?.unsure);
 
     mount.innerHTML = `
       <article class="question-card card">
@@ -3976,7 +3994,8 @@
           <div class="q-flags">
             <button type="button" class="flag-btn marker-toggle-btn" id="simMarkerBtn" title="מרקר צהוב — סמן מילות מפתח בשאלה (M)" aria-label="מצב מרקר צהוב" aria-pressed="false">🖍️</button>
             <button type="button" class="flag-btn marker-clear-btn hidden" id="simClearMarkersBtn" title="נקה את כל המרקור בשאלה זו" aria-label="נקה מרקור בשאלה">🧹</button>
-            <button type="button" class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">🚩 סמן לבדיקה</button>
+            <button type="button" class="flag-btn ${isUnsure ? "active" : ""}" id="simUnsureBtn" title="ניחשתי / התלבטתי — לחזור אחר כך" aria-label="סמן התלבטות" aria-pressed="${isUnsure ? "true" : "false"}">🤔 התלבטתי</button>
+            <button type="button" class="flag-btn ${isFlagged ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה" aria-pressed="${isFlagged ? "true" : "false"}">🚩 סמן לבדיקה</button>
             <button type="button" class="flag-btn" id="simProblemBtn" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
               <span aria-hidden="true">⚠️</span>
               <span class="flag-count hidden" id="simProblemCount"></span>
@@ -4004,6 +4023,10 @@
 
     el("simMarkerBtn").onclick = () => toggleMarkerMode();
     el("simClearMarkersBtn").onclick = () => clearQuestionHighlights(q.id);
+    el("simUnsureBtn").onclick = () => {
+      toggleQuestionFlag(q.id, "unsure");
+      renderSimQuestion();
+    };
     el("simFlagBtn").onclick = () => {
       if (simState.flagged.has(q.id)) simState.flagged.delete(q.id);
       else simState.flagged.add(q.id);
@@ -4082,6 +4105,18 @@
     };
   }
 
+  /**
+   * Open Practice mode focused on a specific list of simulation question IDs.
+   */
+  function reviewSimQuestions(ids, labelText) {
+    if (!ids || ids.length === 0) return;
+    switchMode("practice");
+    filteredList = ids.map((id) => Q_MAP.get(id)).filter(Boolean);
+    currentIndex = 0;
+    el("filteredCountText").textContent = labelText;
+    renderQuestion();
+  }
+
   function submitSimulation() {
     clearInterval(simState.timerId);
     simState.timerId = null;
@@ -4090,6 +4125,8 @@
     let correctCount = 0;
     const bySubj = {};
     const wrongIds = [];
+    const unsureIds = [];
+    const wrongOrUnsureIds = [];
 
     simState.questions.forEach((q) => {
       const s = getSubject(q);
@@ -4098,11 +4135,18 @@
 
       const chosen = simState.answers.get(q.id);
       const isOk = chosen !== undefined && q.correct.includes(chosen);
+      const isUnsure = Boolean(progress.flags[q.id]?.unsure);
       if (isOk) {
         correctCount++;
         bySubj[s].correct++;
       } else {
         wrongIds.push(q.id);
+      }
+      if (isUnsure) {
+        unsureIds.push(q.id);
+      }
+      if (!isOk || isUnsure) {
+        wrongOrUnsureIds.push(q.id);
       }
 
       if (chosen !== undefined) {
@@ -4129,28 +4173,36 @@
       })
       .join("");
 
+    const showCombinedBtn = wrongOrUnsureIds.length > wrongIds.length && wrongOrUnsureIds.length > unsureIds.length;
+    const unsureBtnClass = wrongIds.length === 0 && unsureIds.length > 0 ? "btn-primary" : "btn-secondary";
+
     resEl.innerHTML = `
       <h2>🏁 תוצאות הסימולציה</h2>
       <div class="kpi-grid" style="margin-top:14px;">
         <div class="kpi-card"><div class="kpi-label">ציון סופי</div><div class="kpi-value">${pct}%</div></div>
         <div class="kpi-card"><div class="kpi-label">תשובות נכונות</div><div class="kpi-value">${correctCount} / ${simState.questions.length}</div></div>
         <div class="kpi-card"><div class="kpi-label">טעויות / דילוגים</div><div class="kpi-value">${wrongIds.length}</div></div>
+        <div class="kpi-card"><div class="kpi-label">🤔 התלבטתי</div><div class="kpi-value">${unsureIds.length}</div></div>
       </div>
       <h3>פילוח לפי מקצוע</h3>
       <div class="subject-progress-list">${subjRows}</div>
       <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;">
-        <button type="button" class="btn-primary" id="btnReviewSimWrong">🔥 תחקר טעויות מהסימולציה (${wrongIds.length})</button>
+        <button type="button" class="btn-primary" id="btnReviewSimWrong" ${wrongIds.length === 0 ? "disabled" : ""}>🔥 תחקר טעויות מהסימולציה (${wrongIds.length})</button>
+        <button type="button" class="${unsureBtnClass}" id="btnReviewSimUnsure" ${unsureIds.length === 0 ? "disabled" : ""}>🤔 תחקר התלבטויות מהסימולציה (${unsureIds.length})</button>
+        ${showCombinedBtn ? `<button type="button" class="btn-secondary" id="btnReviewSimWrongAndUnsure">🎯 תחקר טעויות והתלבטויות (${wrongOrUnsureIds.length})</button>` : ""}
         <button type="button" class="btn-secondary" id="btnNewSim">🔄 סימולציה חדשה</button>
       </div>
     `;
 
     el("btnReviewSimWrong").onclick = () => {
-      switchMode("practice");
-      filteredList = wrongIds.map((id) => Q_MAP.get(id)).filter(Boolean);
-      currentIndex = 0;
-      el("filteredCountText").textContent = `מתחקר ${filteredList.length} טעויות מהסימולציה`;
-      renderQuestion();
+      reviewSimQuestions(wrongIds, `מתחקר ${wrongIds.length} טעויות מהסימולציה`);
     };
+    el("btnReviewSimUnsure").onclick = () => {
+      reviewSimQuestions(unsureIds, `מתחקר ${unsureIds.length} שאלות שהתלבטת בהן מהסימולציה`);
+    };
+    el("btnReviewSimWrongAndUnsure")?.addEventListener("click", () => {
+      reviewSimQuestions(wrongOrUnsureIds, `מתחקר ${wrongOrUnsureIds.length} טעויות והתלבטויות מהסימולציה`);
+    });
     el("btnNewSim").onclick = () => {
       resEl.classList.add("hidden");
       el("examSetup").classList.remove("hidden");
