@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261125b" />
+  <link rel="stylesheet" href="styles.css?v=20261125d" />
 </head>
 <body>
   <header class="topbar">
@@ -335,6 +335,8 @@
               <button type="button" class="flag-btn admin-action-btn danger" id="btnAdminHideQ" title="הסר שאלה מהבנק" aria-label="הסר שאלה">🗑️ הסר</button>
             </div>
             <div class="q-flags">
+              <button type="button" class="flag-btn marker-toggle-btn" id="btnFlagMarker" title="מרקר צהוב — סמן מילות מפתח בשאלה (M)" aria-label="מצב מרקר צהוב" aria-pressed="false">🖍️</button>
+              <button type="button" class="flag-btn marker-clear-btn hidden" id="btnClearMarkers" title="נקה את כל המרקור בשאלה זו" aria-label="נקה מרקור בשאלה">🧹</button>
               <button type="button" class="flag-btn" id="btnFlagStar" title="מועדפים / לחזרה (S)" aria-label="סמן כמועדף">⭐</button>
               <button type="button" class="flag-btn" id="btnFlagUnsure" title="ניחשתי / לא בטוח" aria-label="סמן התלבטות">🤔</button>
               <button type="button" class="flag-btn" id="btnFlagProblem" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
@@ -706,6 +708,7 @@
         <li><kbd>←</kbd> / <kbd>→</kbd> <span>שאלה הבאה / קודמת</span></li>
         <li><kbd>Space</kbd> / <kbd>Enter</kbd> <span>חשיפת כרטיסייה / מעבר לשאלה הבאה</span></li>
         <li><kbd>S</kbd> או <kbd>F</kbd> <span>סימון/ביטול מועדפים ⭐</span></li>
+        <li><kbd>M</kbd> <span>הפעלת/כיבוי מרקר צהוב בשאלה 🖍️</span></li>
         <li><kbd>N</kbd> <span>פתיחה/סגירה ידנית של מגירת ההערות 💬</span></li>
         <li><kbd>R</kbd> <span>ערבוב סדר השאלות 🔀</span></li>
         <li><kbd>Esc</kbd> <span>סגירת זום תמונה / חלון</span></li>
@@ -947,10 +950,11 @@
     </div>
   </div>
 
+  <button type="button" class="marker-floating-pill hidden" id="markerFloatingPill" aria-label="סמן טקסט במרקר צהוב">🖍️ סמן במרקר</button>
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <script src="questions_data.js"></script>
   <script src="qr.js?v=20261124d"></script>
-  <script src="app.js?v=20261125c"></script>
+  <script src="app.js?v=20261125d"></script>
 </body>
 </html>

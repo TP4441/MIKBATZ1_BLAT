@@ -61,6 +61,7 @@ console.log("✓ Offline QR SVG unit checks OK");
     attempts: { q1: { selected: 1, isCorrect: true, ts: 100 } },
     flags: { q1: { star: true }, q2: { unsure: true } },
     struck: { q1: [0, 2] },
+    highlights: { q1: [[4, 10]], q2: [[0, 5], [3, 9]] },
     notes: { q1: "old note" },
     dailyStats: { "2026-11-24": { answered: 2, correct: 1 } },
   };
@@ -71,6 +72,8 @@ console.log("✓ Offline QR SVG unit checks OK");
     flagUpdatedAt: { q1: { star: 500 } },
     struck: { q1: [] },
     struckUpdatedAt: { q1: 600 },
+    highlights: { q1: [] },
+    highlightUpdatedAt: { q1: 650 },
     notes: { q1: "" },
     noteUpdatedAt: { q1: 700 },
     dailyStatsByDevice: {
@@ -84,6 +87,8 @@ console.log("✓ Offline QR SVG unit checks OK");
   assert.equal(m.flags.q1, undefined, "star un-flagged at 500 > legacy 1");
   assert.equal(m.flags.q2.unsure, true, "q2 legacy flag preserved");
   assert.equal(m.struck.q1, undefined, "struck cleared at 600 > legacy 1");
+  assert.equal(m.highlights.q1, undefined, "highlights cleared at 650 > legacy 1");
+  assert.deepEqual(m.highlights.q2, [[0, 9]], "overlapping highlights normalized and preserved");
   assert.equal(m.notes.q1, undefined, "note deleted at 700 > legacy 1");
   assert.equal(m.dailyStats["2026-11-24"].answered, 5, "legacy + dev_b summed");
   assert.equal(m.dailyStats["2026-11-24"].correct, 4);

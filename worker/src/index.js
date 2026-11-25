@@ -375,6 +375,8 @@ function mergeProgressPayloads(base, incoming) {
     noteUpdatedAt: {},
     struck: {},
     struckUpdatedAt: {},
+    highlights: {},
+    highlightUpdatedAt: {},
     drillStreak: {},
     drillStreakUpdatedAt: {},
     dailyStats: {},
@@ -467,6 +469,47 @@ function mergeProgressPayloads(base, incoming) {
       merged.struck[qId] = Array.from(new Set(winArr));
     }
     merged.struckUpdatedAt[qId] = winTs;
+  }
+
+  // 3b. Question stem highlights per question ([start, end][])
+  const highlightQIds = new Set([
+    ...Object.keys(b.highlights || {}),
+    ...Object.keys(i.highlights || {}),
+    ...Object.keys(b.highlightUpdatedAt || {}),
+    ...Object.keys(i.highlightUpdatedAt || {}),
+  ]);
+  for (const qId of highlightQIds) {
+    const bArr = Array.isArray(b.highlights?.[qId]) ? b.highlights[qId] : null;
+    const bRawTs = Number(b.highlightUpdatedAt?.[qId]) || 0;
+    const bTs = bRawTs > 0 ? bRawTs : bArr && bArr.length > 0 ? 1 : 0;
+
+    const iArr = Array.isArray(i.highlights?.[qId]) ? i.highlights[qId] : null;
+    const iRawTs = Number(i.highlightUpdatedAt?.[qId]) || 0;
+    const iTs = iRawTs > 0 ? iRawTs : iArr && iArr.length > 0 ? 1 : 0;
+
+    const winTs = Math.max(bTs, iTs);
+    if (winTs <= resetAt) continue;
+    const winArr = iTs >= bTs ? iArr : bArr;
+    if (Array.isArray(winArr)) {
+      const valid = [];
+      for (const r of winArr) {
+        if (!Array.isArray(r) || r.length < 2) continue;
+        const s = Math.max(0, Math.floor(Number(r[0])));
+        const e = Math.max(0, Math.floor(Number(r[1])));
+        if (Number.isFinite(s) && Number.isFinite(e) && e > s) valid.push([s, e]);
+      }
+      if (valid.length > 0) {
+        valid.sort((a, b2) => a[0] - b2[0] || a[1] - b2[1]);
+        const norm = [valid[0]];
+        for (let idx = 1; idx < valid.length; idx++) {
+          const last = norm[norm.length - 1];
+          if (valid[idx][0] <= last[1]) last[1] = Math.max(last[1], valid[idx][1]);
+          else norm.push(valid[idx]);
+        }
+        merged.highlights[qId] = norm;
+      }
+    }
+    merged.highlightUpdatedAt[qId] = winTs;
   }
 
   // 4. Drill streak per question

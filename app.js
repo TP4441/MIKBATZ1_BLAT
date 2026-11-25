@@ -350,6 +350,9 @@
   let sessionCorrect = 0;
   let notesExpanded = false; // Always closed by default (strict manual spoiler toggle)
   let lastRenderedQId = null;
+  let markerMode = false;
+  let pendingMarkerSelection = null; // { qId, stemEl, start, end }
+  let markerSelectionTimer = null;
   let noteSyncState = "synced";
   let problemSyncState = "synced";
   let activeProblemModalQId = null;
@@ -454,6 +457,8 @@
       noteUpdatedAt: {}, // qId -> ts
       struck: {},   // qId -> number[]
       struckUpdatedAt: {}, // qId -> ts
+      highlights: {}, // qId -> [start, end][]
+      highlightUpdatedAt: {}, // qId -> ts
       drillStreak: {}, // qId -> number (0..2)
       drillStreakUpdatedAt: {}, // qId -> ts
       dailyStats: {},  // YYYY-MM-DD -> { answered: number, correct: number }
@@ -655,6 +660,8 @@
       noteUpdatedAt: {},
       struck: {},
       struckUpdatedAt: {},
+      highlights: {},
+      highlightUpdatedAt: {},
       drillStreak: {},
       drillStreakUpdatedAt: {},
       dailyStats: {},
@@ -744,6 +751,31 @@
         merged.struck[qId] = Array.from(new Set(winArr));
       }
       merged.struckUpdatedAt[qId] = winTs;
+    }
+
+    const highlightQIds = new Set([
+      ...Object.keys(b.highlights || {}),
+      ...Object.keys(i.highlights || {}),
+      ...Object.keys(b.highlightUpdatedAt || {}),
+      ...Object.keys(i.highlightUpdatedAt || {}),
+    ]);
+    for (const qId of highlightQIds) {
+      const bArr = Array.isArray(b.highlights?.[qId]) ? b.highlights[qId] : null;
+      const bRawTs = Number(b.highlightUpdatedAt?.[qId]) || 0;
+      const bTs = bRawTs > 0 ? bRawTs : bArr && bArr.length > 0 ? 1 : 0;
+
+      const iArr = Array.isArray(i.highlights?.[qId]) ? i.highlights[qId] : null;
+      const iRawTs = Number(i.highlightUpdatedAt?.[qId]) || 0;
+      const iTs = iRawTs > 0 ? iRawTs : iArr && iArr.length > 0 ? 1 : 0;
+
+      const winTs = Math.max(bTs, iTs);
+      if (winTs <= resetAt) continue;
+      const winArr = iTs >= bTs ? iArr : bArr;
+      const cleanRanges = normalizeHighlightRanges(winArr);
+      if (cleanRanges.length > 0) {
+        merged.highlights[qId] = cleanRanges;
+      }
+      merged.highlightUpdatedAt[qId] = winTs;
     }
 
     const streakQIds = new Set([
@@ -2916,6 +2948,238 @@
     return optionPermutations.get(q.id);
   }
 
+  function normalizeHighlightRanges(ranges, maxLen = Infinity) {
+    if (!Array.isArray(ranges)) return [];
+    const cap = Number.isFinite(maxLen) ? Math.max(0, Math.floor(maxLen)) : Infinity;
+    if (cap === 0) return [];
+    const valid = [];
+    for (const r of ranges) {
+      if (!Array.isArray(r) || r.length < 2) continue;
+      const s = Math.max(0, Math.min(cap, Math.floor(Number(r[0]))));
+      const e = Math.max(0, Math.min(cap, Math.floor(Number(r[1]))));
+      if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+        valid.push([s, e]);
+      }
+    }
+    if (valid.length === 0) return [];
+    valid.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const merged = [valid[0]];
+    for (let idx = 1; idx < valid.length; idx++) {
+      const last = merged[merged.length - 1];
+      const cur = valid[idx];
+      if (cur[0] <= last[1]) {
+        last[1] = Math.max(last[1], cur[1]);
+      } else {
+        merged.push(cur);
+      }
+    }
+    return merged;
+  }
+
+  function renderHighlightedStem(stemEl, stemText, qId) {
+    if (!stemEl) return;
+    const text = typeof stemText === "string" ? stemText : "";
+    const ranges = normalizeHighlightRanges(progress.highlights?.[qId], text.length);
+    stemEl.textContent = "";
+    if (ranges.length === 0) {
+      stemEl.textContent = text;
+      return;
+    }
+    let cursor = 0;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < ranges.length; i++) {
+      const [s, e] = ranges[i];
+      if (s > cursor) {
+        frag.appendChild(document.createTextNode(text.slice(cursor, s)));
+      }
+      const mark = document.createElement("mark");
+      mark.className = "q-mark";
+      mark.dataset.rangeIdx = String(i);
+      mark.title = "לחץ להסרת המרקור (במצב מרקר) או לחיצה ימנית";
+      mark.textContent = text.slice(s, e);
+      frag.appendChild(mark);
+      cursor = e;
+    }
+    if (cursor < text.length) {
+      frag.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+    stemEl.appendChild(frag);
+  }
+
+  function getActiveStemContext() {
+    if (currentMode === "exam") {
+      if (!simState.active || simState.questions.length === 0) return null;
+      const q = simState.questions[simState.currentIndex];
+      const stemEl = el("simStem");
+      if (!q || !stemEl || !stemEl.isConnected) return null;
+      return { q, stemEl };
+    }
+    if (!isStudyMode(currentMode) || filteredList.length === 0) return null;
+    const q = filteredList[currentIndex];
+    const stemEl = el("qStem");
+    if (!q || !stemEl || !stemEl.isConnected) return null;
+    return { q, stemEl };
+  }
+
+  function updateMarkerControlsUI(qId = null) {
+    const ctx = getActiveStemContext();
+    const targetQId = qId || ctx?.q?.id || null;
+    const hasHighlights = Boolean(targetQId && progress.highlights?.[targetQId]?.length > 0);
+
+    const studyBtn = el("btnFlagMarker");
+    if (studyBtn) {
+      studyBtn.classList.toggle("active", markerMode);
+      studyBtn.setAttribute("aria-pressed", markerMode ? "true" : "false");
+    }
+    const simBtn = el("simMarkerBtn");
+    if (simBtn) {
+      simBtn.classList.toggle("active", markerMode);
+      simBtn.setAttribute("aria-pressed", markerMode ? "true" : "false");
+    }
+
+    el("btnClearMarkers")?.classList.toggle("hidden", !hasHighlights);
+    el("simClearMarkersBtn")?.classList.toggle("hidden", !hasHighlights);
+
+    el("qStem")?.classList.toggle("marker-active", markerMode);
+    el("simStem")?.classList.toggle("marker-active", markerMode);
+  }
+
+  function hideMarkerFloatingPill() {
+    pendingMarkerSelection = null;
+    el("markerFloatingPill")?.classList.add("hidden");
+  }
+
+  function showMarkerFloatingPill(ctx, offsets) {
+    const pill = el("markerFloatingPill");
+    if (!pill || !ctx || !offsets) return;
+    pendingMarkerSelection = {
+      qId: ctx.q.id,
+      stemEl: ctx.stemEl,
+      start: offsets.start,
+      end: offsets.end,
+    };
+    const { rect } = offsets;
+    const centerX = Math.max(72, Math.min(window.innerWidth - 72, rect.left + rect.width / 2));
+    const topY = Math.max(46, rect.top - 8);
+    pill.style.left = `${centerX}px`;
+    pill.style.top = `${topY}px`;
+    pill.classList.remove("hidden");
+  }
+
+  function getStemSelectionOffsets(stemEl) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+    if (!stemEl || !stemEl.isConnected) return null;
+    const rawRange = sel.getRangeAt(0);
+    if (!rawRange.intersectsNode(stemEl)) return null;
+
+    const stemRange = document.createRange();
+    stemRange.selectNodeContents(stemEl);
+    const clipped = rawRange.cloneRange();
+    if (clipped.compareBoundaryPoints(Range.START_TO_START, stemRange) < 0) {
+      clipped.setStart(stemRange.startContainer, stemRange.startOffset);
+    }
+    if (clipped.compareBoundaryPoints(Range.END_TO_END, stemRange) > 0) {
+      clipped.setEnd(stemRange.endContainer, stemRange.endOffset);
+    }
+
+    const selectedText = clipped.toString();
+    if (!selectedText.trim()) return null;
+
+    const preRange = document.createRange();
+    preRange.selectNodeContents(stemEl);
+    preRange.setEnd(clipped.startContainer, clipped.startOffset);
+    const start = preRange.toString().length;
+    const end = start + selectedText.length;
+    if (end <= start) return null;
+
+    const rect = clipped.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) return null;
+    return { start, end, rect };
+  }
+
+  function addStemHighlight(qId, start, end) {
+    const q = Q_MAP.get(qId);
+    if (!q) return;
+    if (!progress.highlights) progress.highlights = {};
+    if (!progress.highlightUpdatedAt) progress.highlightUpdatedAt = {};
+
+    const existing = Array.isArray(progress.highlights[qId]) ? progress.highlights[qId] : [];
+    const next = normalizeHighlightRanges([...existing, [start, end]], q.stem.length);
+    if (next.length > 0) {
+      progress.highlights[qId] = next;
+    } else {
+      delete progress.highlights[qId];
+    }
+    progress.highlightUpdatedAt[qId] = Date.now();
+    saveProgress();
+
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
+    hideMarkerFloatingPill();
+
+    const ctx = getActiveStemContext();
+    if (ctx && ctx.q.id === qId) {
+      renderHighlightedStem(ctx.stemEl, ctx.q.stem, qId);
+      updateMarkerControlsUI(qId);
+    }
+  }
+
+  function removeStemHighlightAt(qId, rangeIdx) {
+    const q = Q_MAP.get(qId);
+    if (!q || !progress.highlights?.[qId]) return;
+    const current = normalizeHighlightRanges(progress.highlights[qId], q.stem.length);
+    if (rangeIdx < 0 || rangeIdx >= current.length) return;
+    current.splice(rangeIdx, 1);
+    if (!progress.highlightUpdatedAt) progress.highlightUpdatedAt = {};
+    if (current.length > 0) {
+      progress.highlights[qId] = current;
+    } else {
+      delete progress.highlights[qId];
+    }
+    progress.highlightUpdatedAt[qId] = Date.now();
+    saveProgress();
+    hideMarkerFloatingPill();
+
+    const ctx = getActiveStemContext();
+    if (ctx && ctx.q.id === qId) {
+      renderHighlightedStem(ctx.stemEl, ctx.q.stem, qId);
+      updateMarkerControlsUI(qId);
+    }
+  }
+
+  function clearQuestionHighlights(qId) {
+    if (!qId) return;
+    if (!progress.highlights) progress.highlights = {};
+    if (!progress.highlightUpdatedAt) progress.highlightUpdatedAt = {};
+    delete progress.highlights[qId];
+    progress.highlightUpdatedAt[qId] = Date.now();
+    saveProgress();
+    hideMarkerFloatingPill();
+
+    const ctx = getActiveStemContext();
+    if (ctx && ctx.q.id === qId) {
+      renderHighlightedStem(ctx.stemEl, ctx.q.stem, qId);
+      updateMarkerControlsUI(qId);
+    }
+  }
+
+  function toggleMarkerMode(forceState = null) {
+    markerMode = forceState === null ? !markerMode : Boolean(forceState);
+    if (markerMode) {
+      const ctx = getActiveStemContext();
+      if (ctx) {
+        const offsets = getStemSelectionOffsets(ctx.stemEl);
+        if (offsets) {
+          addStemHighlight(ctx.q.id, offsets.start, offsets.end);
+        }
+      }
+    }
+    hideMarkerFloatingPill();
+    updateMarkerControlsUI();
+  }
+
   function renderQuestion() {
     if (currentMode === "exam" || currentMode === "analytics" || currentMode === "leaderboard") return;
 
@@ -2998,7 +3262,9 @@
 
     renderProblemBanner(el("qProblemBanner"), q);
 
-    el("qStem").textContent = q.stem;
+    renderHighlightedStem(el("qStem"), q.stem, q.id);
+    updateMarkerControlsUI(q.id);
+    hideMarkerFloatingPill();
     el("qContentGrid").classList.toggle("has-images", q.images.length > 0);
 
     // Images
@@ -3708,6 +3974,8 @@
             <span class="q-badge subject-badge">${escapeHtml(formatSubject(getSubject(q)))} · ${escapeHtml(q.exam)}</span>
           </div>
           <div class="q-flags">
+            <button type="button" class="flag-btn marker-toggle-btn" id="simMarkerBtn" title="מרקר צהוב — סמן מילות מפתח בשאלה (M)" aria-label="מצב מרקר צהוב" aria-pressed="false">🖍️</button>
+            <button type="button" class="flag-btn marker-clear-btn hidden" id="simClearMarkersBtn" title="נקה את כל המרקור בשאלה זו" aria-label="נקה מרקור בשאלה">🧹</button>
             <button type="button" class="flag-btn ${simState.flagged.has(q.id) ? "active" : ""}" id="simFlagBtn" title="סמן לבדיקה">🚩 סמן לבדיקה</button>
             <button type="button" class="flag-btn" id="simProblemBtn" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
               <span aria-hidden="true">⚠️</span>
@@ -3717,7 +3985,7 @@
         </div>
         <div class="q-problem-banner hidden" id="simProblemBanner" role="alert"></div>
         <div class="q-content-grid${q.images.length > 0 ? " has-images" : ""}">
-          <div class="q-stem">${escapeHtml(q.stem)}</div>
+          <div class="q-stem" id="simStem"></div>
           <div class="q-images" id="simImages"></div>
         </div>
         <div class="q-options" id="simOptions"></div>
@@ -3734,6 +4002,8 @@
       </article>
     `;
 
+    el("simMarkerBtn").onclick = () => toggleMarkerMode();
+    el("simClearMarkersBtn").onclick = () => clearQuestionHighlights(q.id);
     el("simFlagBtn").onclick = () => {
       if (simState.flagged.has(q.id)) simState.flagged.delete(q.id);
       else simState.flagged.add(q.id);
@@ -3743,6 +4013,9 @@
     el("simProblemBtn").onclick = () => openProblemModal(q.id);
     updateProblemFlagButton(el("simProblemBtn"), el("simProblemCount"), q);
     renderProblemBanner(el("simProblemBanner"), q);
+    renderHighlightedStem(el("simStem"), q.stem, q.id);
+    updateMarkerControlsUI(q.id);
+    hideMarkerFloatingPill();
 
     const imgWrap = el("simImages");
     q.images.forEach((src) => {
@@ -4463,6 +4736,7 @@
     currentMode = mode;
     notesExpanded = false;
     lastRenderedQId = null;
+    hideMarkerFloatingPill();
     document.querySelectorAll("#modeTabs .tab-btn").forEach((b) => {
       b.classList.toggle("active", b.dataset.mode === mode);
     });
@@ -4675,12 +4949,95 @@
     // Question controls
     el("btnPrevQ").onclick = prevQuestion;
     el("btnNextQ").onclick = nextQuestion;
+    el("btnFlagMarker").onclick = () => toggleMarkerMode();
+    el("btnClearMarkers").onclick = () => {
+      if (filteredList.length > 0) clearQuestionHighlights(filteredList[currentIndex].id);
+    };
     el("btnFlagStar").onclick = () => toggleFlag("star");
     el("btnFlagUnsure").onclick = () => toggleFlag("unsure");
     el("btnFlagProblem").onclick = () => {
       if (filteredList.length === 0) return;
       openProblemModal(filteredList[currentIndex].id);
     };
+
+    // Stem highlighter interactions (Practice, Drill, Flashcard & Exam Simulation)
+    const handleStemMarkClick = (e) => {
+      const markEl = e.target?.closest?.(".q-mark");
+      if (!markEl) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      if (!markerMode) return;
+      const ctx = getActiveStemContext();
+      if (!ctx || !ctx.stemEl.contains(markEl)) return;
+      const idx = parseInt(markEl.dataset.rangeIdx || "-1", 10);
+      if (idx >= 0) removeStemHighlightAt(ctx.q.id, idx);
+    };
+    const handleStemMarkContext = (e) => {
+      const markEl = e.target?.closest?.(".q-mark");
+      if (!markEl) return;
+      const ctx = getActiveStemContext();
+      if (!ctx || !ctx.stemEl.contains(markEl)) return;
+      e.preventDefault();
+      const idx = parseInt(markEl.dataset.rangeIdx || "-1", 10);
+      if (idx >= 0) removeStemHighlightAt(ctx.q.id, idx);
+    };
+    el("qStem")?.addEventListener("click", handleStemMarkClick);
+    el("qStem")?.addEventListener("contextmenu", handleStemMarkContext);
+    el("simQuestionMount")?.addEventListener("click", handleStemMarkClick);
+    el("simQuestionMount")?.addEventListener("contextmenu", handleStemMarkContext);
+
+    const floatingPill = el("markerFloatingPill");
+    floatingPill?.addEventListener("mousedown", (e) => e.preventDefault());
+    floatingPill?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (pendingMarkerSelection) {
+        addStemHighlight(pendingMarkerSelection.qId, pendingMarkerSelection.start, pendingMarkerSelection.end);
+      } else {
+        hideMarkerFloatingPill();
+      }
+    });
+
+    document.addEventListener("mouseup", (e) => {
+      if (e.target === floatingPill) return;
+      const ctx = getActiveStemContext();
+      if (!ctx) {
+        hideMarkerFloatingPill();
+        return;
+      }
+      const offsets = getStemSelectionOffsets(ctx.stemEl);
+      if (!offsets) {
+        hideMarkerFloatingPill();
+        return;
+      }
+      if (markerMode) {
+        addStemHighlight(ctx.q.id, offsets.start, offsets.end);
+      } else {
+        showMarkerFloatingPill(ctx, offsets);
+      }
+    });
+
+    document.addEventListener("selectionchange", () => {
+      clearTimeout(markerSelectionTimer);
+      markerSelectionTimer = setTimeout(() => {
+        const ctx = getActiveStemContext();
+        if (!ctx) {
+          hideMarkerFloatingPill();
+          return;
+        }
+        const offsets = getStemSelectionOffsets(ctx.stemEl);
+        if (!offsets) {
+          hideMarkerFloatingPill();
+          return;
+        }
+        if (!markerMode || window.matchMedia?.("(pointer: coarse)")?.matches) {
+          showMarkerFloatingPill(ctx, offsets);
+        }
+      }, 140);
+    });
+
+    window.addEventListener("scroll", () => {
+      if (pendingMarkerSelection) hideMarkerFloatingPill();
+    }, { passive: true });
 
     // Problem Report Modal
     document.querySelectorAll('input[name="problemType"]').forEach((radio) => {
@@ -5132,6 +5489,13 @@
       }
       const tag = document.activeElement?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key.toLowerCase() === "m") {
+        if (getActiveStemContext()) {
+          e.preventDefault();
+          toggleMarkerMode();
+        }
+        return;
+      }
       if (currentMode === "analytics" || currentMode === "leaderboard" || currentMode === "exam") return;
       if (filteredList.length === 0) return;
 

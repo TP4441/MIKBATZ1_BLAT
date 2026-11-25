@@ -3994,3 +3994,84 @@ kbd {
     padding: 8px 4px;
   }
 }
+
+/* ============================================================
+   Question Stem Highlighter ("מרקר צהוב זוהר")
+   ============================================================ */
+
+.q-mark {
+  background: linear-gradient(180deg, rgba(255, 247, 56, 0.86) 0%, rgba(255, 234, 0, 0.96) 100%);
+  color: #111827;
+  border-radius: 4px;
+  padding: 0 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: filter 0.12s ease, outline-color 0.12s ease;
+}
+
+[data-theme="dark"] .q-mark {
+  background: #FDE047;
+  color: #0F172A;
+}
+
+.q-stem.marker-active {
+  cursor: text;
+}
+
+.q-stem.marker-active::selection,
+.q-stem.marker-active *::selection {
+  background: rgba(255, 238, 0, 0.72);
+  color: #111827;
+}
+
+.q-stem.marker-active .q-mark {
+  cursor: pointer;
+}
+
+.q-stem.marker-active .q-mark:hover {
+  filter: brightness(0.94);
+  outline: 1.5px dashed #B45309;
+  outline-offset: 1px;
+}
+
+.flag-btn.marker-toggle-btn.active {
+  background: #FEF08A;
+  border-color: #EAB308;
+  color: #713F12;
+}
+
+[data-theme="dark"] .flag-btn.marker-toggle-btn.active {
+  background: rgba(250, 204, 21, 0.28);
+  border-color: #FACC15;
+  color: #FEF08A;
+}
+
+.flag-btn.marker-clear-btn:hover {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
+.marker-floating-pill {
+  position: fixed;
+  z-index: 80;
+  transform: translate(-50%, -100%);
+  background: #FEF08A;
+  color: #111827;
+  border: 1.5px solid #EAB308;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: var(--shadow-elevated);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.marker-floating-pill:hover {
+  background: #FDE047;
+}
