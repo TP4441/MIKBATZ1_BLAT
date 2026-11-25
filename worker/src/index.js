@@ -250,6 +250,7 @@ function summarizeProgress(prog) {
 
 const VALID_STUDY_MODES = new Set(["practice", "flashcard", "drill"]);
 const MAX_SESSION_ARRAY_LEN = 2000;
+const MAX_SIM_HISTORY_LEN = 100;
 
 function sanitizeStudySession(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -346,18 +347,100 @@ function sanitizeActiveSim(raw) {
   const hasTimer = Boolean(raw.hasTimer);
   const rawSec = Number(raw.secondsLeft);
   const secondsLeft = hasTimer && Number.isFinite(rawSec) ? Math.max(0, Math.floor(rawSec)) : 0;
+  const rawInitSec = Number(raw.initialSeconds);
+  const initialSeconds = hasTimer && Number.isFinite(rawInitSec) ? Math.max(0, Math.floor(rawInitSec)) : 0;
+  const rawElapsedSec = Number(raw.elapsedSeconds);
+  const elapsedSeconds = Number.isFinite(rawElapsedSec) ? Math.max(0, Math.floor(rawElapsedSec)) : 0;
 
   return {
     label: typeof raw.label === "string" ? raw.label.slice(0, 160) : "",
+    simType: raw.simType === "custom" ? "custom" : "full",
+    examName: typeof raw.examName === "string" ? raw.examName.slice(0, 80) : "",
     questionIds,
     answers,
     flagged,
     struck,
     currentIndex,
     secondsLeft,
+    initialSeconds,
+    elapsedSeconds,
     hasTimer,
     shuffleOpts: Boolean(raw.shuffleOpts),
     deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
+  };
+}
+
+function sanitizeSimHistoryEntry(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const id = typeof raw.id === "string" ? raw.id.trim().slice(0, 80) : "";
+  if (!id) return null;
+
+  const questionIds = Array.isArray(raw.questionIds)
+    ? raw.questionIds.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
+    : [];
+  if (questionIds.length === 0) return null;
+  const qIdSet = new Set(questionIds);
+
+  const answers = {};
+  if (raw.answers && typeof raw.answers === "object" && !Array.isArray(raw.answers)) {
+    for (const [qId, val] of Object.entries(raw.answers)) {
+      const idx = Number(val);
+      if (qIdSet.has(qId) && Number.isInteger(idx) && idx >= 0 && idx < 10) {
+        answers[qId] = idx;
+      }
+    }
+  }
+
+  const cleanIdArray = (arr) =>
+    Array.isArray(arr)
+      ? Array.from(new Set(arr.filter((x) => typeof x === "string" && qIdSet.has(x)))).slice(0, MAX_SESSION_ARRAY_LEN)
+      : [];
+
+  const completedAt = Number(raw.completedAt);
+  if (!Number.isFinite(completedAt) || completedAt <= 0) return null;
+
+  const totalCount = questionIds.length;
+  const rawCorrect = Number(raw.correctCount);
+  const correctCount = Number.isFinite(rawCorrect)
+    ? Math.max(0, Math.min(totalCount, Math.floor(rawCorrect)))
+    : 0;
+  const answeredCount = Object.keys(answers).length;
+  const rawWrong = Number(raw.wrongCount);
+  const wrongCount = Number.isFinite(rawWrong)
+    ? Math.max(0, Math.min(totalCount, Math.floor(rawWrong)))
+    : Math.max(0, answeredCount - correctCount);
+  const rawSkipped = Number(raw.skippedCount);
+  const skippedCount = Number.isFinite(rawSkipped)
+    ? Math.max(0, Math.min(totalCount, Math.floor(rawSkipped)))
+    : Math.max(0, totalCount - answeredCount);
+
+  const hasTimer = Boolean(raw.hasTimer);
+  const initialSeconds = hasTimer && Number.isFinite(Number(raw.initialSeconds))
+    ? Math.max(0, Math.floor(Number(raw.initialSeconds)))
+    : 0;
+  const elapsedSeconds = Number.isFinite(Number(raw.elapsedSeconds))
+    ? Math.max(0, Math.floor(Number(raw.elapsedSeconds)))
+    : 0;
+
+  return {
+    id,
+    label: typeof raw.label === "string" ? raw.label.slice(0, 160) : "",
+    simType: raw.simType === "custom" ? "custom" : "full",
+    examName: typeof raw.examName === "string" ? raw.examName.slice(0, 80) : "",
+    completedAt: Math.floor(completedAt),
+    hasTimer,
+    initialSeconds,
+    elapsedSeconds,
+    shuffleOpts: Boolean(raw.shuffleOpts),
+    questionIds,
+    answers,
+    flagged: cleanIdArray(raw.flagged),
+    unsure: cleanIdArray(raw.unsure),
+    correctCount,
+    wrongCount,
+    skippedCount,
+    totalCount,
+    scorePct: Math.round((correctCount / totalCount) * 100),
   };
 }
 
@@ -387,6 +470,8 @@ function mergeProgressPayloads(base, incoming) {
     studySessionUpdatedAt: 0,
     activeSim: null,
     activeSimUpdatedAt: 0,
+    simHistory: [],
+    simHistoryDeleted: {},
     resetAt,
   };
 
@@ -639,6 +724,41 @@ function mergeProgressPayloads(base, incoming) {
     merged.activeSim = winSim;
     merged.activeSimUpdatedAt = winSimTs;
   }
+
+  // 9. Completed exam simulation history + deletion tombstones
+  const simDelIds = new Set([
+    ...Object.keys(b.simHistoryDeleted || {}),
+    ...Object.keys(i.simHistoryDeleted || {}),
+  ]);
+  for (const simId of simDelIds) {
+    if (typeof simId !== "string" || !simId || simId.length > 80) continue;
+    const delTs = Math.max(
+      Number(b.simHistoryDeleted?.[simId]) || 0,
+      Number(i.simHistoryDeleted?.[simId]) || 0
+    );
+    if (delTs > resetAt) {
+      merged.simHistoryDeleted[simId] = delTs;
+    }
+  }
+
+  const simById = new Map();
+  for (const list of [b.simHistory, i.simHistory]) {
+    if (!Array.isArray(list)) continue;
+    for (const rawItem of list) {
+      const clean = sanitizeSimHistoryEntry(rawItem);
+      if (!clean) continue;
+      if (clean.completedAt <= resetAt) continue;
+      const delTs = merged.simHistoryDeleted[clean.id] || 0;
+      if (delTs > 0 && clean.completedAt <= delTs) continue;
+      const existing = simById.get(clean.id);
+      if (!existing || clean.completedAt >= existing.completedAt) {
+        simById.set(clean.id, clean);
+      }
+    }
+  }
+  merged.simHistory = Array.from(simById.values())
+    .sort((a, b2) => b2.completedAt - a.completedAt)
+    .slice(0, MAX_SIM_HISTORY_LEN);
 
   return merged;
 }

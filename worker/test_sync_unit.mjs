@@ -199,5 +199,72 @@ console.log("✓ Offline QR SVG unit checks OK");
   assert.equal(wipedAll.studySessionUpdatedAt, 0);
   assert.equal(wipedAll.activeSim, null, "resetAt=3000 must wipe older activeSim");
   assert.equal(wipedAll.activeSimUpdatedAt, 0);
+
+  // 6. simHistory union + deletion tombstones + resetAt
+  const simHist1 = {
+    id: "sim_1000_a",
+    label: "2026 (3 שאלות)",
+    simType: "full",
+    examName: "2026",
+    completedAt: 1000,
+    hasTimer: true,
+    initialSeconds: 5400,
+    elapsedSeconds: 3200,
+    shuffleOpts: false,
+    questionIds: ["2026_q01", "2026_q02", "2026_q03"],
+    answers: { "2026_q01": 1, "2026_q02": 2 },
+    flagged: ["2026_q02"],
+    unsure: ["2026_q03"],
+    correctCount: 1,
+    wrongCount: 1,
+    skippedCount: 1,
+    totalCount: 3,
+    scorePct: 33,
+  };
+  const simHist2 = {
+    id: "sim_2000_b",
+    label: "סימולציה מותאמת (2 שאלות)",
+    simType: "custom",
+    examName: "",
+    completedAt: 2000,
+    hasTimer: false,
+    initialSeconds: 0,
+    elapsedSeconds: 180,
+    shuffleOpts: true,
+    questionIds: ["2025_q01", "2025_q02"],
+    answers: { "2025_q01": 0, "2025_q02": 1 },
+    flagged: [],
+    unsure: [],
+    correctCount: 2,
+    wrongCount: 0,
+    skippedCount: 0,
+    totalCount: 2,
+    scorePct: 100,
+  };
+  const histMerged = mergeProgressPayloads(
+    { simHistory: [simHist1] },
+    { simHistory: [simHist2] }
+  );
+  assert.equal(histMerged.simHistory.length, 2);
+  assert.equal(histMerged.simHistory[0].id, "sim_2000_b", "Newest simulation must come first");
+  assert.equal(histMerged.simHistory[1].id, "sim_1000_a");
+
+  // Deleting sim_1000_a at ts=2500 removes it and prevents stale peer from resurrecting it
+  const histAfterDel = mergeProgressPayloads(
+    histMerged,
+    { simHistoryDeleted: { sim_1000_a: 2500 } }
+  );
+  assert.equal(histAfterDel.simHistory.length, 1);
+  assert.equal(histAfterDel.simHistory[0].id, "sim_2000_b");
+
+  const histNoResurrect = mergeProgressPayloads(
+    histAfterDel,
+    { simHistory: [simHist1] }
+  );
+  assert.equal(histNoResurrect.simHistory.length, 1, "Deleted simulation must not resurrect from peer");
+
+  const histReset = mergeProgressPayloads(histNoResurrect, { resetAt: 3000 });
+  assert.equal(histReset.simHistory.length, 0, "resetAt=3000 must wipe older simHistory");
+  assert.deepEqual(histReset.simHistoryDeleted, {}, "resetAt=3000 must wipe older simHistoryDeleted");
 }
 console.log("✓ mergeProgressPayloads unit checks OK");

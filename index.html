@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261125o" />
+  <link rel="stylesheet" href="styles.css?v=20261125q" />
 </head>
 <body>
   <header class="topbar">
@@ -537,6 +537,38 @@
       </div>
 
       <div class="exam-results card hidden" id="examResults"></div>
+
+      <div class="exam-review hidden" id="examReview">
+        <div class="exam-review-toolbar card" id="examReviewToolbar"></div>
+        <div class="exam-grid-panel card hidden" id="simReviewGridPanel">
+          <div class="sim-grid" id="simReviewGrid"></div>
+          <div class="sim-grid-legend">
+            <span class="sim-legend-item"><span class="sim-legend-swatch review-correct"></span> ✅ נכונה</span>
+            <span class="sim-legend-item"><span class="sim-legend-swatch review-wrong"></span> ❌ טעות</span>
+            <span class="sim-legend-item"><span class="sim-legend-swatch review-skipped"></span> ⏭️ דילוג</span>
+            <span class="sim-legend-item"><span class="sim-legend-swatch flagged"></span> 🚩 סומנה לבדיקה</span>
+            <span class="sim-legend-item"><span class="sim-legend-swatch unsure"></span> 🤔 התלבטתי</span>
+          </div>
+        </div>
+        <div id="simReviewQuestionMount"></div>
+      </div>
+
+      <section class="exam-history-section" id="examHistorySection" aria-label="היסטוריית סימולציות ומעקב">
+        <div class="exam-history-head">
+          <div>
+            <h2>📊 מעקב מבחנים וסימולציות</h2>
+            <p class="muted">היסטוריית המבחנים שעשית, פילוח הטעויות לפי מקצוע ואפשרות לעבור מחדש על כל שאלה וטעות.</p>
+          </div>
+          <div class="chips-wrap" id="examHistoryFilterChips">
+            <button type="button" class="chip active" data-sim-hist-filter="all">הכל</button>
+            <button type="button" class="chip" data-sim-hist-filter="full">מבחנים מלאים</button>
+            <button type="button" class="chip" data-sim-hist-filter="custom">מותאמות אישית</button>
+          </div>
+        </div>
+        <div class="kpi-grid exam-history-kpis hidden" id="examHistoryKpis"></div>
+        <div class="exam-history-weak-strip hidden" id="examHistoryWeakStrip"></div>
+        <div class="exam-history-list" id="examHistoryList"></div>
+      </section>
     </section>
 
     <!-- Analytics Dashboard View -->
@@ -1243,6 +1275,6 @@
   <script src="questions_data.js?v=20261125j"></script>
   <script src="qr.js?v=20261124d"></script>
   <script src="drawboard.js?v=20261125m"></script>
-  <script src="app.js?v=20261125p"></script>
+  <script src="app.js?v=20261125q"></script>
 </body>
 </html>

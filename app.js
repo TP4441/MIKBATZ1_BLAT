@@ -439,10 +439,27 @@
     struck: new Map(), // qId -> Set of original option idx
     currentIndex: 0,
     secondsLeft: 0,
+    initialSeconds: 0,
+    elapsedSeconds: 0,
     hasTimer: false,
     label: "",
+    simType: "full",
+    examName: "",
     timerId: null,
     shuffleOpts: false,
+  };
+
+  let examHistoryFilter = "all"; // all | full | custom
+
+  let simReviewState = {
+    active: false,
+    entry: null,
+    filter: "all", // all | wrong | skipped | wrong_skipped | correct | unsure | flagged
+    subjectFilter: "all",
+    items: [],
+    currentIndex: 0,
+    returnTo: "results", // results | history
+    notesExpanded: false,
   };
 
   // Lightbox state
@@ -493,6 +510,8 @@
       studySessionUpdatedAt: 0,
       activeSim: null,
       activeSimUpdatedAt: 0,
+      simHistory: [],
+      simHistoryDeleted: {},
       resetAt: 0,
     };
   }
@@ -559,6 +578,7 @@
 
   const VALID_STUDY_MODES = new Set(["practice", "flashcard", "drill"]);
   const MAX_SESSION_ARRAY_LEN = 2000;
+  const MAX_SIM_HISTORY_LEN = 100;
 
   function sanitizeStudySession(raw) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -655,18 +675,100 @@
     const hasTimer = Boolean(raw.hasTimer);
     const rawSec = Number(raw.secondsLeft);
     const secondsLeft = hasTimer && Number.isFinite(rawSec) ? Math.max(0, Math.floor(rawSec)) : 0;
+    const rawInitSec = Number(raw.initialSeconds);
+    const initialSeconds = hasTimer && Number.isFinite(rawInitSec) ? Math.max(0, Math.floor(rawInitSec)) : 0;
+    const rawElapsedSec = Number(raw.elapsedSeconds);
+    const elapsedSeconds = Number.isFinite(rawElapsedSec) ? Math.max(0, Math.floor(rawElapsedSec)) : 0;
 
     return {
       label: typeof raw.label === "string" ? raw.label.slice(0, 160) : "",
+      simType: raw.simType === "custom" ? "custom" : "full",
+      examName: typeof raw.examName === "string" ? raw.examName.slice(0, 80) : "",
       questionIds,
       answers,
       flagged,
       struck,
       currentIndex,
       secondsLeft,
+      initialSeconds,
+      elapsedSeconds,
       hasTimer,
       shuffleOpts: Boolean(raw.shuffleOpts),
       deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
+    };
+  }
+
+  function sanitizeSimHistoryEntry(raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const id = typeof raw.id === "string" ? raw.id.trim().slice(0, 80) : "";
+    if (!id) return null;
+
+    const questionIds = Array.isArray(raw.questionIds)
+      ? raw.questionIds.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
+      : [];
+    if (questionIds.length === 0) return null;
+    const qIdSet = new Set(questionIds);
+
+    const answers = {};
+    if (raw.answers && typeof raw.answers === "object" && !Array.isArray(raw.answers)) {
+      for (const [qId, val] of Object.entries(raw.answers)) {
+        const idx = Number(val);
+        if (qIdSet.has(qId) && Number.isInteger(idx) && idx >= 0 && idx < 10) {
+          answers[qId] = idx;
+        }
+      }
+    }
+
+    const cleanIdArray = (arr) =>
+      Array.isArray(arr)
+        ? Array.from(new Set(arr.filter((x) => typeof x === "string" && qIdSet.has(x)))).slice(0, MAX_SESSION_ARRAY_LEN)
+        : [];
+
+    const completedAt = Number(raw.completedAt);
+    if (!Number.isFinite(completedAt) || completedAt <= 0) return null;
+
+    const totalCount = questionIds.length;
+    const rawCorrect = Number(raw.correctCount);
+    const correctCount = Number.isFinite(rawCorrect)
+      ? Math.max(0, Math.min(totalCount, Math.floor(rawCorrect)))
+      : 0;
+    const answeredCount = Object.keys(answers).length;
+    const rawWrong = Number(raw.wrongCount);
+    const wrongCount = Number.isFinite(rawWrong)
+      ? Math.max(0, Math.min(totalCount, Math.floor(rawWrong)))
+      : Math.max(0, answeredCount - correctCount);
+    const rawSkipped = Number(raw.skippedCount);
+    const skippedCount = Number.isFinite(rawSkipped)
+      ? Math.max(0, Math.min(totalCount, Math.floor(rawSkipped)))
+      : Math.max(0, totalCount - answeredCount);
+
+    const hasTimer = Boolean(raw.hasTimer);
+    const initialSeconds = hasTimer && Number.isFinite(Number(raw.initialSeconds))
+      ? Math.max(0, Math.floor(Number(raw.initialSeconds)))
+      : 0;
+    const elapsedSeconds = Number.isFinite(Number(raw.elapsedSeconds))
+      ? Math.max(0, Math.floor(Number(raw.elapsedSeconds)))
+      : 0;
+
+    return {
+      id,
+      label: typeof raw.label === "string" ? raw.label.slice(0, 160) : "",
+      simType: raw.simType === "custom" ? "custom" : "full",
+      examName: typeof raw.examName === "string" ? raw.examName.slice(0, 80) : "",
+      completedAt: Math.floor(completedAt),
+      hasTimer,
+      initialSeconds,
+      elapsedSeconds,
+      shuffleOpts: Boolean(raw.shuffleOpts),
+      questionIds,
+      answers,
+      flagged: cleanIdArray(raw.flagged),
+      unsure: cleanIdArray(raw.unsure),
+      correctCount,
+      wrongCount,
+      skippedCount,
+      totalCount,
+      scorePct: Math.round((correctCount / totalCount) * 100),
     };
   }
 
@@ -696,6 +798,8 @@
       studySessionUpdatedAt: 0,
       activeSim: null,
       activeSimUpdatedAt: 0,
+      simHistory: [],
+      simHistoryDeleted: {},
       resetAt,
     };
 
@@ -924,6 +1028,40 @@
       merged.activeSim = winSim;
       merged.activeSimUpdatedAt = winSimTs;
     }
+
+    const simDelIds = new Set([
+      ...Object.keys(b.simHistoryDeleted || {}),
+      ...Object.keys(i.simHistoryDeleted || {}),
+    ]);
+    for (const simId of simDelIds) {
+      if (typeof simId !== "string" || !simId || simId.length > 80) continue;
+      const delTs = Math.max(
+        Number(b.simHistoryDeleted?.[simId]) || 0,
+        Number(i.simHistoryDeleted?.[simId]) || 0
+      );
+      if (delTs > resetAt) {
+        merged.simHistoryDeleted[simId] = delTs;
+      }
+    }
+
+    const simById = new Map();
+    for (const list of [b.simHistory, i.simHistory]) {
+      if (!Array.isArray(list)) continue;
+      for (const rawItem of list) {
+        const clean = sanitizeSimHistoryEntry(rawItem);
+        if (!clean) continue;
+        if (clean.completedAt <= resetAt) continue;
+        const delTs = merged.simHistoryDeleted[clean.id] || 0;
+        if (delTs > 0 && clean.completedAt <= delTs) continue;
+        const existing = simById.get(clean.id);
+        if (!existing || clean.completedAt >= existing.completedAt) {
+          simById.set(clean.id, clean);
+        }
+      }
+    }
+    merged.simHistory = Array.from(simById.values())
+      .sort((a, b2) => b2.completedAt - a.completedAt)
+      .slice(0, MAX_SIM_HISTORY_LEN);
 
     return merged;
   }
@@ -2918,6 +3056,14 @@
       }
       return;
     }
+    if (currentMode === "exam" && simReviewState.active) {
+      const revItem = simReviewState.items[simReviewState.currentIndex];
+      if (revItem?.q) {
+        renderProblemBanner(el("simReviewProblemBanner"), revItem.q);
+        updateProblemFlagButton(el("simReviewProblemBtn"), el("simReviewProblemCount"), revItem.q);
+      }
+      return;
+    }
     if (currentMode !== "analytics" && currentMode !== "leaderboard" && filteredList.length > 0) {
       const q = filteredList[currentIndex];
       if (q) {
@@ -3550,7 +3696,9 @@
           const curStudyTs = Number(progress.studySessionUpdatedAt) || 0;
           const srvSimTs = Number(srvProg?.activeSimUpdatedAt) || 0;
           const curSimTs = Number(progress.activeSimUpdatedAt) || 0;
-          if (srvProg && (srvAttempts > curAttempts || srvStudyTs > curStudyTs || srvSimTs > curSimTs)) {
+          const srvHistLen = Array.isArray(srvProg?.simHistory) ? srvProg.simHistory.length : 0;
+          const curHistLen = getSimHistoryList().length;
+          if (srvProg && (srvAttempts > curAttempts || srvStudyTs > curStudyTs || srvSimTs > curSimTs || srvHistLen > curHistLen)) {
             progress = { ...defaultProgress(), ...mergeProgressPayloads(progress, srvProg) };
             localStorage.setItem(STORAGE_KEY, JSON.stringify(progress));
             const nextStudyTs = Number(progress.studySessionUpdatedAt) || 0;
@@ -3975,11 +4123,19 @@
 
   function getActiveStemContext() {
     if (currentMode === "exam") {
-      if (!simState.active || simState.questions.length === 0) return null;
-      const q = simState.questions[simState.currentIndex];
-      const stemEl = el("simStem");
-      if (!q || !stemEl || !stemEl.isConnected) return null;
-      return { q, stemEl };
+      if (simState.active && simState.questions.length > 0) {
+        const q = simState.questions[simState.currentIndex];
+        const stemEl = el("simStem");
+        if (!q || !stemEl || !stemEl.isConnected) return null;
+        return { q, stemEl };
+      }
+      if (simReviewState.active && simReviewState.items.length > 0) {
+        const q = simReviewState.items[simReviewState.currentIndex]?.q;
+        const stemEl = el("simReviewStem");
+        if (!q || !stemEl || !stemEl.isConnected) return null;
+        return { q, stemEl };
+      }
+      return null;
     }
     if (!isStudyMode(currentMode) || filteredList.length === 0) return null;
     const q = filteredList[currentIndex];
@@ -3993,22 +4149,21 @@
     const targetQId = qId || ctx?.q?.id || null;
     const hasHighlights = Boolean(targetQId && progress.highlights?.[targetQId]?.length > 0);
 
-    const studyBtn = el("btnFlagMarker");
-    if (studyBtn) {
-      studyBtn.classList.toggle("active", markerMode);
-      studyBtn.setAttribute("aria-pressed", markerMode ? "true" : "false");
-    }
-    const simBtn = el("simMarkerBtn");
-    if (simBtn) {
-      simBtn.classList.toggle("active", markerMode);
-      simBtn.setAttribute("aria-pressed", markerMode ? "true" : "false");
-    }
+    ["btnFlagMarker", "simMarkerBtn", "simReviewMarkerBtn"].forEach((id) => {
+      const btn = el(id);
+      if (btn) {
+        btn.classList.toggle("active", markerMode);
+        btn.setAttribute("aria-pressed", markerMode ? "true" : "false");
+      }
+    });
 
     el("btnClearMarkers")?.classList.toggle("hidden", !hasHighlights);
     el("simClearMarkersBtn")?.classList.toggle("hidden", !hasHighlights);
+    el("simReviewClearMarkersBtn")?.classList.toggle("hidden", !hasHighlights);
 
     el("qStem")?.classList.toggle("marker-active", markerMode);
     el("simStem")?.classList.toggle("marker-active", markerMode);
+    el("simReviewStem")?.classList.toggle("marker-active", markerMode);
   }
 
   function hideMarkerFloatingPill() {
@@ -4150,15 +4305,20 @@
   // Personal Drawing Board Bridge (100% Local IndexedDB via drawboard.js)
   function getActiveDrawBoardQuestion() {
     if (currentMode === "exam") {
-      if (!simState.active || simState.questions.length === 0) return null;
-      return simState.questions[simState.currentIndex] || null;
+      if (simState.active && simState.questions.length > 0) {
+        return simState.questions[simState.currentIndex] || null;
+      }
+      if (simReviewState.active && simReviewState.items.length > 0) {
+        return simReviewState.items[simReviewState.currentIndex]?.q || null;
+      }
+      return null;
     }
     if (!isStudyMode(currentMode) || filteredList.length === 0) return null;
     return filteredList[currentIndex] || null;
   }
 
   function isDrawBoardModeAvailable() {
-    return isStudyMode(currentMode) || (currentMode === "exam" && Boolean(simState.active));
+    return isStudyMode(currentMode) || (currentMode === "exam" && (Boolean(simState.active) || Boolean(simReviewState.active)));
   }
 
   function updateDrawBoardTriggerUI(qId = null) {
@@ -4180,6 +4340,13 @@
       simBtn.setAttribute("aria-pressed", isOpen ? "true" : "false");
     }
     el("simDrawBoardDot")?.classList.toggle("hidden", !hasSaved);
+
+    const revBtn = el("simReviewDrawBoardBtn");
+    if (revBtn) {
+      revBtn.classList.toggle("active", isOpen);
+      revBtn.setAttribute("aria-pressed", isOpen ? "true" : "false");
+    }
+    el("simReviewDrawBoardDot")?.classList.toggle("hidden", !hasSaved);
   }
 
   function syncDrawBoardAvailability() {
@@ -4872,6 +5039,8 @@
       btn.onclick = () => btn.classList.toggle("active");
       simSubjWrap.appendChild(btn);
     });
+
+    renderExamHistory();
   }
 
   function formatMmSs(totalSec) {
@@ -4879,6 +5048,56 @@
     const m = Math.floor(sec / 60);
     const s = sec % 60;
     return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  function formatDurationClock(totalSec) {
+    const sec = Math.max(0, Math.floor(Number(totalSec) || 0));
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) {
+      return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    }
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+
+  function formatSimDate(ts) {
+    const d = new Date(Number(ts) || 0);
+    if (Number.isNaN(d.getTime())) return "";
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = d.getFullYear();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const min = String(d.getMinutes()).padStart(2, "0");
+    return `${dd}.${mm}.${yyyy} · ${hh}:${min}`;
+  }
+
+  function getScoreTierClass(pct) {
+    if (pct >= 75) return "score-good";
+    if (pct >= 50) return "score-mid";
+    return "score-low";
+  }
+
+  function getSimHistoryList() {
+    return Array.isArray(progress.simHistory) ? progress.simHistory : [];
+  }
+
+  function getSimHistoryEntryById(simId) {
+    if (!simId) return null;
+    return getSimHistoryList().find((item) => item && item.id === simId) || null;
+  }
+
+  function showExamSetupHome() {
+    simReviewState.active = false;
+    simReviewState.entry = null;
+    simReviewState.items = [];
+    el("examActive")?.classList.add("hidden");
+    el("examResults")?.classList.add("hidden");
+    el("examReview")?.classList.add("hidden");
+    el("examSetup")?.classList.remove("hidden");
+    el("examHistorySection")?.classList.remove("hidden");
+    updateExamFocusModeUI();
+    renderExamHistory();
   }
 
   function persistActiveSimulation({ syncCloud = true } = {}) {
@@ -4893,12 +5112,16 @@
     });
     progress.activeSim = {
       label: simState.label || `סימולציה (${simState.questions.length} שאלות)`,
+      simType: simState.simType === "custom" ? "custom" : "full",
+      examName: simState.examName || "",
       questionIds: simState.questions.map((q) => q.id),
       answers: answersObj,
       flagged: Array.from(simState.flagged),
       struck: struckObj,
       currentIndex: simState.currentIndex,
       secondsLeft: simState.hasTimer ? Math.max(0, simState.secondsLeft) : 0,
+      initialSeconds: simState.hasTimer ? Math.max(0, simState.initialSeconds || 0) : 0,
+      elapsedSeconds: Math.max(0, Math.floor(Number(simState.elapsedSeconds) || 0)),
       hasTimer: Boolean(simState.hasTimer),
       shuffleOpts: Boolean(simState.shuffleOpts),
       deviceId,
@@ -4947,7 +5170,17 @@
     simState.timerId = null;
     if (simState.hasTimer && simState.secondsLeft > 0) {
       updateSimTimerDisplay();
-      simState.timerId = setInterval(() => {
+    } else {
+      el("simTimerDisplay").textContent = "ללא הגבלה";
+    }
+    simState.timerId = setInterval(() => {
+      if (!simState.active) {
+        clearInterval(simState.timerId);
+        simState.timerId = null;
+        return;
+      }
+      simState.elapsedSeconds = (simState.elapsedSeconds || 0) + 1;
+      if (simState.hasTimer && simState.secondsLeft > 0) {
         simState.secondsLeft--;
         updateSimTimerDisplay();
         if (simState.secondsLeft <= 0) {
@@ -4957,10 +5190,10 @@
         } else if (simState.secondsLeft % 5 === 0) {
           persistActiveSimulation({ syncCloud: false });
         }
-      }, 1000);
-    } else {
-      el("simTimerDisplay").textContent = "ללא הגבלה";
-    }
+      } else if (simState.elapsedSeconds % 10 === 0) {
+        persistActiveSimulation({ syncCloud: false });
+      }
+    }, 1000);
   }
 
   function resumeSavedSimulation() {
@@ -5001,6 +5234,7 @@
     const secondsLeft = hasTimer ? Math.max(1, Number(saved.secondsLeft) || 1) : 0;
 
     clearInterval(simState.timerId);
+    simReviewState.active = false;
     simState = {
       active: true,
       questions,
@@ -5009,8 +5243,12 @@
       struck,
       currentIndex: safeIdx,
       secondsLeft,
+      initialSeconds: hasTimer ? Math.max(secondsLeft, Number(saved.initialSeconds) || 0) : 0,
+      elapsedSeconds: Math.max(0, Number(saved.elapsedSeconds) || 0),
       hasTimer,
       label: saved.label || `סימולציה (${questions.length} שאלות)`,
+      simType: saved.simType === "custom" ? "custom" : "full",
+      examName: saved.examName || "",
       timerId: null,
       shuffleOpts: Boolean(saved.shuffleOpts),
     };
@@ -5018,7 +5256,9 @@
     optionPermutations.clear();
     switchMode("exam", { persist: false });
     el("examSetup").classList.add("hidden");
+    el("examHistorySection")?.classList.add("hidden");
     el("examResults").classList.add("hidden");
+    el("examReview")?.classList.add("hidden");
     el("examActive").classList.remove("hidden");
 
     updateExamFocusModeUI();
@@ -5028,13 +5268,26 @@
     showToast("⏱️ הסימולציה שוחזרה מהמקום שבו עצרת!");
   }
 
-  function startSimulation() {
+  function startSimulation({
+    customPool = null,
+    customLabel = null,
+    customSimType = null,
+    customExamName = "",
+    customMins = null,
+    customShuffleOpts = null,
+  } = {}) {
     hasUserInteractedWithNav = true;
-    const simType = document.querySelector('input[name="simType"]:checked').value;
+    const selectedRadioType = document.querySelector('input[name="simType"]:checked')?.value || "full";
+    const simType = customSimType || selectedRadioType;
     let pool = [];
     let label = "";
-    if (simType === "full") {
-      const examName = el("simExamSelect").value;
+    let examName = customExamName || "";
+
+    if (Array.isArray(customPool) && customPool.length > 0) {
+      pool = customPool;
+      label = customLabel || `סימולציה (${pool.length} שאלות)`;
+    } else if (simType === "full") {
+      examName = el("simExamSelect").value;
       pool = QUESTIONS.filter((q) => q.exam === examName);
       label = `${examName} (${pool.length} שאלות)`;
     } else {
@@ -5053,8 +5306,15 @@
       return;
     }
 
-    const mins = parseInt(el("simMinutes").value, 10) || 0;
+    const mins = customMins !== null
+      ? Math.max(0, Math.floor(Number(customMins) || 0))
+      : Math.max(0, parseInt(el("simMinutes").value, 10) || 0);
+    const shuffleOpts = customShuffleOpts !== null
+      ? Boolean(customShuffleOpts)
+      : el("simShuffleOpts").checked;
+
     clearInterval(simState.timerId);
+    simReviewState.active = false;
     simState = {
       active: true,
       questions: pool,
@@ -5063,15 +5323,21 @@
       struck: new Map(),
       currentIndex: 0,
       secondsLeft: mins * 60,
+      initialSeconds: mins * 60,
+      elapsedSeconds: 0,
       hasTimer: mins > 0,
       label,
+      simType: simType === "custom" ? "custom" : "full",
+      examName,
       timerId: null,
-      shuffleOpts: el("simShuffleOpts").checked,
+      shuffleOpts,
     };
 
     optionPermutations.clear();
     el("examSetup").classList.add("hidden");
+    el("examHistorySection")?.classList.add("hidden");
     el("examResults").classList.add("hidden");
+    el("examReview")?.classList.add("hidden");
     el("examActive").classList.remove("hidden");
 
     updateExamFocusModeUI();
@@ -5086,10 +5352,7 @@
     simState.timerId = null;
     persistActiveSimulation({ syncCloud: true });
     simState.active = false;
-    updateExamFocusModeUI();
-    el("examActive").classList.add("hidden");
-    el("examResults").classList.add("hidden");
-    el("examSetup").classList.remove("hidden");
+    showExamSetupHome();
     renderResumeSimBanner();
     showToast("⏸️ הסימולציה הושהתה ונשמרה — ניתן להמשיך בכל עת.");
   }
@@ -5299,90 +5562,1017 @@
     simState.active = false;
     updateExamFocusModeUI();
 
-    let correctCount = 0;
-    const bySubj = {};
-    const wrongIds = [];
+    const now = Date.now();
+    const answersObj = {};
     const unsureIds = [];
-    const wrongOrUnsureIds = [];
+    let correctCount = 0;
+    let wrongCount = 0;
+    let skippedCount = 0;
 
     simState.questions.forEach((q) => {
-      const s = getSubject(q);
-      if (!bySubj[s]) bySubj[s] = { total: 0, correct: 0 };
-      bySubj[s].total++;
-
       const chosen = simState.answers.get(q.id);
       const isOk = chosen !== undefined && q.correct.includes(chosen);
       const isUnsure = Boolean(progress.flags[q.id]?.unsure);
-      if (isOk) {
-        correctCount++;
-        bySubj[s].correct++;
+
+      if (chosen !== undefined) {
+        answersObj[q.id] = chosen;
+        progress.attempts[q.id] = { selected: chosen, isCorrect: isOk, ts: now };
+        if (progress.clearedAttempts) delete progress.clearedAttempts[q.id];
+        recordDaily(isOk);
+        if (isOk) correctCount++;
+        else wrongCount++;
       } else {
-        wrongIds.push(q.id);
+        skippedCount++;
       }
+
       if (isUnsure) {
         unsureIds.push(q.id);
       }
-      if (!isOk || isUnsure) {
-        wrongOrUnsureIds.push(q.id);
-      }
-
-      if (chosen !== undefined) {
-        progress.attempts[q.id] = { selected: chosen, isCorrect: isOk, ts: Date.now() };
-        if (progress.clearedAttempts) delete progress.clearedAttempts[q.id];
-        recordDaily(isOk);
-      }
     });
+
+    const elapsedSeconds = simState.hasTimer && simState.initialSeconds > 0
+      ? Math.max(simState.elapsedSeconds || 0, simState.initialSeconds - Math.max(0, simState.secondsLeft))
+      : Math.max(0, Math.floor(Number(simState.elapsedSeconds) || 0));
+
+    const historyEntry = sanitizeSimHistoryEntry({
+      id: `sim_${now}_${generateRandomHex(4)}`,
+      label: simState.label || `סימולציה (${simState.questions.length} שאלות)`,
+      simType: simState.simType || "full",
+      examName: simState.examName || "",
+      completedAt: now,
+      hasTimer: Boolean(simState.hasTimer),
+      initialSeconds: simState.hasTimer ? Math.max(0, simState.initialSeconds || 0) : 0,
+      elapsedSeconds,
+      shuffleOpts: Boolean(simState.shuffleOpts),
+      questionIds: simState.questions.map((q) => q.id),
+      answers: answersObj,
+      flagged: Array.from(simState.flagged),
+      unsure: unsureIds,
+      correctCount,
+      wrongCount,
+      skippedCount,
+      totalCount: simState.questions.length,
+    });
+
+    if (historyEntry) {
+      const existing = Array.isArray(progress.simHistory) ? progress.simHistory : [];
+      progress.simHistory = [historyEntry, ...existing].slice(0, MAX_SIM_HISTORY_LEN);
+    }
+
     clearActiveSimulation({ syncCloud: true });
+    if (historyEntry) {
+      renderSimResults(historyEntry, { fromHistory: false });
+    } else {
+      showExamSetupHome();
+    }
+  }
 
-    const pct = Math.round((correctCount / simState.questions.length) * 100);
+  /**
+   * Compute dynamic per-question and per-subject analysis for a completed simulation entry.
+   */
+  function computeSimEntryAnalysis(entry) {
+    const qIds = Array.isArray(entry?.questionIds) ? entry.questionIds : [];
+    const answers = entry?.answers && typeof entry.answers === "object" ? entry.answers : {};
+    const flaggedSet = new Set(Array.isArray(entry?.flagged) ? entry.flagged : []);
+    const unsureSet = new Set(Array.isArray(entry?.unsure) ? entry.unsure : []);
+
+    const items = [];
+    const bySubjMap = new Map();
+    let correctCount = 0;
+    let wrongCount = 0;
+    let skippedCount = 0;
+    let unsureCount = 0;
+    let flaggedCount = 0;
+
+    qIds.forEach((qId, idx) => {
+      const q = Q_MAP.get(qId);
+      if (!q) return;
+      const subj = getSubject(q);
+      const chosen = Object.prototype.hasOwnProperty.call(answers, qId) ? answers[qId] : undefined;
+      const isSkipped = chosen === undefined;
+      const isCorrect = !isSkipped && q.correct.includes(chosen);
+      const isWrong = !isSkipped && !isCorrect;
+      const isUnsure = unsureSet.has(qId);
+      const isFlagged = flaggedSet.has(qId);
+
+      if (isCorrect) correctCount++;
+      else if (isWrong) wrongCount++;
+      else skippedCount++;
+
+      if (isUnsure) unsureCount++;
+      if (isFlagged) flaggedCount++;
+
+      if (!bySubjMap.has(subj)) {
+        bySubjMap.set(subj, { subject: subj, total: 0, correct: 0, wrong: 0, skipped: 0, mistakes: 0 });
+      }
+      const st = bySubjMap.get(subj);
+      st.total++;
+      if (isCorrect) st.correct++;
+      else if (isWrong) {
+        st.wrong++;
+        st.mistakes++;
+      } else {
+        st.skipped++;
+        st.mistakes++;
+      }
+
+      items.push({
+        simNum: idx + 1,
+        qId,
+        q,
+        subject: subj,
+        chosen,
+        isCorrect,
+        isWrong,
+        isSkipped,
+        isUnsure,
+        isFlagged,
+      });
+    });
+
+    const totalCount = items.length || entry?.totalCount || 0;
+    const scorePct = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : (entry?.scorePct || 0);
+    const bySubject = Array.from(bySubjMap.values()).sort(
+      (a, b) => b.mistakes - a.mistakes || b.total - a.total || a.subject.localeCompare(b.subject, "he")
+    );
+
+    return {
+      items,
+      bySubject,
+      correctCount,
+      wrongCount,
+      skippedCount,
+      mistakesCount: wrongCount + skippedCount,
+      unsureCount,
+      flaggedCount,
+      totalCount,
+      scorePct,
+    };
+  }
+
+  function renderExamHistory() {
+    const section = el("examHistorySection");
+    const kpisEl = el("examHistoryKpis");
+    const weakStripEl = el("examHistoryWeakStrip");
+    const listEl = el("examHistoryList");
+    if (!section || !kpisEl || !weakStripEl || !listEl) return;
+
+    const allHistory = getSimHistoryList();
+    el("examHistoryFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
+      chip.classList.toggle("active", (chip.dataset.simHistFilter || "all") === examHistoryFilter);
+    });
+
+    if (allHistory.length === 0) {
+      kpisEl.classList.add("hidden");
+      weakStripEl.classList.add("hidden");
+      listEl.innerHTML = `
+        <div class="exam-history-empty">
+          <div class="exam-history-empty-ico" aria-hidden="true">📝</div>
+          <div>
+            <strong>עדיין לא הוגשו סימולציות</strong>
+            <p class="muted">השלם והגש סימולציה כדי לעקוב כאן אחרי הציונים שלך, לזהות במה טעית ולעבור שוב על כל השאלות והטעויות.</p>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    // Aggregate KPIs and weak subjects across all completed simulations
+    let totalScoreSum = 0;
+    let bestScore = 0;
+    let totalWrongAndSkipped = 0;
+    let fullCount = 0;
+    let customCount = 0;
+    const aggSubjErrors = new Map();
+
+    const analyzedEntries = allHistory.map((entry) => {
+      const analysis = computeSimEntryAnalysis(entry);
+      totalScoreSum += analysis.scorePct;
+      if (analysis.scorePct > bestScore) bestScore = analysis.scorePct;
+      totalWrongAndSkipped += analysis.mistakesCount;
+      if (entry.simType === "custom") customCount++;
+      else fullCount++;
+
+      analysis.bySubject.forEach((st) => {
+        if (!aggSubjErrors.has(st.subject)) {
+          aggSubjErrors.set(st.subject, { subject: st.subject, mistakes: 0, wrong: 0, skipped: 0, total: 0 });
+        }
+        const agg = aggSubjErrors.get(st.subject);
+        agg.mistakes += st.mistakes;
+        agg.wrong += st.wrong;
+        agg.skipped += st.skipped;
+        agg.total += st.total;
+      });
+
+      return { entry, analysis };
+    });
+
+    const avgScore = Math.round(totalScoreSum / allHistory.length);
+    const latestScore = analyzedEntries[0].analysis.scorePct;
+    const prevScore = analyzedEntries.length > 1 ? analyzedEntries[1].analysis.scorePct : null;
+    const trendDiff = prevScore !== null ? latestScore - prevScore : null;
+    const trendLabel = trendDiff === null
+      ? `אחרון: ${latestScore}%`
+      : trendDiff > 0
+      ? `אחרון: ${latestScore}% (+${trendDiff}%)`
+      : trendDiff < 0
+      ? `אחרון: ${latestScore}% (${trendDiff}%)`
+      : `אחרון: ${latestScore}% (=)`;
+
+    kpisEl.classList.remove("hidden");
+    kpisEl.innerHTML = `
+      <div class="kpi-card">
+        <div class="kpi-label">🧪 סימולציות שבוצעו</div>
+        <div class="kpi-value">${allHistory.length}</div>
+        <div class="kpi-sub">${fullCount} מלאים · ${customCount} מותאמות</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">📈 ציון ממוצע</div>
+        <div class="kpi-value">${avgScore}%</div>
+        <div class="kpi-sub">${escapeHtml(trendLabel)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">🏆 הציון הגבוה ביותר</div>
+        <div class="kpi-value">${bestScore}%</div>
+        <div class="kpi-sub">מתוך ${allHistory.length} סימולציות</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">❌ סה״כ טעויות ודילוגים</div>
+        <div class="kpi-value">${totalWrongAndSkipped}</div>
+        <div class="kpi-sub">בכל הסימולציות יחד</div>
+      </div>
+    `;
+
+    const weakSubjects = Array.from(aggSubjErrors.values())
+      .filter((s) => s.mistakes > 0)
+      .sort((a, b) => b.mistakes - a.mistakes || b.total - a.total);
+
+    if (weakSubjects.length > 0) {
+      weakStripEl.classList.remove("hidden");
+      const pillsHtml = weakSubjects
+        .slice(0, 6)
+        .map((st) => {
+          const errPct = st.total > 0 ? Math.round((st.mistakes / st.total) * 100) : 0;
+          return `<span class="exam-weak-pill"><span>${escapeHtml(formatSubject(st.subject))}</span><strong>${st.mistakes} טעויות</strong><span class="muted">(${errPct}%)</span></span>`;
+        })
+        .join("");
+      weakStripEl.innerHTML = `
+        <span class="exam-weak-title">🎯 במה טעית הכי הרבה בסימולציות:</span>
+        <div class="exam-weak-pills">${pillsHtml}</div>
+      `;
+    } else {
+      weakStripEl.classList.add("hidden");
+      weakStripEl.innerHTML = "";
+    }
+
+    const filtered = analyzedEntries.filter(({ entry }) => {
+      if (examHistoryFilter === "full") return entry.simType !== "custom";
+      if (examHistoryFilter === "custom") return entry.simType === "custom";
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      listEl.innerHTML = `
+        <div class="exam-history-empty">
+          <div>
+            <strong>אין סימולציות התואמות לסינון זה</strong>
+            <p class="muted">בחר "הכל" כדי לראות את כל הסימולציות שלך.</p>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    listEl.innerHTML = "";
+    filtered.forEach(({ entry, analysis }) => {
+      const card = document.createElement("article");
+      card.className = "exam-history-card";
+      const tierCls = getScoreTierClass(analysis.scorePct);
+      const typeLabel = entry.simType === "custom" ? "מותאמת אישית" : "מבחן מלא";
+      const timeText = entry.elapsedSeconds > 0
+        ? `⏱️ ${formatDurationClock(entry.elapsedSeconds)}`
+        : entry.hasTimer
+        ? "⏱️ טיימר"
+        : "ללא טיימר";
+
+      const mistakeSubjects = analysis.bySubject.filter((st) => st.mistakes > 0);
+      const subjPillsHtml = mistakeSubjects.length > 0
+        ? mistakeSubjects
+            .map(
+              (st) =>
+                `<button type="button" class="exam-subj-mistake-pill" data-sim-id="${escapeHtml(entry.id)}" data-subj="${escapeHtml(st.subject)}" title="לחץ כדי לעבור על הטעויות במקצוע זה"><span>${escapeHtml(formatSubject(st.subject))}</span><strong>${st.mistakes}/${st.total}</strong></button>`
+            )
+            .join("")
+        : `<span class="exam-perfect-pill">🎉 100% הצלחה — ללא טעויות!</span>`;
+
+      const primaryReviewLabel = analysis.mistakesCount > 0
+        ? `❌ הסתכל על הטעויות (${analysis.mistakesCount})`
+        : `📋 עבור על השאלות (${analysis.totalCount})`;
+
+      card.innerHTML = `
+        <div class="exam-history-card-main">
+          <div class="exam-history-score ${tierCls}">
+            <span class="exam-history-score-num tabular-text">${analysis.scorePct}%</span>
+            <span class="exam-history-score-frac tabular-text">${analysis.correctCount}/${analysis.totalCount}</span>
+          </div>
+
+          <div class="exam-history-body">
+            <div class="exam-history-title-row">
+              <strong class="exam-history-title">${escapeHtml(entry.label || "סימולציה")}</strong>
+              <span class="exam-history-type-badge">${typeLabel}</span>
+            </div>
+            <div class="exam-history-meta tabular-text">
+              <span>📅 ${escapeHtml(formatSimDate(entry.completedAt))}</span>
+              <span>${escapeHtml(timeText)}</span>
+              ${entry.shuffleOpts ? `<span>🎲 מסיחים מעורבבים</span>` : ""}
+            </div>
+            <div class="exam-history-counts tabular-text">
+              <span class="hist-stat ok">✅ ${analysis.correctCount} נכונות</span>
+              <span class="hist-stat wrong">❌ ${analysis.wrongCount} טעויות</span>
+              ${analysis.skippedCount > 0 ? `<span class="hist-stat skip">⏭️ ${analysis.skippedCount} דילוגים</span>` : ""}
+              ${analysis.unsureCount > 0 ? `<span class="hist-stat unsure">🤔 ${analysis.unsureCount} התלבטויות</span>` : ""}
+              ${analysis.flaggedCount > 0 ? `<span class="hist-stat flag">🚩 ${analysis.flaggedCount} לבדיקה</span>` : ""}
+            </div>
+            <div class="exam-history-mistakes-row">
+              <span class="exam-history-mistakes-label">במה טעית:</span>
+              <div class="exam-history-mistakes-pills">${subjPillsHtml}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="exam-history-actions">
+          <button type="button" class="btn-primary btn-sm" data-action="review-primary">${primaryReviewLabel}</button>
+          <button type="button" class="btn-secondary btn-sm" data-action="results">👁️ פירוט מלא</button>
+          <button type="button" class="btn-secondary btn-sm" data-action="retake">🔄 בצע שוב</button>
+          <button type="button" class="btn-ghost btn-sm exam-history-del-btn" data-action="delete" title="מחק סימולציה מההיסטוריה" aria-label="מחק סימולציה">🗑️</button>
+        </div>
+      `;
+
+      card.querySelector('[data-action="review-primary"]').onclick = () => {
+        openSimReview(entry, {
+          filter: analysis.mistakesCount > 0 ? "wrong_skipped" : "all",
+          returnTo: "history",
+        });
+      };
+      card.querySelector('[data-action="results"]').onclick = () => {
+        renderSimResults(entry, { fromHistory: true });
+      };
+      card.querySelector('[data-action="retake"]').onclick = () => retakeSimulation(entry);
+      card.querySelector('[data-action="delete"]').onclick = () => deleteSimHistoryEntry(entry.id);
+
+      card.querySelectorAll(".exam-subj-mistake-pill").forEach((pillBtn) => {
+        pillBtn.onclick = () => {
+          openSimReview(entry, {
+            filter: "wrong_skipped",
+            subjectFilter: pillBtn.dataset.subj || "all",
+            returnTo: "history",
+          });
+        };
+      });
+
+      listEl.appendChild(card);
+    });
+  }
+
+  function deleteSimHistoryEntry(simId) {
+    if (!simId) return;
+    if (!confirm("למחוק את הסימולציה הזו מההיסטוריה? הפעולה תסונכרן בין המכשירים.")) return;
+    const now = Date.now();
+    progress.simHistory = getSimHistoryList().filter((item) => item && item.id !== simId);
+    if (!progress.simHistoryDeleted) progress.simHistoryDeleted = {};
+    progress.simHistoryDeleted[simId] = now;
+    saveProgress({ syncCloud: true });
+
+    if (simReviewState.active && simReviewState.entry?.id === simId) {
+      showExamSetupHome();
+    } else if (!el("examResults")?.classList.contains("hidden") && el("examResults")?.dataset.simId === simId) {
+      showExamSetupHome();
+    } else {
+      renderExamHistory();
+    }
+    showToast("🗑️ הסימולציה נמחקה מההיסטוריה.");
+  }
+
+  function retakeSimulation(entry) {
+    if (!entry) return;
+    const pool = (entry.questionIds || []).map((id) => Q_MAP.get(id)).filter(Boolean);
+    if (pool.length === 0) {
+      showToast("לא נמצאו שאלות להפעלת הסימולציה.");
+      return;
+    }
+    const mins = entry.hasTimer && entry.initialSeconds > 0
+      ? Math.max(1, Math.round(entry.initialSeconds / 60))
+      : 0;
+    startSimulation({
+      customPool: pool,
+      customLabel: entry.label || `${entry.examName || "סימולציה"} (${pool.length} שאלות)`,
+      customSimType: entry.simType === "custom" ? "custom" : "full",
+      customExamName: entry.examName || "",
+      customMins: mins,
+      customShuffleOpts: Boolean(entry.shuffleOpts),
+    });
+  }
+
+  function renderSimResults(entry, { fromHistory = false } = {}) {
+    if (!entry) return;
+    const analysis = computeSimEntryAnalysis(entry);
     const resEl = el("examResults");
-    el("examActive").classList.add("hidden");
+    simReviewState.active = false;
+    el("examActive")?.classList.add("hidden");
+    el("examSetup")?.classList.add("hidden");
+    el("examHistorySection")?.classList.add("hidden");
+    el("examReview")?.classList.add("hidden");
     resEl.classList.remove("hidden");
+    resEl.dataset.simId = entry.id || "";
+    updateExamFocusModeUI();
 
-    const subjRows = Object.entries(bySubj)
-      .map(([subj, st]) => {
-        const sp = Math.round((st.correct / st.total) * 100);
+    const wrongAndSkippedIds = analysis.items
+      .filter((it) => it.isWrong || it.isSkipped)
+      .map((it) => it.qId);
+    const unsureIds = analysis.items.filter((it) => it.isUnsure).map((it) => it.qId);
+    const wrongOrUnsureIds = analysis.items
+      .filter((it) => it.isWrong || it.isSkipped || it.isUnsure)
+      .map((it) => it.qId);
+
+    const subjRows = analysis.bySubject
+      .map((st) => {
+        const sp = st.total > 0 ? Math.round((st.correct / st.total) * 100) : 0;
+        const barCls = sp >= 75 ? "good" : sp >= 50 ? "mid" : "low";
+        const mistakeParts = [];
+        if (st.wrong > 0) mistakeParts.push(`${st.wrong} טעויות`);
+        if (st.skipped > 0) mistakeParts.push(`${st.skipped} דילוגים`);
+        const mistakeText = mistakeParts.length > 0 ? mistakeParts.join(" · ") : "ללא טעויות";
         return `
-          <div class="prog-item">
-            <div class="prog-item-head"><span>${escapeHtml(formatSubject(subj))}</span><strong>${st.correct}/${st.total} (${sp}%)</strong></div>
-            <div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${sp}%"></div></div>
+          <div class="prog-item sim-res-subj-item">
+            <div class="prog-item-head">
+              <span>${escapeHtml(formatSubject(st.subject))}</span>
+              <span class="sim-res-subj-stats">
+                <strong class="tabular-text">${st.correct}/${st.total} (${sp}%)</strong>
+                <span class="sim-res-subj-err ${st.mistakes > 0 ? "has-err" : "no-err"}">${escapeHtml(mistakeText)}</span>
+                ${st.mistakes > 0 ? `<button type="button" class="link-btn sim-subj-review-link" data-subj="${escapeHtml(st.subject)}">סקור טעויות ↗</button>` : ""}
+              </span>
+            </div>
+            <div class="prog-bar-bg"><div class="prog-bar-fill ${barCls}" style="width:${sp}%"></div></div>
           </div>`;
       })
       .join("");
 
-    const showCombinedBtn = wrongOrUnsureIds.length > wrongIds.length && wrongOrUnsureIds.length > unsureIds.length;
-    const unsureBtnClass = wrongIds.length === 0 && unsureIds.length > 0 ? "btn-primary" : "btn-secondary";
+    const tierCls = getScoreTierClass(analysis.scorePct);
+    const timeText = entry.elapsedSeconds > 0
+      ? `⏱️ זמן ביצוע: ${formatDurationClock(entry.elapsedSeconds)}`
+      : entry.hasTimer
+      ? "⏱️ מבחן מתוזמן"
+      : "ללא טיימר";
+
+    const showCombinedBtn = wrongOrUnsureIds.length > wrongAndSkippedIds.length && wrongOrUnsureIds.length > unsureIds.length;
 
     resEl.innerHTML = `
-      <h2>🏁 תוצאות הסימולציה</h2>
-      <div class="kpi-grid" style="margin-top:14px;">
-        <div class="kpi-card"><div class="kpi-label">ציון סופי</div><div class="kpi-value">${pct}%</div></div>
-        <div class="kpi-card"><div class="kpi-label">תשובות נכונות</div><div class="kpi-value">${correctCount} / ${simState.questions.length}</div></div>
-        <div class="kpi-card"><div class="kpi-label">טעויות / דילוגים</div><div class="kpi-value">${wrongIds.length}</div></div>
-        <div class="kpi-card"><div class="kpi-label">🤔 התלבטתי</div><div class="kpi-value">${unsureIds.length}</div></div>
+      <div class="sim-results-top">
+        <button type="button" class="btn-secondary btn-sm" id="btnBackToExamHome">→ חזרה למבחנים ולהיסטוריה</button>
+        <div class="sim-results-meta muted tabular-text">
+          <span>📅 ${escapeHtml(formatSimDate(entry.completedAt))}</span>
+          <span>${escapeHtml(timeText)}</span>
+        </div>
       </div>
-      <h3>פילוח לפי מקצוע</h3>
+
+      <div class="sim-results-title-row">
+        <h2>${fromHistory ? "📊 סיכום מבחן שמור" : "🏁 תוצאות הסימולציה"} · ${escapeHtml(entry.label || "")}</h2>
+      </div>
+
+      <div class="kpi-grid" style="margin-top:14px;">
+        <div class="kpi-card"><div class="kpi-label">ציון סופי</div><div class="kpi-value ${tierCls}">${analysis.scorePct}%</div></div>
+        <div class="kpi-card"><div class="kpi-label">תשובות נכונות</div><div class="kpi-value">${analysis.correctCount} / ${analysis.totalCount}</div></div>
+        <div class="kpi-card"><div class="kpi-label">טעויות / דילוגים</div><div class="kpi-value">${analysis.mistakesCount}</div><div class="kpi-sub">${analysis.wrongCount} טעויות · ${analysis.skippedCount} דילוגים</div></div>
+        <div class="kpi-card"><div class="kpi-label">🤔 התלבטתי</div><div class="kpi-value">${analysis.unsureCount}</div></div>
+      </div>
+
+      <h3 style="margin-top:18px;">פילוח לפי מקצוע (במה טעית וכמה)</h3>
       <div class="subject-progress-list">${subjRows}</div>
-      <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap;">
-        <button type="button" class="btn-primary" id="btnReviewSimWrong" ${wrongIds.length === 0 ? "disabled" : ""}>🔥 תחקר טעויות מהסימולציה (${wrongIds.length})</button>
-        <button type="button" class="${unsureBtnClass}" id="btnReviewSimUnsure" ${unsureIds.length === 0 ? "disabled" : ""}>🤔 תחקר התלבטויות מהסימולציה (${unsureIds.length})</button>
-        ${showCombinedBtn ? `<button type="button" class="btn-secondary" id="btnReviewSimWrongAndUnsure">🎯 תחקר טעויות והתלבטויות (${wrongOrUnsureIds.length})</button>` : ""}
-        <button type="button" class="btn-secondary" id="btnNewSim">🔄 סימולציה חדשה</button>
+
+      <div class="sim-results-actions">
+        <button type="button" class="btn-primary" id="btnOpenSimReviewMistakes" ${analysis.mistakesCount === 0 ? "disabled" : ""}>❌ עבור על הטעויות והדילוגים (${analysis.mistakesCount})</button>
+        <button type="button" class="${analysis.mistakesCount === 0 ? "btn-primary" : "btn-secondary"}" id="btnOpenSimReviewAll">📋 עבור על כל השאלות במבחן (${analysis.totalCount})</button>
+        ${analysis.unsureCount > 0 ? `<button type="button" class="btn-secondary" id="btnOpenSimReviewUnsure">🤔 עבור על התלבטויות (${analysis.unsureCount})</button>` : ""}
+        <button type="button" class="btn-secondary" id="btnReviewSimWrongPractice" ${wrongAndSkippedIds.length === 0 ? "disabled" : ""}>🔥 תרגל טעויות מחדש (${wrongAndSkippedIds.length})</button>
+        ${showCombinedBtn ? `<button type="button" class="btn-secondary" id="btnReviewSimWrongAndUnsure">🎯 תרגל טעויות והתלבטויות (${wrongOrUnsureIds.length})</button>` : ""}
+        <button type="button" class="btn-secondary" id="btnRetakeSimFromResults">🔄 בצע סימולציה זו שוב</button>
+        <button type="button" class="btn-ghost btn-sm" id="btnNewSim">🆕 סימולציה חדשה</button>
       </div>
     `;
 
-    el("btnReviewSimWrong").onclick = () => {
-      reviewSimQuestions(wrongIds, `מתחקר ${wrongIds.length} טעויות מהסימולציה`);
-    };
-    el("btnReviewSimUnsure").onclick = () => {
-      reviewSimQuestions(unsureIds, `מתחקר ${unsureIds.length} שאלות שהתלבטת בהן מהסימולציה`);
+    el("btnBackToExamHome").onclick = showExamSetupHome;
+    el("btnNewSim").onclick = showExamSetupHome;
+    el("btnRetakeSimFromResults").onclick = () => retakeSimulation(entry);
+    el("btnOpenSimReviewAll").onclick = () => openSimReview(entry, { filter: "all", returnTo: "results" });
+    el("btnOpenSimReviewMistakes").onclick = () => openSimReview(entry, { filter: "wrong_skipped", returnTo: "results" });
+    el("btnOpenSimReviewUnsure")?.addEventListener("click", () => openSimReview(entry, { filter: "unsure", returnTo: "results" }));
+    el("btnReviewSimWrongPractice").onclick = () => {
+      reviewSimQuestions(wrongAndSkippedIds, `מתחקר ${wrongAndSkippedIds.length} טעויות מהסימולציה`);
     };
     el("btnReviewSimWrongAndUnsure")?.addEventListener("click", () => {
       reviewSimQuestions(wrongOrUnsureIds, `מתחקר ${wrongOrUnsureIds.length} טעויות והתלבטויות מהסימולציה`);
     });
-    el("btnNewSim").onclick = () => {
-      resEl.classList.add("hidden");
-      el("examSetup").classList.remove("hidden");
+    resEl.querySelectorAll(".sim-subj-review-link").forEach((btn) => {
+      btn.onclick = () => {
+        openSimReview(entry, {
+          filter: "wrong_skipped",
+          subjectFilter: btn.dataset.subj || "all",
+          returnTo: "results",
+        });
+      };
+    });
+  }
+
+  function filterSimReviewItems(analysis, filter, subjectFilter) {
+    return analysis.items.filter((it) => {
+      if (subjectFilter && subjectFilter !== "all" && it.subject !== subjectFilter) return false;
+      switch (filter) {
+        case "wrong": return it.isWrong;
+        case "skipped": return it.isSkipped;
+        case "wrong_skipped": return it.isWrong || it.isSkipped;
+        case "correct": return it.isCorrect;
+        case "unsure": return it.isUnsure;
+        case "flagged": return it.isFlagged;
+        default: return true;
+      }
+    });
+  }
+
+  function openSimReview(entry, { filter = "all", subjectFilter = "all", index = 0, returnTo = "results" } = {}) {
+    if (!entry) return;
+    const analysis = computeSimEntryAnalysis(entry);
+    if (analysis.items.length === 0) {
+      showToast("לא נמצאו שאלות להצגה בסימולציה זו.");
+      return;
+    }
+
+    const items = filterSimReviewItems(analysis, filter, subjectFilter);
+    simReviewState = {
+      active: true,
+      entry,
+      filter,
+      subjectFilter,
+      items,
+      currentIndex: Math.max(0, Math.min(Math.max(0, items.length - 1), index)),
+      returnTo,
+      notesExpanded: false,
+    };
+
+    el("examSetup")?.classList.add("hidden");
+    el("examHistorySection")?.classList.add("hidden");
+    el("examActive")?.classList.add("hidden");
+    el("examResults")?.classList.add("hidden");
+    el("examReview")?.classList.remove("hidden");
+
+    updateExamFocusModeUI();
+    renderSimReviewToolbar(analysis);
+    renderSimReviewGrid(analysis);
+    renderSimReviewQuestion();
+  }
+
+  function renderSimReviewToolbar(analysis) {
+    const toolbar = el("examReviewToolbar");
+    if (!toolbar || !simReviewState.entry) return;
+    const entry = simReviewState.entry;
+
+    const filterDefs = [
+      { key: "all", label: `הכל (${analysis.totalCount})` },
+      { key: "wrong_skipped", label: `❌ טעויות ודילוגים (${analysis.mistakesCount})` },
+      { key: "wrong", label: `טעויות בלבד (${analysis.wrongCount})` },
+      { key: "skipped", label: `דילוגים (${analysis.skippedCount})` },
+      { key: "correct", label: `✅ נכונות (${analysis.correctCount})` },
+      { key: "unsure", label: `🤔 התלבטויות (${analysis.unsureCount})` },
+      { key: "flagged", label: `🚩 לבדיקה (${analysis.flaggedCount})` },
+    ];
+
+    const filterButtonsHtml = filterDefs
+      .map((f) => `<button type="button" class="chip${simReviewState.filter === f.key ? " active" : ""}" data-rev-filter="${f.key}">${f.label}</button>`)
+      .join("");
+
+    const subjOptionsHtml = [
+      `<option value="all">כל המקצועות (${analysis.totalCount})</option>`,
+      ...analysis.bySubject.map((st) => {
+        const selected = simReviewState.subjectFilter === st.subject ? " selected" : "";
+        const errTag = st.mistakes > 0 ? ` · ${st.mistakes} טעויות` : " · 100%";
+        return `<option value="${escapeHtml(st.subject)}"${selected}>${escapeHtml(formatSubject(st.subject))} (${st.total}${errTag})</option>`;
+      }),
+    ].join("");
+
+    const gridOpen = !el("simReviewGridPanel")?.classList.contains("hidden");
+
+    toolbar.innerHTML = `
+      <div class="sim-review-head">
+        <div class="sim-review-title-group">
+          <button type="button" class="btn-secondary btn-sm" id="btnExitSimReview">→ ${simReviewState.returnTo === "history" ? "חזרה להיסטוריה" : "חזרה לסיכום המבחן"}</button>
+          <div>
+            <strong>${escapeHtml(entry.label || "סקירת סימולציה")}</strong>
+            <span class="muted tabular-text"> · ציון ${analysis.scorePct}% (${analysis.correctCount}/${analysis.totalCount}) · ${escapeHtml(formatSimDate(entry.completedAt))}</span>
+          </div>
+        </div>
+        <div class="sim-review-head-actions">
+          <button type="button" class="btn-secondary btn-sm" id="btnToggleSimReviewGrid" aria-expanded="${gridOpen ? "true" : "false"}">🗺️ מפת שאלות</button>
+          <button type="button" class="btn-ghost btn-sm" id="btnOpenSimResultsFromReview">📊 סיכום וגרף</button>
+        </div>
+      </div>
+      <div class="sim-review-filters-row">
+        <div class="chips-wrap" id="simReviewFilterChips">${filterButtonsHtml}</div>
+        <select id="simReviewSubjectSelect" class="form-select sim-review-subj-select" aria-label="סנן לפי מקצוע">${subjOptionsHtml}</select>
+      </div>
+    `;
+
+    el("btnExitSimReview").onclick = () => {
+      if (simReviewState.returnTo === "history") {
+        showExamSetupHome();
+      } else {
+        renderSimResults(simReviewState.entry, { fromHistory: true });
+      }
+    };
+    el("btnOpenSimResultsFromReview").onclick = () => {
+      renderSimResults(simReviewState.entry, { fromHistory: true });
+    };
+    el("btnToggleSimReviewGrid").onclick = () => {
+      const panel = el("simReviewGridPanel");
+      if (!panel) return;
+      const willOpen = panel.classList.contains("hidden");
+      panel.classList.toggle("hidden", !willOpen);
+      el("btnToggleSimReviewGrid")?.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    };
+    el("simReviewFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
+      chip.onclick = () => {
+        const nextFilter = chip.dataset.revFilter || "all";
+        openSimReview(simReviewState.entry, {
+          filter: nextFilter,
+          subjectFilter: simReviewState.subjectFilter,
+          index: 0,
+          returnTo: simReviewState.returnTo,
+        });
+      };
+    });
+    el("simReviewSubjectSelect").onchange = (e) => {
+      openSimReview(simReviewState.entry, {
+        filter: simReviewState.filter,
+        subjectFilter: e.target.value || "all",
+        index: 0,
+        returnTo: simReviewState.returnTo,
+      });
+    };
+  }
+
+  function renderSimReviewGrid(analysis) {
+    const grid = el("simReviewGrid");
+    if (!grid) return;
+    grid.innerHTML = "";
+    const curItem = simReviewState.items[simReviewState.currentIndex] || null;
+    const filteredSet = new Set(simReviewState.items.map((it) => it.qId));
+
+    analysis.items.forEach((it) => {
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "sim-cell";
+      if (it.isCorrect) cell.classList.add("review-correct");
+      else if (it.isWrong) cell.classList.add("review-wrong");
+      else cell.classList.add("review-skipped");
+
+      if (it.isFlagged) cell.classList.add("flagged");
+      if (it.isUnsure) cell.classList.add("unsure");
+      if (!filteredSet.has(it.qId)) cell.classList.add("dimmed");
+      if (curItem && curItem.qId === it.qId) cell.classList.add("current");
+
+      cell.textContent = it.simNum;
+      const statusText = it.isCorrect ? "נכונה" : it.isWrong ? "טעות" : "דילוג";
+      cell.title = `שאלה ${it.simNum} · ${statusText}${it.isFlagged ? " · סומנה לבדיקה" : ""}${it.isUnsure ? " · התלבטתי" : ""}`;
+      cell.onclick = () => {
+        const idxInFiltered = simReviewState.items.findIndex((x) => x.qId === it.qId);
+        if (idxInFiltered >= 0) {
+          simReviewState.currentIndex = idxInFiltered;
+          simReviewState.notesExpanded = false;
+          renderSimReviewGrid(analysis);
+          renderSimReviewQuestion();
+        } else {
+          // Jump to that question across the full exam if outside current filter
+          const fullIdx = analysis.items.findIndex((x) => x.qId === it.qId);
+          openSimReview(simReviewState.entry, {
+            filter: "all",
+            subjectFilter: "all",
+            index: Math.max(0, fullIdx),
+            returnTo: simReviewState.returnTo,
+          });
+        }
+      };
+      grid.appendChild(cell);
+    });
+  }
+
+  function buildSimReviewNotesHtml(q) {
+    const notesList = getQuestionCommunityNotesList(q.id);
+    const totalReplies = getQuestionRepliesCount(q.id);
+    const title = notesList.length > 0
+      ? (totalReplies > 0 ? `הערות ופנינים לשאלה זו (${notesList.length} · ${totalReplies} תגובות)` : `הערות ופנינים לשאלה זו (${notesList.length})`)
+      : "הערות ופנינים לשאלה זו (אין עדיין)";
+
+    const notesCardsHtml = notesList.length === 0
+      ? `<div class="community-notes-empty">אין עדיין הערות לשאלה זו. ניתן להוסיף הערה דרך כפתור "פתח בתרגול חופשי".</div>`
+      : notesList.map((n) => {
+          const repliesTree = getNoteRepliesTree(q.id, n.userId);
+          const repliesHtml = repliesTree.length > 0
+            ? `<div class="note-replies-list">${repliesTree.map((r) => `
+                <div class="note-reply-card${r.isMine ? " is-mine" : ""}">
+                  <div class="community-note-head">
+                    <span class="community-note-author">${escapeHtml(r.emoji)} ${escapeHtml(r.author)}</span>
+                    <span class="community-note-time">${escapeHtml(formatNoteTime(r.updatedAt))}</span>
+                  </div>
+                  <div class="community-note-text">${escapeHtml(r.text)}</div>
+                </div>`).join("")}</div>`
+            : "";
+          return `
+            <div class="community-note-card${n.isMine ? " is-mine" : ""}">
+              <div class="community-note-head">
+                <span class="community-note-author">${escapeHtml(n.emoji)} ${escapeHtml(n.author)}${n.isMine ? `<span class="community-note-mine-badge">שלי</span>` : ""}</span>
+                <span class="community-note-time">${escapeHtml(formatNoteTime(n.updatedAt))}</span>
+              </div>
+              <div class="community-note-text">${escapeHtml(n.text)}</div>
+              ${repliesHtml}
+            </div>`;
+        }).join("");
+
+    return `
+      <div class="q-notes-container sim-review-notes-wrap">
+        <button type="button" class="notes-toggle-btn${simReviewState.notesExpanded ? " open" : ""}${notesList.length > 0 ? " has-notes" : ""}" id="btnToggleSimReviewNotes" aria-expanded="${simReviewState.notesExpanded ? "true" : "false"}">
+          <div class="notes-toggle-right">
+            <span class="notes-toggle-icon" aria-hidden="true">💬</span>
+            <span>${escapeHtml(title)}</span>
+          </div>
+          <span class="notes-toggle-arrow">${simReviewState.notesExpanded ? "הסתר הערות 🔼" : "הצג הערות 🔽"}</span>
+        </button>
+        <div class="notes-drawer${simReviewState.notesExpanded ? "" : " hidden"}" id="simReviewNotesDrawer">
+          <div class="community-notes-list">${notesCardsHtml}</div>
+          <div style="margin-top:8px;display:flex;justify-content:flex-end;">
+            <button type="button" class="btn-secondary btn-sm" id="btnSimReviewOpenInPracticeFromNotes">📝 פתח שאלה זו בתרגול להוספת הערה / פתרון מחדש</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function openQuestionInPractice(qId) {
+    if (!qId) return;
+    const q = Q_MAP.get(qId);
+    if (!q) return;
+    simReviewState.active = false;
+    switchMode("practice");
+    const idx = filteredList.findIndex((item) => item.id === qId);
+    if (idx >= 0) {
+      currentIndex = idx;
+    } else {
+      filteredList = [q];
+      currentIndex = 0;
+      el("filteredCountText").textContent = `שאלה נבחרת מתוך סקירת סימולציה`;
+    }
+    renderQuestion();
+  }
+
+  function renderSimReviewQuestion() {
+    const mount = el("simReviewQuestionMount");
+    if (!mount || !simReviewState.active) return;
+
+    if (simReviewState.items.length === 0) {
+      mount.innerHTML = `
+        <div class="empty-state card">
+          <h2>אין שאלות התואמות לסינון הנוכחי</h2>
+          <p class="muted">נסה לבחור סינון אחר או להציג את כל השאלות במבחן.</p>
+          <button type="button" class="btn-primary" id="btnResetSimReviewFilter">הצג את כל השאלות במבחן</button>
+        </div>
+      `;
+      el("btnResetSimReviewFilter").onclick = () => {
+        openSimReview(simReviewState.entry, { filter: "all", subjectFilter: "all", returnTo: simReviewState.returnTo });
+      };
+      window.MikbatzDrawBoard?.setActiveQuestion(null);
+      updateDrawBoardTriggerUI(null);
+      return;
+    }
+
+    if (simReviewState.currentIndex >= simReviewState.items.length) {
+      simReviewState.currentIndex = simReviewState.items.length - 1;
+    }
+    if (simReviewState.currentIndex < 0) simReviewState.currentIndex = 0;
+
+    const item = simReviewState.items[simReviewState.currentIndex];
+    const q = item.q;
+    const fl = progress.flags[q.id] || {};
+    const totalInExam = simReviewState.entry?.questionIds?.length || simReviewState.items.length;
+
+    const outcomeBadge = item.isCorrect
+      ? `<span class="sim-outcome-badge correct">✅ ענית נכון</span>`
+      : item.isWrong
+      ? `<span class="sim-outcome-badge wrong">❌ טעית</span>`
+      : `<span class="sim-outcome-badge skipped">⏭️ דילגת</span>`;
+
+    const pdfHtml = q.pdf
+      ? `<a class="pdf-link" href="${encodeURI(q.pdf)}${q.pdfPage ? `#page=${q.pdfPage}` : ""}" target="_blank" rel="noopener">${q.pdfPage ? `📖 עמ׳ ${q.pdfPage} במבחן` : "📖 קובץ המבחן"}</a>`
+      : "";
+
+    const appealBadgeHtml = (q.correct.length > 1 || q.allAccepted)
+      ? `<span class="q-badge appeal-badge">⚖️ שאלת ערעור</span>`
+      : "";
+
+    const correctLabels = q.correct
+      .map((origIdx) => `<strong>${HEBREW_LETTERS[origIdx] || origIdx + 1}.</strong> ${escapeHtml(q.options[origIdx]?.text || "")}`)
+      .join("<br/>");
+
+    let feedbackCls = "correct";
+    let feedbackLead = "✅ <strong>ענית נכון בסימולציה!</strong>";
+    if (item.isWrong) {
+      feedbackCls = "wrong";
+      const chosenLetter = HEBREW_LETTERS[item.chosen] || item.chosen + 1;
+      feedbackLead = `❌ <strong>טעית בסימולציה</strong> (בחרת <strong>${chosenLetter}.</strong>) — התשובה הנכונה:<br/>${correctLabels}`;
+    } else if (item.isSkipped) {
+      feedbackCls = "info";
+      feedbackLead = `⏭️ <strong>דילגת על שאלה זו בסימולציה</strong> — התשובה הנכונה:<br/>${correctLabels}`;
+    }
+
+    let appealHtml = "";
+    if (q.allAccepted) {
+      appealHtml = `<div class="appeal-note">⚖️ הערת ערעור: כל התשובות התקבלו בשאלה זו.</div>`;
+    } else if (q.appealNote) {
+      appealHtml = `<div class="appeal-note">⚖️ הערת ערעור: ${escapeHtml(q.appealNote)}</div>`;
+    }
+
+    let explanationHtml = "";
+    if (q.explanation || q.topic) {
+      const topicHtml = q.topic ? `<span class="q-topic-tag">📌 ${escapeHtml(q.topic)}</span>` : "";
+      const expHtml = q.explanation ? `<div class="q-explanation-text">${escapeHtml(q.explanation)}</div>` : "";
+      explanationHtml = `<div class="q-explanation">${topicHtml}${expHtml}</div>`;
+    }
+
+    mount.innerHTML = `
+      <article class="question-card card">
+        <div class="q-header">
+          <div class="q-meta">
+            <span class="q-badge exam-badge">שאלה ${item.simNum} מתוך ${totalInExam} במבחן</span>
+            <span class="q-badge subject-badge${q.exam === PRACTICE_EXAM_NAME ? " practice-badge" : ""}">${escapeHtml(formatSubject(item.subject))} · ${escapeHtml(q.exam)} · #${q.num}</span>
+            ${outcomeBadge}
+            ${appealBadgeHtml}
+            ${pdfHtml}
+          </div>
+          <div class="q-flags">
+            <button type="button" class="flag-btn drawboard-toggle-btn" id="simReviewDrawBoardBtn" title="לוח ציור אישי לצד השאלה (D)" aria-label="פתח או סגור לוח ציור אישי" aria-pressed="false">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+                <path d="M2 2l7.586 7.586" />
+                <circle cx="11" cy="11" r="2" />
+              </svg>
+              <span class="drawboard-btn-label">לוח</span>
+              <span class="drawboard-saved-dot hidden" id="simReviewDrawBoardDot" aria-hidden="true"></span>
+            </button>
+            <button type="button" class="flag-btn marker-toggle-btn" id="simReviewMarkerBtn" title="מרקר צהוב — סמן מילות מפתח בשאלה (M)" aria-label="מצב מרקר צהוב" aria-pressed="false">🖍️</button>
+            <button type="button" class="flag-btn marker-clear-btn hidden" id="simReviewClearMarkersBtn" title="נקה את כל המרקור בשאלה זו" aria-label="נקה מרקור בשאלה">🧹</button>
+            <button type="button" class="flag-btn ${fl.star ? "active" : ""}" id="simReviewStarBtn" title="מועדפים / לחזרה" aria-label="סמן כמועדף">⭐</button>
+            <button type="button" class="flag-btn ${fl.unsure ? "active" : ""}" id="simReviewUnsureBtn" title="התלבטתי" aria-label="סמן התלבטות">🤔</button>
+            <button type="button" class="flag-btn" id="simReviewProblemBtn" title="בעיות בשאלה – דווח או צפה בדיווחים" aria-label="בעיות בשאלה">
+              <span aria-hidden="true">⚠️</span>
+              <span class="flag-count hidden" id="simReviewProblemCount"></span>
+            </button>
+          </div>
+        </div>
+
+        <div class="q-progress-strip">
+          <span class="tabular-text">מציג ${simReviewState.currentIndex + 1} מתוך ${simReviewState.items.length} בסינון הנוכחי</span>
+          ${item.isFlagged ? `<span class="sim-review-flagged-note">🚩 סומנה לבדיקה בזמן המבחן</span>` : ""}
+        </div>
+
+        <div class="q-problem-banner hidden" id="simReviewProblemBanner" role="alert"></div>
+
+        <div class="q-content-grid${q.images.length > 0 ? " has-images" : ""}">
+          <div class="q-stem" id="simReviewStem"></div>
+          <div class="q-images" id="simReviewImages"></div>
+        </div>
+
+        <div class="q-options" id="simReviewOptions"></div>
+
+        <div class="q-feedback ${feedbackCls}">${feedbackLead}${appealHtml}${explanationHtml}</div>
+
+        ${buildSimReviewNotesHtml(q)}
+
+        <div class="q-nav-footer">
+          <button type="button" class="btn-secondary nav-prev-btn" id="simReviewPrevBtn" ${simReviewState.currentIndex === 0 ? "disabled" : ""}>
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+            <span>הקודמת</span>
+          </button>
+          <div class="q-nav-center">
+            <button type="button" class="btn-ghost btn-sm" id="btnSimReviewOpenInPractice">📝 פתח בתרגול חופשי</button>
+          </div>
+          <button type="button" class="btn-primary nav-next-btn" id="simReviewNextBtn" ${simReviewState.currentIndex >= simReviewState.items.length - 1 ? "disabled" : ""}>
+            <span>הבאה</span>
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+        </div>
+      </article>
+    `;
+
+    el("simReviewDrawBoardBtn").onclick = () => window.MikbatzDrawBoard?.toggle();
+    el("simReviewMarkerBtn").onclick = () => toggleMarkerMode();
+    el("simReviewClearMarkersBtn").onclick = () => clearQuestionHighlights(q.id);
+    el("simReviewStarBtn").onclick = () => {
+      toggleQuestionFlag(q.id, "star");
+      renderSimReviewQuestion();
+    };
+    el("simReviewUnsureBtn").onclick = () => {
+      toggleQuestionFlag(q.id, "unsure");
+      renderSimReviewQuestion();
+    };
+    el("simReviewProblemBtn").onclick = () => openProblemModal(q.id);
+    updateProblemFlagButton(el("simReviewProblemBtn"), el("simReviewProblemCount"), q);
+    renderProblemBanner(el("simReviewProblemBanner"), q);
+    renderHighlightedStem(el("simReviewStem"), q.stem, q.id);
+    updateMarkerControlsUI(q.id);
+    hideMarkerFloatingPill();
+
+    const imgWrap = el("simReviewImages");
+    q.images.forEach((src) => {
+      const box = document.createElement("div");
+      box.className = "q-image-wrap";
+      const img = document.createElement("img");
+      img.src = src;
+      img.alt = "תמונה";
+      const hint = document.createElement("span");
+      hint.className = "q-image-hint";
+      hint.textContent = "🔍 לחץ לזום";
+      const label = `סקירת סימולציה · שאלה ${item.simNum}`;
+      const toBoardBtn = createImageToBoardButton(src, label);
+      box.append(img, toBoardBtn, hint);
+      box.onclick = () => openLightbox(src, label);
+      imgWrap.appendChild(box);
+    });
+
+    window.MikbatzDrawBoard?.setActiveQuestion(q);
+    updateDrawBoardTriggerUI(q.id);
+
+    const optWrap = el("simReviewOptions");
+    q.options.forEach((opt, origIdx) => {
+      const row = document.createElement("div");
+      row.className = "option-row";
+      const btn = document.createElement("div");
+      btn.className = "option-btn sim-review-option";
+
+      const isRightOpt = q.correct.includes(origIdx);
+      const isUserChoice = item.chosen === origIdx;
+      if (isRightOpt) btn.classList.add("correct");
+      else if (isUserChoice) btn.classList.add("wrong");
+
+      const letterSpan = document.createElement("span");
+      letterSpan.className = "option-letter";
+      letterSpan.textContent = `${HEBREW_LETTERS[origIdx] || origIdx + 1}.`;
+
+      const textSpan = document.createElement("span");
+      textSpan.style.flex = "1";
+      textSpan.textContent = opt.text;
+
+      btn.append(letterSpan, textSpan);
+
+      if (isUserChoice && isRightOpt) {
+        const tag = document.createElement("span");
+        tag.className = "sim-opt-tag ok";
+        tag.textContent = "✓ הבחירה שלך";
+        btn.appendChild(tag);
+      } else if (isUserChoice && !isRightOpt) {
+        const tag = document.createElement("span");
+        tag.className = "sim-opt-tag wrong";
+        tag.textContent = "✗ הבחירה שלך";
+        btn.appendChild(tag);
+      } else if (isRightOpt) {
+        const tag = document.createElement("span");
+        tag.className = "sim-opt-tag ok";
+        tag.textContent = "✓ תשובה נכונה";
+        btn.appendChild(tag);
+      }
+
+      row.appendChild(btn);
+      optWrap.appendChild(row);
+    });
+
+    el("btnToggleSimReviewNotes")?.addEventListener("click", () => {
+      simReviewState.notesExpanded = !simReviewState.notesExpanded;
+      renderSimReviewQuestion();
+    });
+    el("btnSimReviewOpenInPractice").onclick = () => openQuestionInPractice(q.id);
+    el("btnSimReviewOpenInPracticeFromNotes")?.addEventListener("click", () => openQuestionInPractice(q.id));
+
+    el("simReviewPrevBtn").onclick = () => {
+      if (simReviewState.currentIndex > 0) {
+        simReviewState.currentIndex--;
+        simReviewState.notesExpanded = false;
+        renderSimReviewGrid(computeSimEntryAnalysis(simReviewState.entry));
+        renderSimReviewQuestion();
+      }
+    };
+    el("simReviewNextBtn").onclick = () => {
+      if (simReviewState.currentIndex < simReviewState.items.length - 1) {
+        simReviewState.currentIndex++;
+        simReviewState.notesExpanded = false;
+        renderSimReviewGrid(computeSimEntryAnalysis(simReviewState.entry));
+        renderSimReviewQuestion();
+      }
     };
   }
 
@@ -5991,6 +7181,14 @@
       const savedQId = lastQIdByMode[mode] || null;
       const savedIdx = Number.isInteger(lastIndexByMode[mode]) ? lastIndexByMode[mode] : null;
       applyFilters(savedQId, { preserveShuffle: true, fallbackIndex: savedIdx });
+    } else if (mode === "exam") {
+      if (!simState.active) {
+        if (fromUser && prevMode === "exam") {
+          showExamSetupHome();
+        } else if (!simReviewState.active && el("examResults")?.classList.contains("hidden")) {
+          showExamSetupHome();
+        }
+      }
     } else if (mode === "analytics") {
       renderAnalytics();
     } else if (mode === "leaderboard") {
@@ -6006,7 +7204,30 @@
   function renderCurrentView() {
     if (currentMode === "analytics") renderAnalytics();
     else if (currentMode === "leaderboard") renderLeaderboard();
-    else if (currentMode !== "exam") {
+    else if (currentMode === "exam") {
+      if (!simState.active) {
+        if (simReviewState.active && simReviewState.entry) {
+          const updated = getSimHistoryEntryById(simReviewState.entry.id);
+          if (updated) {
+            openSimReview(updated, {
+              filter: simReviewState.filter,
+              subjectFilter: simReviewState.subjectFilter,
+              index: simReviewState.currentIndex,
+              returnTo: simReviewState.returnTo,
+            });
+          } else {
+            showExamSetupHome();
+          }
+        } else if (!el("examResults")?.classList.contains("hidden")) {
+          const openId = el("examResults")?.dataset.simId;
+          const updated = openId ? getSimHistoryEntryById(openId) : null;
+          if (updated) renderSimResults(updated, { fromHistory: true });
+          else showExamSetupHome();
+        } else {
+          renderExamHistory();
+        }
+      }
+    } else {
       const curId = filteredList[currentIndex]?.id || null;
       applyFilters(curId, { preserveShuffle: true, fallbackIndex: currentIndex, pinnedQId: curId });
     }
@@ -6455,12 +7676,18 @@
     el("btnCardForgot").onclick = () => rateFlashcard(false);
 
     // Exam Simulation
-    el("btnStartSim").onclick = startSimulation;
+    el("btnStartSim").onclick = () => startSimulation();
     el("btnPauseSim")?.addEventListener("click", pauseSimulation);
     el("btnToggleSimGrid").onclick = () => el("simGridPanel").classList.toggle("hidden");
     el("btnSubmitSim").onclick = () => {
       if (confirm("להגיש את המבחן ולראות תוצאות?")) submitSimulation();
     };
+    el("examHistoryFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        examHistoryFilter = chip.dataset.simHistFilter || "all";
+        renderExamHistory();
+      });
+    });
 
     // Online users indicator & popover
     el("btnOnlineUsers")?.addEventListener("click", (e) => {
@@ -6635,7 +7862,8 @@
         renderResumeSimBanner();
         if (currentMode === "analytics") renderAnalytics();
         else if (currentMode === "leaderboard") renderLeaderboard();
-        else if (currentMode !== "exam") applyFilters();
+        else if (currentMode === "exam") showExamSetupHome();
+        else applyFilters();
         el("backupModal").classList.add("hidden");
         showToast("ההתקדמות אופסה.");
       }
@@ -6780,7 +8008,25 @@
         }
         return;
       }
-      if (currentMode === "analytics" || currentMode === "leaderboard" || currentMode === "exam") return;
+      if (currentMode === "exam") {
+        if (simReviewState.active && simReviewState.items.length > 0) {
+          if (e.key === "ArrowLeft" && simReviewState.currentIndex < simReviewState.items.length - 1) {
+            e.preventDefault();
+            simReviewState.currentIndex++;
+            simReviewState.notesExpanded = false;
+            renderSimReviewGrid(computeSimEntryAnalysis(simReviewState.entry));
+            renderSimReviewQuestion();
+          } else if (e.key === "ArrowRight" && simReviewState.currentIndex > 0) {
+            e.preventDefault();
+            simReviewState.currentIndex--;
+            simReviewState.notesExpanded = false;
+            renderSimReviewGrid(computeSimEntryAnalysis(simReviewState.entry));
+            renderSimReviewQuestion();
+          }
+        }
+        return;
+      }
+      if (currentMode === "analytics" || currentMode === "leaderboard") return;
       if (filteredList.length === 0) return;
 
       const q = filteredList[currentIndex];
@@ -6873,6 +8119,9 @@
     } else if (currentMode === "exam" && simState.active) {
       const simQ = simState.questions[simState.currentIndex];
       if (simQ) renderProblemBanner(el("simProblemBanner"), simQ);
+    } else if (currentMode === "exam" && simReviewState.active) {
+      const revItem = simReviewState.items[simReviewState.currentIndex];
+      if (revItem?.q) renderProblemBanner(el("simReviewProblemBanner"), revItem.q);
     }
   }
 
@@ -8376,7 +9625,9 @@
         renderAnalytics();
       } else if (currentMode === "leaderboard") {
         renderLeaderboard();
-      } else if (currentMode !== "exam") {
+      } else if (currentMode === "exam") {
+        renderCurrentView();
+      } else {
         const isTypingNoteOrReply =
           activeTag === "qNoteInput" ||
           Boolean(document.activeElement?.classList?.contains("note-reply-textarea"));
