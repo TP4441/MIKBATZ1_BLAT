@@ -341,6 +341,7 @@
   let shuffleOptionsEnabled = false;
   let shuffledQuestionOrder = null; // null or array of qIds
   let drillShuffledOrder = null;    // null or array of qIds for drill mode
+  let drillSessionAttempts = new Map(); // qId -> attempt answered during current Drill visit
   let lastQIdByMode = {};           // mode -> last viewed qId
   let lastIndexByMode = {};         // mode -> fallback index
   let isRestoringSession = false;
@@ -2738,7 +2739,7 @@
       const att = progress.attempts[q.id];
       const fl = progress.flags[q.id] || {};
       const streak = progress.drillStreak[q.id] || 0;
-      const needsDrill = (att && !att.isCorrect) || fl.unsure;
+      const needsDrill = (att && (!att.isCorrect || streak === 1)) || fl.unsure;
       return needsDrill && streak < 2;
     });
   }
@@ -3220,7 +3221,9 @@
       notesExpanded = false;
       lastRenderedQId = q.id;
     }
-    const att = progress.attempts[q.id];
+    const att = currentMode === "drill"
+      ? (drillSessionAttempts.get(q.id) || null)
+      : progress.attempts[q.id];
     const fl = progress.flags[q.id] || {};
     const struckSet = new Set(progress.struck[q.id] || []);
     flashcardRevealed = false;
@@ -3390,14 +3393,16 @@
     const isCorrect = q.correct.includes(origIdx);
     const firstTime = !progress.attempts[q.id];
 
-    progress.attempts[q.id] = {
+    const attempt = {
       selected: origIdx,
       isCorrect,
       ts: now,
     };
+    progress.attempts[q.id] = attempt;
     if (progress.clearedAttempts) delete progress.clearedAttempts[q.id];
 
     if (currentMode === "drill") {
+      drillSessionAttempts.set(q.id, attempt);
       if (!progress.drillStreakUpdatedAt) progress.drillStreakUpdatedAt = {};
       if (isCorrect) {
         progress.drillStreak[q.id] = (progress.drillStreak[q.id] || 0) + 1;
@@ -3518,8 +3523,15 @@
       const idxOfPrev = prevId ? filteredList.findIndex((q) => q.id === prevId) : -1;
       if (idxOfPrev >= 0) {
         currentIndex = (idxOfPrev + 1) % filteredList.length;
+        if (currentIndex <= idxOfPrev) {
+          drillSessionAttempts.clear();
+        }
       } else {
+        const wrapped = prevIdx >= filteredList.length;
         currentIndex = prevIdx % filteredList.length;
+        if (wrapped) {
+          drillSessionAttempts.clear();
+        }
       }
       renderQuestion();
       persistStudySession();
@@ -3577,6 +3589,7 @@
     setShuffleOptionsEnabled(false);
     shuffledQuestionOrder = null;
     drillShuffledOrder = null;
+    drillSessionAttempts.clear();
     lastQIdByMode = {};
     lastIndexByMode = {};
     renderFilterChips();
@@ -4781,8 +4794,12 @@
   // Mode switching
   function switchMode(mode, { persist = true, fromUser = false } = {}) {
     if (fromUser) hasUserInteractedWithNav = true;
+    const prevMode = currentMode;
     if (isStudyMode(currentMode) && currentMode !== mode && !isRestoringSession) {
       recordCurrentModePosition();
+    }
+    if (mode === "drill" && (prevMode !== "drill" || fromUser)) {
+      drillSessionAttempts.clear();
     }
 
     currentMode = mode;
@@ -5108,14 +5125,15 @@
     el("btnClearAttempt").onclick = () => {
       if (filteredList.length === 0) return;
       const q = filteredList[currentIndex];
+      if (currentMode === "drill") {
+        drillSessionAttempts.delete(q.id);
+        renderQuestion();
+        return;
+      }
       delete progress.attempts[q.id];
       if (!progress.clearedAttempts) progress.clearedAttempts = {};
       progress.clearedAttempts[q.id] = Date.now();
       saveProgress();
-      if (currentMode === "drill") {
-        renderFilterChips();
-        updateFilterCountsUI();
-      }
       renderQuestion();
     };
 
@@ -5412,6 +5430,7 @@
         progress.resetAt = Date.now();
         shuffledQuestionOrder = null;
         drillShuffledOrder = null;
+        drillSessionAttempts.clear();
         lastQIdByMode = {};
         lastIndexByMode = {};
         setShuffleOptionsEnabled(false);
