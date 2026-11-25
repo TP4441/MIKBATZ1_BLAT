@@ -5185,9 +5185,7 @@ body.drawboard-resizing {
 }
 
 .feedback-thanks-audio {
-  width: 100%;
-  max-width: 340px;
-  height: 38px;
+  display: none;
 }
 
 .feedback-thanks-caption {

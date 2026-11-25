@@ -7959,7 +7959,8 @@
 
     const audio = document.createElement("audio");
     audio.className = "feedback-thanks-audio";
-    audio.controls = true;
+    audio.controls = false;
+    audio.hidden = true;
     audio.preload = "none";
 
     const srcWebm = document.createElement("source");
