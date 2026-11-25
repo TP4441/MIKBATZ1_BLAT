@@ -340,6 +340,7 @@
   let optionPermutations = new Map(); // qId -> array of original indices
   let shuffleOptionsEnabled = false;
   let shuffledQuestionOrder = null; // null or array of qIds
+  let drillShuffledOrder = null;    // null or array of qIds for drill mode
   let lastQIdByMode = {};           // mode -> last viewed qId
   let lastIndexByMode = {};         // mode -> fallback index
   let isRestoringSession = false;
@@ -379,6 +380,29 @@
     search: "",
     mergePathology: true,
   };
+
+  // Separate filter state for Drill ("תיקון טעויות") so practice filters don't leak into mistakes
+  const drillFilters = {
+    exams: new Set(), // empty = all
+    subjects: new Set(), // empty = all
+    search: "",
+  };
+
+  function getActiveFilters() {
+    return currentMode === "drill" ? drillFilters : filters;
+  }
+
+  function getActiveShuffledOrder() {
+    return currentMode === "drill" ? drillShuffledOrder : shuffledQuestionOrder;
+  }
+
+  function setActiveShuffledOrder(order) {
+    if (currentMode === "drill") {
+      drillShuffledOrder = order;
+    } else {
+      shuffledQuestionOrder = order;
+    }
+  }
 
   // Exam simulation state
   let simState = {
@@ -510,6 +534,7 @@
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const mode = VALID_STUDY_MODES.has(raw.mode) ? raw.mode : "practice";
     const rawFilters = raw.filters && typeof raw.filters === "object" && !Array.isArray(raw.filters) ? raw.filters : {};
+    const rawDrillFilters = raw.drillFilters && typeof raw.drillFilters === "object" && !Array.isArray(raw.drillFilters) ? raw.drillFilters : {};
     const toStrArray = (val) =>
       Array.isArray(val)
         ? val.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
@@ -547,6 +572,12 @@
       filterCollapsed: Boolean(raw.filterCollapsed),
       shuffleOptions: Boolean(raw.shuffleOptions),
       shuffledOrder: Array.isArray(raw.shuffledOrder) ? toStrArray(raw.shuffledOrder) : null,
+      drillFilters: {
+        exams: toStrArray(rawDrillFilters.exams),
+        subjects: toStrArray(rawDrillFilters.subjects),
+        search: typeof rawDrillFilters.search === "string" ? rawDrillFilters.search.slice(0, 500) : "",
+      },
+      drillShuffledOrder: Array.isArray(raw.drillShuffledOrder) ? toStrArray(raw.drillShuffledOrder) : null,
       lastQIdByMode,
       lastIndexByMode,
       deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
@@ -2599,16 +2630,32 @@
 
   // Build filter chips
   function renderFilterChips() {
+    const activeFilters = getActiveFilters();
+    const isDrill = currentMode === "drill";
+    let drillExamCounts = null;
+    let drillSubjCounts = null;
+    if (isDrill) {
+      drillExamCounts = new Map();
+      drillSubjCounts = new Map();
+      for (const q of getDrillQuestions()) {
+        drillExamCounts.set(q.exam, (drillExamCounts.get(q.exam) || 0) + 1);
+        const s = getSubject(q);
+        drillSubjCounts.set(s, (drillSubjCounts.get(s) || 0) + 1);
+      }
+    }
+
     const examWrap = el("examChips");
     examWrap.innerHTML = "";
     EXAMS.forEach((ex) => {
+      const count = isDrill ? (drillExamCounts.get(ex.name) || 0) : ex.expectedCount;
+      const isSelected = activeFilters.exams.has(ex.name);
       const btn = document.createElement("button");
-      btn.className = "chip" + (filters.exams.has(ex.name) ? " active" : "");
-      btn.textContent = `${ex.name} (${ex.expectedCount})`;
+      btn.className = "chip" + (isSelected ? " active" : "") + (isDrill && count === 0 && !isSelected ? " chip-empty" : "");
+      btn.textContent = `${ex.name} (${count})`;
       btn.onclick = () => {
         hasUserInteractedWithNav = true;
-        if (filters.exams.has(ex.name)) filters.exams.delete(ex.name);
-        else filters.exams.add(ex.name);
+        if (activeFilters.exams.has(ex.name)) activeFilters.exams.delete(ex.name);
+        else activeFilters.exams.add(ex.name);
         renderFilterChips();
         applyFilters();
         persistStudySession();
@@ -2619,13 +2666,15 @@
     const subjWrap = el("subjectChips");
     subjWrap.innerHTML = "";
     getUniqueSubjects().forEach((subj) => {
+      const count = isDrill ? (drillSubjCounts.get(subj) || 0) : null;
+      const isSelected = activeFilters.subjects.has(subj);
       const btn = document.createElement("button");
-      btn.className = "chip" + (filters.subjects.has(subj) ? " active" : "");
-      btn.textContent = formatSubject(subj);
+      btn.className = "chip" + (isSelected ? " active" : "") + (isDrill && count === 0 && !isSelected ? " chip-empty" : "");
+      btn.textContent = isDrill ? `${formatSubject(subj)} (${count})` : formatSubject(subj);
       btn.onclick = () => {
         hasUserInteractedWithNav = true;
-        if (filters.subjects.has(subj)) filters.subjects.delete(subj);
-        else filters.subjects.add(subj);
+        if (activeFilters.subjects.has(subj)) activeFilters.subjects.delete(subj);
+        else activeFilters.subjects.add(subj);
         renderFilterChips();
         applyFilters();
         persistStudySession();
@@ -2721,6 +2770,12 @@
       filterCollapsed: Boolean(el("filterBody")?.classList.contains("hidden")),
       shuffleOptions: Boolean(shuffleOptionsEnabled),
       shuffledOrder: Array.isArray(shuffledQuestionOrder) ? [...shuffledQuestionOrder] : null,
+      drillFilters: {
+        exams: Array.from(drillFilters.exams),
+        subjects: Array.from(drillFilters.subjects),
+        search: drillFilters.search,
+      },
+      drillShuffledOrder: Array.isArray(drillShuffledOrder) ? [...drillShuffledOrder] : null,
       lastQIdByMode: { ...lastQIdByMode },
       lastIndexByMode: { ...lastIndexByMode },
       deviceId,
@@ -2729,66 +2784,104 @@
     saveProgress({ syncCloud });
   }
 
-  function applyFilters(keepCurrentId = null, { preserveShuffle = false, fallbackIndex = null } = {}) {
-    if (!preserveShuffle && currentMode !== "drill") {
-      shuffledQuestionOrder = null;
+  function recomputeFilteredList({ preserveShuffle = false } = {}) {
+    const isDrill = currentMode === "drill";
+    const activeFilters = getActiveFilters();
+
+    if (!preserveShuffle) {
+      setActiveShuffledOrder(null);
     }
 
-    if (currentMode === "drill") {
-      filteredList = getDrillQuestions();
-    } else {
-      const term = filters.search.trim().toLowerCase();
-      filteredList = QUESTIONS.filter((q) => {
-        if (filters.exams.size > 0 && !filters.exams.has(q.exam)) return false;
-        const s = getSubject(q);
-        if (filters.subjects.size > 0 && !filters.subjects.has(s)) return false;
+    const basePool = isDrill ? getDrillQuestions() : QUESTIONS;
+    const term = activeFilters.search.trim().toLowerCase();
 
-        const att = progress.attempts[q.id];
-        const fl = progress.flags[q.id] || {};
-        const myNote = getMyNoteText(q.id).trim();
-        const qCommNotes = getQuestionCommunityNotesList(q.id);
-        const qProblems = getQuestionProblemsList(q.id);
+    filteredList = basePool.filter((q) => {
+      if (activeFilters.exams.size > 0 && !activeFilters.exams.has(q.exam)) return false;
+      const s = getSubject(q);
+      if (activeFilters.subjects.size > 0 && !activeFilters.subjects.has(s)) return false;
 
-        if (filters.statuses.size > 0) {
-          let anyStatusMatch = false;
-          for (const st of filters.statuses) {
-            if (matchesQuestionStatus(st, q, att, fl, myNote, qCommNotes, qProblems)) {
-              anyStatusMatch = true;
-              break;
-            }
+      const att = progress.attempts[q.id];
+      const fl = progress.flags[q.id] || {};
+      const myNote = getMyNoteText(q.id).trim();
+      const qCommNotes = getQuestionCommunityNotesList(q.id);
+      const qProblems = getQuestionProblemsList(q.id);
+
+      if (!isDrill && filters.statuses.size > 0) {
+        let anyStatusMatch = false;
+        for (const st of filters.statuses) {
+          if (matchesQuestionStatus(st, q, att, fl, myNote, qCommNotes, qProblems)) {
+            anyStatusMatch = true;
+            break;
           }
-          if (!anyStatusMatch) return false;
         }
-
-        if (term) {
-          const commText = qCommNotes.map((n) => `${n.emoji} ${n.author} ${n.text}`).join(" ");
-          const probText = qProblems.map((p) => {
-            const info = PROBLEM_TYPES[p.type];
-            return `${info ? info.label : ""} ${p.author} ${p.text}`;
-          }).join(" ");
-          const hay = (
-            q.stem + " " +
-            q.options.map((o) => o.text).join(" ") + " " +
-            myNote + " " +
-            commText + " " +
-            probText + " " +
-            q.exam + " " +
-            q.subject
-          ).toLowerCase();
-          if (!hay.includes(term)) return false;
-        }
-        return true;
-      });
-
-      if (preserveShuffle && Array.isArray(shuffledQuestionOrder) && shuffledQuestionOrder.length > 0) {
-        const orderMap = new Map(shuffledQuestionOrder.map((id, idx) => [id, idx]));
-        filteredList.sort((a, b) => {
-          const ia = orderMap.has(a.id) ? orderMap.get(a.id) : Number.MAX_SAFE_INTEGER;
-          const ib = orderMap.has(b.id) ? orderMap.get(b.id) : Number.MAX_SAFE_INTEGER;
-          return ia - ib;
-        });
+        if (!anyStatusMatch) return false;
       }
+
+      if (term) {
+        const commText = qCommNotes.map((n) => `${n.emoji} ${n.author} ${n.text}`).join(" ");
+        const probText = qProblems.map((p) => {
+          const info = PROBLEM_TYPES[p.type];
+          return `${info ? info.label : ""} ${p.author} ${p.text}`;
+        }).join(" ");
+        const hay = (
+          q.stem + " " +
+          q.options.map((o) => o.text).join(" ") + " " +
+          myNote + " " +
+          commText + " " +
+          probText + " " +
+          q.exam + " " +
+          q.subject
+        ).toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+
+    const activeOrder = getActiveShuffledOrder();
+    if (preserveShuffle && Array.isArray(activeOrder) && activeOrder.length > 0) {
+      const orderMap = new Map(activeOrder.map((id, idx) => [id, idx]));
+      filteredList.sort((a, b) => {
+        const ia = orderMap.has(a.id) ? orderMap.get(a.id) : Number.MAX_SAFE_INTEGER;
+        const ib = orderMap.has(b.id) ? orderMap.get(b.id) : Number.MAX_SAFE_INTEGER;
+        return ia - ib;
+      });
     }
+
+    updateFilterCountsUI(basePool.length);
+  }
+
+  function updateFilterCountsUI(totalPoolCount = null) {
+    const isDrill = currentMode === "drill";
+    const activeFilters = getActiveFilters();
+    const poolCount = totalPoolCount !== null
+      ? totalPoolCount
+      : (isDrill ? getDrillQuestions().length : QUESTIONS.length);
+
+    el("filteredCountText").textContent = isDrill
+      ? (poolCount === 0
+        ? "אין שאלות שממתינות לתיקון"
+        : `מציג ${filteredList.length} מתוך ${poolCount} שאלות לתיקון`)
+      : `מציג ${filteredList.length} מתוך ${poolCount} שאלות`;
+    el("jumpInput").max = Math.max(1, filteredList.length);
+
+    const totalExams = EXAMS.length;
+    const totalSubjs = getUniqueSubjects().length;
+    const hasExamFilter = activeFilters.exams.size > 0 && activeFilters.exams.size < totalExams;
+    const hasSubjectFilter = activeFilters.subjects.size > 0 && activeFilters.subjects.size < totalSubjs;
+    const hasStatusFilter = !isDrill && filters.statuses.size > 0;
+    const hasCustomFilter = hasExamFilter || hasSubjectFilter || hasStatusFilter || !!activeFilters.search.trim();
+
+    const summaryParts = [];
+    if (hasExamFilter) summaryParts.push(`${activeFilters.exams.size} מועדים`);
+    if (hasSubjectFilter) summaryParts.push(`${activeFilters.subjects.size} מקצועות`);
+    if (hasStatusFilter) summaryParts.push(filters.statuses.size === 1 ? "מסונן" : `${filters.statuses.size} סטטוסים`);
+    const prefix = summaryParts.length > 0 ? summaryParts.join(" · ") : "הכל";
+    el("filterSummaryBadge").textContent = `${prefix} · ${filteredList.length}/${poolCount}`;
+    el("filterActiveDot").classList.toggle("hidden", !hasCustomFilter);
+  }
+
+  function applyFilters(keepCurrentId = null, { preserveShuffle = false, fallbackIndex = null } = {}) {
+    recomputeFilteredList({ preserveShuffle });
 
     if (keepCurrentId) {
       const idx = filteredList.findIndex((q) => q.id === keepCurrentId);
@@ -2805,21 +2898,6 @@
       currentIndex = 0;
     }
 
-    el("filteredCountText").textContent = `מציג ${filteredList.length} מתוך ${QUESTIONS.length} שאלות`;
-    el("jumpInput").max = Math.max(1, filteredList.length);
-    const totalExams = EXAMS.length;
-    const totalSubjs = getUniqueSubjects().length;
-    const hasExamFilter = filters.exams.size > 0 && filters.exams.size < totalExams;
-    const hasSubjectFilter = filters.subjects.size > 0 && filters.subjects.size < totalSubjs;
-    const hasStatusFilter = filters.statuses.size > 0;
-    const hasCustomFilter = hasExamFilter || hasSubjectFilter || hasStatusFilter || !!filters.search.trim();
-    const summaryParts = [];
-    if (hasExamFilter) summaryParts.push(`${filters.exams.size} מועדים`);
-    if (hasSubjectFilter) summaryParts.push(`${filters.subjects.size} מקצועות`);
-    if (hasStatusFilter) summaryParts.push(filters.statuses.size === 1 ? "מסונן" : `${filters.statuses.size} סטטוסים`);
-    const prefix = summaryParts.length > 0 ? summaryParts.join(" · ") : "הכל";
-    el("filterSummaryBadge").textContent = `${prefix} · ${filteredList.length}/${QUESTIONS.length}`;
-    el("filterActiveDot").classList.toggle("hidden", !hasCustomFilter);
     renderQuestion();
   }
 
@@ -2846,6 +2924,25 @@
     if (filteredList.length === 0) {
       card.classList.add("hidden");
       empty.classList.remove("hidden");
+      const titleEl = el("emptyStateTitle");
+      const descEl = el("emptyStateDesc");
+      const resetBtn = el("btnResetFiltersEmpty");
+      if (currentMode === "drill") {
+        const totalDrill = getDrillQuestions().length;
+        if (totalDrill === 0) {
+          if (titleEl) titleEl.textContent = "🎉 כל הטעויות תוקנו!";
+          if (descEl) descEl.textContent = "אין כרגע שאלות שממתינות בתיקון טעויות.";
+          resetBtn?.classList.add("hidden");
+        } else {
+          if (titleEl) titleEl.textContent = "לא נמצאו שאלות לתיקון התואמות לסינון";
+          if (descEl) descEl.textContent = "נסה לנקות חלק מהמסננים או לבחור שנה או מקצוע אחרים.";
+          resetBtn?.classList.remove("hidden");
+        }
+      } else {
+        if (titleEl) titleEl.textContent = "לא נמצאו שאלות התואמות לסינון";
+        if (descEl) descEl.textContent = "נסה לנקות חלק מהמסננים או לשנות את מילת החיפוש.";
+        resetBtn?.classList.remove("hidden");
+      }
       return;
     }
     card.classList.remove("hidden");
@@ -3054,6 +3151,10 @@
     }
 
     persistStudySession();
+    if (currentMode === "drill") {
+      renderFilterChips();
+      updateFilterCountsUI();
+    }
     renderQuestion();
   }
 
@@ -3078,6 +3179,10 @@
     progress.flags[q.id][flagName] = !progress.flags[q.id][flagName];
     progress.flagUpdatedAt[q.id][flagName] = now;
     saveProgress();
+    if (currentMode === "drill") {
+      renderFilterChips();
+      updateFilterCountsUI();
+    }
     renderQuestion();
   }
 
@@ -3129,15 +3234,19 @@
     hasUserInteractedWithNav = true;
     if (currentMode === "drill") {
       const prevId = filteredList[currentIndex]?.id;
-      filteredList = getDrillQuestions();
+      const prevIdx = currentIndex;
+      recomputeFilteredList({ preserveShuffle: true });
       if (filteredList.length === 0) {
         renderQuestion();
         persistStudySession();
         return;
       }
-      const nextIdx = filteredList.findIndex((q) => q.id !== prevId);
-      currentIndex = (currentIndex + 1) % filteredList.length;
-      if (filteredList[currentIndex]?.id === prevId && nextIdx >= 0) currentIndex = nextIdx;
+      const idxOfPrev = prevId ? filteredList.findIndex((q) => q.id === prevId) : -1;
+      if (idxOfPrev >= 0) {
+        currentIndex = (idxOfPrev + 1) % filteredList.length;
+      } else {
+        currentIndex = prevIdx % filteredList.length;
+      }
       renderQuestion();
       persistStudySession();
       return;
@@ -3154,12 +3263,16 @@
 
   // Shuffle
   function shuffleFilteredQuestions() {
+    if (filteredList.length === 0) {
+      showToast("אין שאלות לערבוב.");
+      return;
+    }
     hasUserInteractedWithNav = true;
     for (let i = filteredList.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [filteredList[i], filteredList[j]] = [filteredList[j], filteredList[i]];
     }
-    shuffledQuestionOrder = filteredList.map((q) => q.id);
+    setActiveShuffledOrder(filteredList.map((q) => q.id));
     currentIndex = 0;
     renderQuestion();
     persistStudySession();
@@ -3181,11 +3294,15 @@
     filters.statuses.clear();
     filters.search = "";
     filters.mergePathology = true;
+    drillFilters.exams.clear();
+    drillFilters.subjects.clear();
+    drillFilters.search = "";
     if (el("mergePathologyToggle")) el("mergePathologyToggle").checked = true;
     if (el("searchInput")) el("searchInput").value = "";
     el("clearSearchBtn")?.classList.add("hidden");
     setShuffleOptionsEnabled(false);
     shuffledQuestionOrder = null;
+    drillShuffledOrder = null;
     lastQIdByMode = {};
     lastIndexByMode = {};
     renderFilterChips();
@@ -3218,13 +3335,23 @@
       filters.statuses = new Set((f.statuses || []).filter((x) => validStatuses.has(x)));
 
       filters.search = typeof f.search === "string" ? f.search : "";
-      if (el("searchInput")) el("searchInput").value = filters.search;
-      el("clearSearchBtn")?.classList.toggle("hidden", !filters.search);
+
+      const df = clean.drillFilters || {};
+      drillFilters.exams = new Set((df.exams || []).filter((x) => validExamNames.has(x)));
+      drillFilters.subjects = new Set((df.subjects || []).filter((x) => validSubjects.has(x)));
+      drillFilters.search = typeof df.search === "string" ? df.search : "";
+
+      const activeSearch = clean.mode === "drill" ? drillFilters.search : filters.search;
+      if (el("searchInput")) el("searchInput").value = activeSearch;
+      el("clearSearchBtn")?.classList.toggle("hidden", !activeSearch);
 
       setFilterPanelCollapsed(Boolean(clean.filterCollapsed));
       setShuffleOptionsEnabled(Boolean(clean.shuffleOptions));
       shuffledQuestionOrder = Array.isArray(clean.shuffledOrder) && clean.shuffledOrder.length > 0
         ? [...clean.shuffledOrder]
+        : null;
+      drillShuffledOrder = Array.isArray(clean.drillShuffledOrder) && clean.drillShuffledOrder.length > 0
+        ? [...clean.drillShuffledOrder]
         : null;
       lastQIdByMode = { ...(clean.lastQIdByMode || {}) };
       lastIndexByMode = { ...(clean.lastIndexByMode || {}) };
@@ -4341,13 +4468,18 @@
     });
 
     const isStudy = isStudyMode(mode);
-    el("filterPanel").classList.toggle("hidden", !(mode === "practice" || mode === "flashcard"));
+    el("filterPanel").classList.toggle("hidden", !isStudy);
+    el("statusFilterRow")?.classList.toggle("hidden", mode === "drill");
     el("studyView").classList.toggle("hidden", !isStudy);
     el("examView").classList.toggle("hidden", mode !== "exam");
     el("analyticsView").classList.toggle("hidden", mode !== "analytics");
     el("leaderboardView")?.classList.toggle("hidden", mode !== "leaderboard");
 
     if (isStudy) {
+      const activeFilters = getActiveFilters();
+      if (el("searchInput")) el("searchInput").value = activeFilters.search;
+      el("clearSearchBtn")?.classList.toggle("hidden", !activeFilters.search);
+      renderFilterChips();
       const savedQId = lastQIdByMode[mode] || null;
       const savedIdx = Number.isInteger(lastIndexByMode[mode]) ? lastIndexByMode[mode] : null;
       applyFilters(savedQId, { preserveShuffle: true, fallbackIndex: savedIdx });
@@ -4411,14 +4543,16 @@
     // Search
     el("searchInput").addEventListener("input", (e) => {
       hasUserInteractedWithNav = true;
-      filters.search = e.target.value;
-      el("clearSearchBtn").classList.toggle("hidden", !filters.search);
+      const activeFilters = getActiveFilters();
+      activeFilters.search = e.target.value;
+      el("clearSearchBtn").classList.toggle("hidden", !activeFilters.search);
       applyFilters();
       persistStudySession();
     });
     el("clearSearchBtn").onclick = () => {
       hasUserInteractedWithNav = true;
-      filters.search = "";
+      const activeFilters = getActiveFilters();
+      activeFilters.search = "";
       el("searchInput").value = "";
       el("clearSearchBtn").classList.add("hidden");
       applyFilters();
@@ -4430,6 +4564,7 @@
       hasUserInteractedWithNav = true;
       filters.mergePathology = e.target.checked;
       filters.subjects.clear();
+      drillFilters.subjects.clear();
       renderFilterChips();
       initExamSetup();
       applyFilters();
@@ -4449,35 +4584,35 @@
     // Year quick buttons
     el("btnRecentYears").onclick = () => {
       hasUserInteractedWithNav = true;
-      filters.exams = new Set(["2026", "2025", "2024", "2022", "2021"]);
+      getActiveFilters().exams = new Set(["2026", "2025", "2024", "2022", "2021"]);
       renderFilterChips();
       applyFilters();
       persistStudySession();
     };
     el("btnAllYears").onclick = () => {
       hasUserInteractedWithNav = true;
-      filters.exams = new Set(EXAMS.map((ex) => ex.name));
+      getActiveFilters().exams = new Set(EXAMS.map((ex) => ex.name));
       renderFilterChips();
       applyFilters();
       persistStudySession();
     };
     el("btnClearYears").onclick = () => {
       hasUserInteractedWithNav = true;
-      filters.exams.clear();
+      getActiveFilters().exams.clear();
       renderFilterChips();
       applyFilters();
       persistStudySession();
     };
     el("btnAllSubjects").onclick = () => {
       hasUserInteractedWithNav = true;
-      filters.subjects = new Set(getUniqueSubjects());
+      getActiveFilters().subjects = new Set(getUniqueSubjects());
       renderFilterChips();
       applyFilters();
       persistStudySession();
     };
     el("btnClearSubjects").onclick = () => {
       hasUserInteractedWithNav = true;
-      filters.subjects.clear();
+      getActiveFilters().subjects.clear();
       renderFilterChips();
       applyFilters();
       persistStudySession();
@@ -4512,10 +4647,11 @@
 
     el("btnResetFiltersEmpty").onclick = () => {
       hasUserInteractedWithNav = true;
-      filters.exams.clear();
-      filters.subjects.clear();
-      filters.statuses.clear();
-      filters.search = "";
+      const activeFilters = getActiveFilters();
+      activeFilters.exams.clear();
+      activeFilters.subjects.clear();
+      if (currentMode !== "drill") filters.statuses.clear();
+      activeFilters.search = "";
       el("searchInput").value = "";
       el("clearSearchBtn").classList.add("hidden");
       renderFilterChips();
@@ -4567,6 +4703,10 @@
       if (!progress.clearedAttempts) progress.clearedAttempts = {};
       progress.clearedAttempts[q.id] = Date.now();
       saveProgress();
+      if (currentMode === "drill") {
+        renderFilterChips();
+        updateFilterCountsUI();
+      }
       renderQuestion();
     };
 
@@ -4862,6 +5002,7 @@
         progress = defaultProgress();
         progress.resetAt = Date.now();
         shuffledQuestionOrder = null;
+        drillShuffledOrder = null;
         lastQIdByMode = {};
         lastIndexByMode = {};
         setShuffleOptionsEnabled(false);
@@ -4869,6 +5010,9 @@
         filters.subjects.clear();
         filters.statuses.clear();
         filters.search = "";
+        drillFilters.exams.clear();
+        drillFilters.subjects.clear();
+        drillFilters.search = "";
         if (el("searchInput")) el("searchInput").value = "";
         el("clearSearchBtn")?.classList.add("hidden");
         renderFilterChips();
@@ -7135,6 +7279,7 @@
   if (progress.studySession) {
     const s = progress.studySession;
     const f = s.filters || {};
+    const df = s.drillFilters || {};
     const curModeKey = s.mode || "practice";
     const hasNonDefault =
       (s.mode && s.mode !== "practice") ||
@@ -7143,6 +7288,10 @@
       (Array.isArray(f.statuses) && f.statuses.length > 0) ||
       (typeof f.search === "string" && f.search.trim().length > 0) ||
       (Array.isArray(s.shuffledOrder) && s.shuffledOrder.length > 0) ||
+      (Array.isArray(df.exams) && df.exams.length > 0) ||
+      (Array.isArray(df.subjects) && df.subjects.length > 0) ||
+      (typeof df.search === "string" && df.search.trim().length > 0) ||
+      (Array.isArray(s.drillShuffledOrder) && s.drillShuffledOrder.length > 0) ||
       Boolean(s.shuffleOptions) ||
       Boolean(s.filterCollapsed) ||
       (s.lastIndexByMode?.[curModeKey] || 0) > 0;

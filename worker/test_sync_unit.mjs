@@ -106,6 +106,8 @@ console.log("✓ Offline QR SVG unit checks OK");
     filterCollapsed: true,
     shuffleOptions: true,
     shuffledOrder: ["2025_q10", "2025_q37"],
+    drillFilters: { exams: ["2025"], subjects: ["קרדיולוגיה"], search: "" },
+    drillShuffledOrder: ["2025_q37", "2025_q10"],
     lastQIdByMode: { practice: "2025_q37", flashcard: "2024_q12" },
     lastIndexByMode: { practice: 1, flashcard: 5 },
     deviceId: "dev_desktop",
@@ -128,6 +130,8 @@ console.log("✓ Offline QR SVG unit checks OK");
   assert.equal(mergedSessNewerDesktop.studySession.deviceId, "dev_desktop");
   assert.equal(mergedSessNewerDesktop.studySession.lastQIdByMode.practice, "2025_q37");
   assert.deepEqual(mergedSessNewerDesktop.studySession.shuffledOrder, ["2025_q10", "2025_q37"]);
+  assert.deepEqual(mergedSessNewerDesktop.studySession.drillFilters, { exams: ["2025"], subjects: ["קרדיולוגיה"], search: "" });
+  assert.deepEqual(mergedSessNewerDesktop.studySession.drillShuffledOrder, ["2025_q37", "2025_q10"]);
   assert.equal(mergedSessNewerDesktop.studySession.filters.mergePathology, false);
   assert.equal(mergedSessNewerDesktop.studySessionUpdatedAt, 2000);
 

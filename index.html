@@ -201,7 +201,7 @@
       </div>
     </section>
 
-    <!-- Collapsible Exam Index Strip (shown in Practice & Flashcard modes) -->
+    <!-- Collapsible Exam Index Strip (shown in Practice, Drill & Flashcard modes) -->
     <section class="filter-panel card" id="filterPanel" aria-label="חיפוש וסינון שאלות">
       <div class="filter-header">
         <div class="search-box">
@@ -276,7 +276,7 @@
           <div class="chips-wrap" id="subjectChips"></div>
         </div>
 
-        <div class="filter-row">
+        <div class="filter-row" id="statusFilterRow">
           <div class="filter-label">
             <span>🏷️ סטטוס</span>
             <div class="filter-mini-links">
@@ -316,8 +316,8 @@
             <path d="m21 21-4.3-4.3" />
           </svg>
         </div>
-        <h2>לא נמצאו שאלות התואמות לסינון</h2>
-        <p class="muted">נסה לנקות חלק מהמסננים או לשנות את מילת החיפוש.</p>
+        <h2 id="emptyStateTitle">לא נמצאו שאלות התואמות לסינון</h2>
+        <p class="muted" id="emptyStateDesc">נסה לנקות חלק מהמסננים או לשנות את מילת החיפוש.</p>
         <button type="button" class="btn-primary" id="btnResetFiltersEmpty">אפס מסננים</button>
       </div>
 

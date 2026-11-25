@@ -944,6 +944,10 @@ button,
   font-weight: 700;
 }
 
+.chip.chip-empty {
+  opacity: 0.52;
+}
+
 .filter-footer {
   margin-top: 6px;
   padding-top: 10px;

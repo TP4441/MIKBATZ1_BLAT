@@ -254,6 +254,7 @@ function sanitizeStudySession(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const mode = VALID_STUDY_MODES.has(raw.mode) ? raw.mode : "practice";
   const rawFilters = raw.filters && typeof raw.filters === "object" && !Array.isArray(raw.filters) ? raw.filters : {};
+  const rawDrillFilters = raw.drillFilters && typeof raw.drillFilters === "object" && !Array.isArray(raw.drillFilters) ? raw.drillFilters : {};
   const toStrArray = (val) =>
     Array.isArray(val)
       ? val.filter((x) => typeof x === "string" && x.length > 0 && x.length <= 120).slice(0, MAX_SESSION_ARRAY_LEN)
@@ -291,6 +292,12 @@ function sanitizeStudySession(raw) {
     filterCollapsed: Boolean(raw.filterCollapsed),
     shuffleOptions: Boolean(raw.shuffleOptions),
     shuffledOrder: Array.isArray(raw.shuffledOrder) ? toStrArray(raw.shuffledOrder) : null,
+    drillFilters: {
+      exams: toStrArray(rawDrillFilters.exams),
+      subjects: toStrArray(rawDrillFilters.subjects),
+      search: typeof rawDrillFilters.search === "string" ? rawDrillFilters.search.slice(0, 500) : "",
+    },
+    drillShuffledOrder: Array.isArray(raw.drillShuffledOrder) ? toStrArray(raw.drillShuffledOrder) : null,
     lastQIdByMode,
     lastIndexByMode,
     deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
