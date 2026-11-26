@@ -11,6 +11,9 @@ const VALID_PROBLEM_TYPES = new Set(["question_issue", "distractor_issue", "out_
 const ONLINE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes active presence window (was 3m)
 const PRESENCE_TOUCH_INTERVAL_MS = 3 * 60 * 1000; // Throttle last_seen_at writes to once per 3 minutes (was 1m)
 const ADMIN_SESSION_TOUCH_INTERVAL_MS = 60 * 1000; // Throttle admin session last_seen_at writes to once per minute
+const UNUSED_PHANTOM_MAX_SPAN_MS = 15 * 1000; // Short-lived empty visits (< 15s) eligible for manual cleanup
+const UNUSED_PHANTOM_GRACE_MS = ONLINE_WINDOW_MS; // Never clean up a visitor seen within active online window
+const UNUSED_STALE_INACTIVE_MS = 24 * 60 * 60 * 1000; // Empty profiles inactive >= 24h eligible for manual cleanup
 const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
 const VALID_USER_ROLES = new Set(["user", "supervisor"]);
 
@@ -3312,6 +3315,91 @@ async function handleAdminDeletePoolName(env, name) {
   return jsonResponse({ ok: true, name, deleted: (delRes?.meta?.changes ?? 0) > 0 });
 }
 
+const UNUSED_IDENTITIES_WHERE_SQL = `
+  COALESCE(role, 'user') = 'user'
+  AND COALESCE(blocked, 0) = 0
+  AND COALESCE(admin_renamed_at, 0) = 0
+  AND user_id NOT IN (SELECT user_id FROM user_progress)
+  AND user_id NOT IN (SELECT user_id FROM community_notes)
+  AND user_id NOT IN (SELECT user_id FROM note_replies)
+  AND user_id NOT IN (SELECT user_id FROM community_problems)
+  AND user_id NOT IN (SELECT flagger_user_id FROM problem_flags)
+  AND user_id NOT IN (SELECT user_id FROM user_feedback)
+  AND user_id NOT IN (SELECT user_id FROM admin_sessions WHERE user_id != '')
+  AND user_id NOT IN (SELECT user_id FROM user_device_secrets)
+  AND user_id NOT IN (SELECT user_id FROM blocked_users)
+  AND (
+    ((last_seen_at - first_seen_at) < ? AND last_seen_at <= ?)
+    OR last_seen_at <= ?
+  )
+`;
+
+async function handleAdminCleanupUnusedUsers(request, env) {
+  const body = await readJsonBody(request);
+  if (body === null) return errorResponse("Invalid JSON", 400);
+
+  const dryRun = Boolean(body.dryRun);
+  const now = Date.now();
+  const phantomCutoff = now - UNUSED_PHANTOM_GRACE_MS;
+  const staleCutoff = now - UNUSED_STALE_INACTIVE_MS;
+
+  const { results } = await env.DB
+    .prepare(
+      `SELECT user_id, name, emoji, first_seen_at, last_seen_at
+       FROM identities
+       WHERE ${UNUSED_IDENTITIES_WHERE_SQL}
+       ORDER BY last_seen_at DESC`
+    )
+    .bind(UNUSED_PHANTOM_MAX_SPAN_MS, phantomCutoff, staleCutoff)
+    .all();
+
+  const rows = results || [];
+  let phantomCount = 0;
+  let staleCount = 0;
+  for (const r of rows) {
+    const lastSeen = Number(r.last_seen_at) || 0;
+    const firstSeen = Number(r.first_seen_at) || 0;
+    if (lastSeen <= staleCutoff) {
+      staleCount += 1;
+    } else if (lastSeen - firstSeen < UNUSED_PHANTOM_MAX_SPAN_MS) {
+      phantomCount += 1;
+    }
+  }
+
+  const sampleNames = rows.slice(0, 12).map((r) => `${r.emoji || "👤"} ${r.name}`);
+
+  if (dryRun) {
+    return jsonResponse({
+      ok: true,
+      dryRun: true,
+      count: rows.length,
+      phantomCount,
+      staleCount,
+      sampleNames,
+    });
+  }
+
+  let releasedCount = 0;
+  if (rows.length > 0) {
+    const delRes = await env.DB
+      .prepare(`DELETE FROM identities WHERE ${UNUSED_IDENTITIES_WHERE_SQL}`)
+      .bind(UNUSED_PHANTOM_MAX_SPAN_MS, phantomCutoff, staleCutoff)
+      .run();
+    releasedCount = delRes?.meta?.changes ?? 0;
+    if (releasedCount > 0) {
+      invalidateLeaderboardCache();
+    }
+  }
+
+  return jsonResponse({
+    ok: true,
+    dryRun: false,
+    releasedCount,
+    phantomCount,
+    staleCount,
+  });
+}
+
 async function handlePostFeedback(request, env) {
   const body = await readJsonBody(request);
   if (!body) return errorResponse("Invalid JSON", 400);
@@ -4533,6 +4621,10 @@ export default {
 
         if (method === "GET" && path === "/api/admin/users") {
           return finalize(await handleAdminUsers(trackedEnv, auth.sessionId));
+        }
+
+        if (method === "POST" && path === "/api/admin/users/cleanup-unused") {
+          return finalize(await handleAdminCleanupUnusedUsers(request, trackedEnv));
         }
 
         const adminUserRoleMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/role$/);

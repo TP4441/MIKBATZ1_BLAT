@@ -361,6 +361,10 @@
   let cloudCommunityLoaded = false;
   let lastNoteMutationAt = 0;
   let identityRegisteredInCloud = false;
+  const LAZY_CLOUD_REGISTER_DWELL_MS = 15000;
+  let lazyRegisterTimer = null;
+  let lazyRegisterPromise = null;
+  let hasHumanInteractionSignal = false;
   let filteredList = [];
   let currentIndex = 0;
   let optionPermutations = new Map(); // qId -> array of original indices
@@ -1517,6 +1521,7 @@
           const validSyncCode = formatSyncCode(parsed.syncCode);
           const syncCode = validSyncCode || generateSyncCode();
           const syncCodeRegistered = Boolean(validSyncCode && parsed.syncCodeRegistered);
+          const cloudRegistered = Boolean(parsed.cloudRegistered || syncCodeRegistered);
           const loaded = {
             userId: String(parsed.userId),
             name: match ? match.name : parsed.name.trim(),
@@ -1527,6 +1532,7 @@
             clientSecret,
             syncCode,
             syncCodeRegistered,
+            cloudRegistered,
             locked: true,
           };
           if (!parsed.clientSecret || !validSyncCode) {
@@ -1547,6 +1553,7 @@
       clientSecret: generateClientSecret(),
       syncCode: generateSyncCode(),
       syncCodeRegistered: false,
+      cloudRegistered: false,
       locked: true,
     };
     identityNeedsCloudCheck = true;
@@ -2645,6 +2652,79 @@
     return changed || roleChanged;
   }
 
+  function isAutomatedBrowserClient() {
+    try {
+      return Boolean(navigator.webdriver);
+    } catch {
+      return false;
+    }
+  }
+
+  function hasCloudRegistrationEligibility() {
+    return Boolean(
+      identityRegisteredInCloud ||
+      userIdentity?.cloudRegistered ||
+      userIdentity?.syncCodeRegistered ||
+      userIdentity?.adminAssigned ||
+      adminState?.authenticated ||
+      hasSubstantialLocalProgress(progress)
+    );
+  }
+
+  function clearLazyRegistrationTimer() {
+    if (lazyRegisterTimer) {
+      clearTimeout(lazyRegisterTimer);
+      lazyRegisterTimer = null;
+    }
+  }
+
+  function markCloudIdentityRegistered() {
+    identityRegisteredInCloud = true;
+    clearLazyRegistrationTimer();
+    if (userIdentity && !userIdentity.cloudRegistered) {
+      userIdentity = { ...userIdentity, cloudRegistered: true };
+      saveUserIdentity();
+    }
+  }
+
+  async function ensureIdentityRegisteredInCloud() {
+    if (!isCloudApiConfigured()) return false;
+    clearLazyRegistrationTimer();
+    if (identityRegisteredInCloud) return true;
+    if (lazyRegisterPromise) return lazyRegisterPromise;
+    lazyRegisterPromise = (async () => {
+      const ok = await registerIdentityPing(false);
+      if (ok && !userIdentity.syncCodeRegistered) {
+        await ensureSyncCodeRegistered();
+      }
+      return ok;
+    })().finally(() => {
+      lazyRegisterPromise = null;
+    });
+    return lazyRegisterPromise;
+  }
+
+  function scheduleLazyCloudRegistration() {
+    if (!isCloudApiConfigured()) return;
+    if (identityRegisteredInCloud || hasCloudRegistrationEligibility()) {
+      clearLazyRegistrationTimer();
+      return;
+    }
+    if (isAutomatedBrowserClient() || !hasHumanInteractionSignal) return;
+    if (document.visibilityState === "hidden" || lazyRegisterTimer) return;
+    lazyRegisterTimer = setTimeout(() => {
+      lazyRegisterTimer = null;
+      if (
+        document.visibilityState !== "hidden" &&
+        !identityRegisteredInCloud &&
+        hasHumanInteractionSignal &&
+        !isAutomatedBrowserClient()
+      ) {
+        ensureIdentityRegisteredInCloud();
+      }
+    }, LAZY_CLOUD_REGISTER_DWELL_MS);
+  }
+
   async function registerIdentityPing(retried = false) {
     if (!isCloudApiConfigured()) return false;
     try {
@@ -2682,7 +2762,7 @@
       }
       if (res.ok) {
         handleUserBlockedState(false);
-        identityRegisteredInCloud = true;
+        markCloudIdentityRegistered();
         if (data.identity) {
           applyServerIdentityUpdate(data.identity);
         }
@@ -2836,7 +2916,10 @@
     onlineUsersLoading = true;
     renderOnlineUsersUI();
     try {
-      if ((pingMe || !identityRegisteredInCloud) && !identityNeedsCloudCheck) {
+      const shouldPingSelf =
+        ((pingMe && !isAutomatedBrowserClient()) || (hasCloudRegistrationEligibility() && !identityRegisteredInCloud)) &&
+        !identityNeedsCloudCheck;
+      if (shouldPingSelf) {
         const pinged = await registerIdentityPing(false);
         if (pinged && onlineUsersLoaded) {
           return true;
@@ -7388,7 +7471,7 @@
       if (cloudProgressDirty) {
         await pushCloudProgress().catch(() => {});
       }
-      if (!identityRegisteredInCloud && !identityNeedsCloudCheck) {
+      if (hasCloudRegistrationEligibility() && !identityRegisteredInCloud && !identityNeedsCloudCheck) {
         await registerIdentityPing(false).catch(() => {});
       }
       const res = await fetch(`${CLOUD_API_BASE}/api/leaderboard`, { cache: "no-store" });
@@ -8965,6 +9048,7 @@
     });
     el("btnAdminLogout")?.addEventListener("click", adminLogout);
     el("btnAdminRefreshUsers")?.addEventListener("click", () => loadAdminUsers(true));
+    el("btnAdminCleanupUnused")?.addEventListener("click", adminCleanupUnusedUsers);
     el("btnAdminRefreshFeedback")?.addEventListener("click", () => loadAdminFeedback(true));
     el("btnAdminRefreshTraffic")?.addEventListener("click", () => loadAdminMetrics(true, true));
     el("btnAdminOpenAddName")?.addEventListener("click", openAdminAddNameModal);
@@ -9528,6 +9612,7 @@
         throw new Error(data.error || "התחברות נכשלה");
       }
       saveAdminToken(data.token, data.expiresAt, rememberDevice, data.sessionId || null);
+      markCloudIdentityRegistered();
       closeAdminLoginModal();
       updateAdminUI();
       showToast("🛡️ התחברת בהצלחה כמנהל!");
@@ -10054,6 +10139,46 @@
       showToast(`🔓 הכינוי "${name}" שוחרר.`);
     } catch (err) {
       showToast(`❌ שגיאה בשחרור כינוי: ${err.message}`);
+    }
+  }
+
+  async function adminCleanupUnusedUsers() {
+    if (!adminState.authenticated) return;
+    const btn = el("btnAdminCleanupUnused");
+    if (btn) btn.disabled = true;
+    try {
+      const preview = await adminFetch("/api/admin/users/cleanup-unused", {
+        method: "POST",
+        body: JSON.stringify({ dryRun: true }),
+      });
+      const count = Number(preview.count) || 0;
+      if (count === 0) {
+        showToast("✨ אין כרגע כינויים ריקים ולא פעילים לשחרור.");
+        return;
+      }
+      const parts = [];
+      if (preview.phantomCount > 0) parts.push(`${preview.phantomCount} ביקורים קצרצרים (< 15 שנ׳)`);
+      if (preview.staleCount > 0) parts.push(`${preview.staleCount} ריקים מעל 24 ש׳`);
+      const sample = Array.isArray(preview.sampleNames) && preview.sampleNames.length > 0
+        ? `\nדוגמאות: ${preview.sampleNames.join(", ")}${count > preview.sampleNames.length ? "..." : ""}`
+        : "";
+      const confirmMsg =
+        `נמצאו ${count} כינויים ריקים ולא פעילים לשחרור` +
+        (parts.length ? ` (${parts.join(" · ")})` : "") +
+        `.\nלא יימחק אף משתמש עם התקדמות, הערות, דיווחים, מכשירים מקושרים, הרשאה או חסימה.${sample}\n\nלשחרר את כולם כעת?`;
+      if (!confirm(confirmMsg)) return;
+
+      const res = await adminFetch("/api/admin/users/cleanup-unused", {
+        method: "POST",
+        body: JSON.stringify({ dryRun: false }),
+      });
+      const released = Number(res.releasedCount) || 0;
+      await loadAdminUsers(false);
+      showToast(`🧹 שוחררו ${released} כינויים ריקים ולא פעילים.`);
+    } catch (err) {
+      showToast(`❌ שגיאה בניקוי כינויים: ${err.message}`);
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -11716,9 +11841,8 @@
         }
       }
       if (res.ok) {
-        identityRegisteredInCloud = true;
         userIdentity.syncCodeRegistered = true;
-        saveUserIdentity();
+        markCloudIdentityRegistered();
         takenNamesMap[userIdentity.name] = userIdentity.userId;
         saveTakenNamesCache();
         return true;
@@ -11840,6 +11964,9 @@
     }
     cloudProgressDirty = true;
     if (!isCloudApiConfigured()) return;
+    if (!identityRegisteredInCloud && !keepalive) {
+      ensureIdentityRegisteredInCloud();
+    }
     if (cloudProgressPushTimer) {
       clearTimeout(cloudProgressPushTimer);
       cloudProgressPushTimer = null;
@@ -11939,6 +12066,10 @@
         }
         cloudProgressSyncState = "synced";
         updateSyncStatusUI();
+        markCloudIdentityRegistered();
+        if (!useKeepalive && !userIdentity.syncCodeRegistered) {
+          ensureSyncCodeRegistered();
+        }
         return true;
       } catch {
         cloudProgressSyncState = "error";
@@ -12024,8 +12155,9 @@
 
     const runPoll = async () => {
       try {
-        if (!identityRegisteredInCloud) {
-          await registerIdentityPing(false);
+        const canAuthIdentity = hasCloudRegistrationEligibility() || cloudProgressDirty;
+        if (canAuthIdentity && !identityRegisteredInCloud) {
+          await ensureIdentityRegisteredInCloud();
         }
         if (cloudProgressDirty) {
           await pushCloudProgress();
@@ -12034,12 +12166,13 @@
         const params = new URLSearchParams({
           communityVersion: String(lastCommunityVersion || 0),
           progressVersion: String(lastSyncedProgressVersion || 0),
-          touchPresence: touchPresence ? "1" : "0",
+          touchPresence: canAuthIdentity && touchPresence ? "1" : "0",
         });
-        const pollHeaders = {
-          "X-User-Id": userIdentity.userId,
-          "X-Client-Secret": userIdentity.clientSecret,
-        };
+        const pollHeaders = {};
+        if (canAuthIdentity) {
+          pollHeaders["X-User-Id"] = userIdentity.userId;
+          pollHeaders["X-Client-Secret"] = userIdentity.clientSecret;
+        }
         if (adminState.authenticated && adminState.token) {
           pollHeaders.Authorization = `Bearer ${adminState.token}`;
         }
@@ -12335,9 +12468,11 @@
         clientSecret: newClientSecret,
         syncCode: formatSyncCode(syncCode),
         syncCodeRegistered: true,
+        cloudRegistered: true,
         locked: true,
       };
       identityNeedsCloudCheck = false;
+      clearLazyRegistrationTimer();
       identityRegisteredInCloud = true;
       saveUserIdentity();
       updateAdminUI();
@@ -12855,7 +12990,7 @@
   (async () => {
     await bootstrapCloudState(false);
     const linkedMagic = initialMagicSyncCode ? await handleMagicSyncOnStartup(initialMagicSyncCode) : false;
-    if (!linkedMagic) {
+    if (!linkedMagic && hasCloudRegistrationEligibility()) {
       await registerIdentityPing(false);
       await ensureSyncCodeRegistered();
       await pullCloudProgress({ silent: true });
@@ -12873,6 +13008,8 @@
   initAdminAuth();
 
   function markUserActivity() {
+    hasHumanInteractionSignal = true;
+    scheduleLazyCloudRegistration();
     const now = Date.now();
     if (now - lastActivityThrottleAt < 5000) return;
     lastActivityThrottleAt = now;
@@ -12916,10 +13053,14 @@
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
+      clearLazyRegistrationTimer();
       flushPendingCloudSyncOnExit();
     } else if (document.visibilityState === "visible") {
       const now = Date.now();
       lastUserActivityAt = now;
+      if (hasHumanInteractionSignal && !identityRegisteredInCloud) {
+        scheduleLazyCloudRegistration();
+      }
       const lastRelevantPollAt = Math.max(lastVisibilityPullAt, lastCloudPollAt);
       if (now - lastRelevantPollAt > VISIBILITY_POLL_COOLDOWN_MS) {
         lastVisibilityPullAt = now;

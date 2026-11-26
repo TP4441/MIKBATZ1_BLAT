@@ -66,6 +66,7 @@ async function run() {
       ["POST", "/api/admin/logout"],
       ["POST", "/api/admin/sessions/adm_fake/revoke"],
       ["GET", "/api/admin/users"],
+      ["POST", "/api/admin/users/cleanup-unused", { dryRun: true }],
       ["POST", "/api/admin/users/u_fake/role", { role: "supervisor" }],
       ["PUT", "/api/admin/users/u_fake", { name: "שם חדש" }],
       ["POST", "/api/admin/users/u_fake/block", { reason: "test" }],
@@ -2100,6 +2101,12 @@ async function run() {
     // Supervisor must NOT have access to admin-only endpoints (users, metrics, feedback)
     const supAdminUsers = await req("/api/admin/users", { headers: supHeaders });
     assert.equal(supAdminUsers.status, 401);
+    const supAdminCleanup = await req("/api/admin/users/cleanup-unused", {
+      method: "POST",
+      headers: supHeaders,
+      body: { dryRun: true },
+    });
+    assert.equal(supAdminCleanup.status, 401);
     const supAdminMetrics = await req("/api/admin/metrics", { headers: supHeaders });
     assert.equal(supAdminMetrics.status, 401);
     const supAdminFeedback = await req("/api/admin/feedback", { headers: supHeaders });
@@ -2128,6 +2135,57 @@ async function run() {
     assert.equal(afterDemoteModNote.status, 403);
 
     console.log("✓ Admin session tracking, remote revoke & Supervisor ('מפקח') permissions OK");
+  }
+
+  // 8h. Manual unused-identity cleanup endpoint preserves recent & active users
+  {
+    const authHeader = { Authorization: `Bearer ${adminToken}` };
+    const recentEmpty = {
+      userId: "u_cleanup_recent_empty",
+      name: "כינוי בדיקת ניקוי",
+      emoji: "🧪",
+      category: "בדיקה",
+      clientSecret: "cleanup_secret_123456",
+    };
+    const pingRes = await req("/api/identities/ping", {
+      method: "POST",
+      body: recentEmpty,
+    });
+    assert.equal(pingRes.status, 200);
+
+    const dryRes = await req("/api/admin/users/cleanup-unused", {
+      method: "POST",
+      headers: authHeader,
+      body: { dryRun: true },
+    });
+    assert.equal(dryRes.status, 200);
+    assert.equal(dryRes.data.ok, true);
+    assert.equal(dryRes.data.dryRun, true);
+    assert.equal(dryRes.data.count, 0, "Recent empty identity within 5m online window must be preserved");
+
+    const execRes = await req("/api/admin/users/cleanup-unused", {
+      method: "POST",
+      headers: authHeader,
+      body: { dryRun: false },
+    });
+    assert.equal(execRes.status, 200);
+    assert.equal(execRes.data.ok, true);
+    assert.equal(execRes.data.dryRun, false);
+    assert.equal(execRes.data.releasedCount, 0);
+
+    const usersAfter = await req("/api/admin/users", { headers: authHeader });
+    assert.equal(usersAfter.status, 200);
+    assert.ok(
+      usersAfter.data.users.some((u) => u.userId === recentEmpty.userId),
+      "Recent empty user must still exist after cleanup"
+    );
+
+    // Clean up test user
+    await req(`/api/admin/users/${recentEmpty.userId}`, {
+      method: "DELETE",
+      headers: authHeader,
+    });
+    console.log("✓ Manual unused-identity cleanup endpoint OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts

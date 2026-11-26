@@ -693,6 +693,16 @@ button,
   filter: brightness(0.92);
 }
 
+.btn-danger-outline {
+  color: var(--danger-ink);
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+.btn-danger-outline:hover {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+  color: var(--danger-ink);
+}
+
 .btn-success {
   background: var(--success);
   color: #FFFFFF;
