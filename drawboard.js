@@ -785,10 +785,16 @@
   // ============================================================
 
   function syncTopbarOffset() {
+    const isHidden = document.body.classList.contains("topbar-hidden");
     const topbar = document.querySelector(".topbar");
-    const h = topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 64;
-    const topOffset = Math.max(56, h + 12);
+    const h = isHidden ? 0 : (topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 64);
+    const topOffset = isHidden ? 38 : Math.max(56, h + 12);
     document.documentElement.style.setProperty("--drawboard-top", `${topOffset}px`);
+  }
+
+  function refreshLayout() {
+    syncTopbarOffset();
+    if (isVisiblyOpen()) updateCanvasMetrics();
   }
 
   function updateCanvasMetrics() {
@@ -2376,5 +2382,6 @@
     importQuestionImage,
     hasSavedBoard,
     handleEscape,
+    refreshLayout,
   };
 })();

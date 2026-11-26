@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = "med_exam_cluster1_progress_v1";
   const THEME_KEY = "med_exam_theme_v1";
+  const TOPBAR_HIDDEN_KEY = "med_exam_topbar_hidden_v1";
   const SIM_HIDE_TIMER_KEY = "med_exam_sim_hide_timer_v1";
   const IDENTITY_KEY = "med_exam_user_identity_v1";
   const DEVICE_ID_KEY = "med_exam_device_id_v1";
@@ -3678,6 +3679,49 @@
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem(THEME_KEY, next);
     el("btnTheme").title = next === "dark" ? "עבור למצב בהיר" : "עבור למצב כהה";
+  }
+
+  // Topbar Hide / Show
+  function setTopbarHidden(hidden, { persist = true, manageFocus = false } = {}) {
+    const isHidden = Boolean(hidden);
+    if (isHidden && typeof closeOnlineUsersPopover === "function") {
+      closeOnlineUsersPopover();
+    }
+    document.body.classList.toggle("topbar-hidden", isHidden);
+    const toggleBtn = el("btnToggleTopbar");
+    const restoreBtn = el("btnRestoreTopbar");
+    if (toggleBtn) {
+      toggleBtn.setAttribute("aria-expanded", isHidden ? "false" : "true");
+    }
+    if (restoreBtn) {
+      restoreBtn.classList.toggle("hidden", !isHidden);
+      restoreBtn.setAttribute("aria-expanded", isHidden ? "false" : "true");
+    }
+    if (persist) {
+      try {
+        localStorage.setItem(TOPBAR_HIDDEN_KEY, isHidden ? "1" : "0");
+      } catch {}
+    }
+    window.MikbatzDrawBoard?.refreshLayout?.();
+    if (manageFocus) {
+      requestAnimationFrame(() => {
+        if (isHidden) restoreBtn?.focus({ preventScroll: true });
+        else toggleBtn?.focus({ preventScroll: true });
+      });
+    }
+  }
+
+  function initTopbarVisibility() {
+    let savedHidden = false;
+    try {
+      savedHidden = localStorage.getItem(TOPBAR_HIDDEN_KEY) === "1";
+    } catch {}
+    setTopbarHidden(savedHidden, { persist: false, manageFocus: false });
+  }
+
+  function toggleTopbarHidden({ manageFocus = false } = {}) {
+    const nextHidden = !document.body.classList.contains("topbar-hidden");
+    setTopbarHidden(nextHidden, { persist: true, manageFocus });
   }
 
   // Server check (only probe local Python server when running on localhost / 127.0.0.1)
@@ -7481,6 +7525,8 @@
     });
 
     el("btnTheme").onclick = toggleTheme;
+    el("btnToggleTopbar")?.addEventListener("click", () => toggleTopbarHidden({ manageFocus: true }));
+    el("btnRestoreTopbar")?.addEventListener("click", () => setTopbarHidden(false, { persist: true, manageFocus: true }));
     el("btnExportObsidian").onclick = exportToObsidian;
 
     // Search
@@ -8223,6 +8269,11 @@
           e.preventDefault();
           window.MikbatzDrawBoard?.toggle();
         }
+        return;
+      }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "h" || e.key === "H")) {
+        e.preventDefault();
+        toggleTopbarHidden();
         return;
       }
       if (e.key.toLowerCase() === "m") {
@@ -10774,6 +10825,7 @@
   // Init
   const initialMagicSyncCode = extractMagicSyncCodeFromHash();
   initTheme();
+  initTopbarVisibility();
   initLightbox();
   updateIdentityUI();
   updateSyncStatusUI();

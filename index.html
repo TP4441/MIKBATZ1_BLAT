@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261125q" />
+  <link rel="stylesheet" href="styles.css?v=20261126a" />
 </head>
 <body>
   <header class="topbar">
@@ -142,6 +142,12 @@
               <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
             </svg>
           </button>
+          <button type="button" class="icon-btn icon-only" id="btnToggleTopbar" title="הסתר סרגל עליון (H)" aria-label="הסתר סרגל עליון" aria-expanded="true">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="5" y1="5" x2="19" y2="5" />
+              <polyline points="18 15 12 9 6 15" />
+            </svg>
+          </button>
         </div>
       </div>
 
@@ -199,6 +205,21 @@
       </nav>
     </div>
   </header>
+
+  <button
+    type="button"
+    class="topbar-restore-tab hidden"
+    id="btnRestoreTopbar"
+    title="הצג סרגל עליון (H)"
+    aria-label="הצג סרגל עליון"
+    aria-expanded="false"
+  >
+    <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="5" y1="5" x2="19" y2="5" />
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+    <span>הצג סרגל</span>
+  </button>
 
   <main class="main-container">
     <div class="workspace-grid" id="workspaceGrid">
@@ -991,6 +1012,7 @@
         <li><kbd>D</kbd> <span>פתיחה/סגירה של לוח הציור לצד השאלה 🎨</span></li>
         <li><kbd>N</kbd> <span>פתיחה/סגירה ידנית של מגירת ההערות 💬</span></li>
         <li><kbd>R</kbd> <span>ערבוב סדר השאלות 🔀</span></li>
+        <li><kbd>H</kbd> <span>הסתרת/הצגת הסרגל העליון</span></li>
         <li><kbd>Esc</kbd> <span>סגירת זום תמונה / חלון</span></li>
       </ul>
     </div>
@@ -1282,7 +1304,7 @@
 
   <script src="questions_data.js?v=20261125j"></script>
   <script src="qr.js?v=20261124d"></script>
-  <script src="drawboard.js?v=20261125m"></script>
-  <script src="app.js?v=20261125q"></script>
+  <script src="drawboard.js?v=20261126a"></script>
+  <script src="app.js?v=20261126a"></script>
 </body>
 </html>
