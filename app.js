@@ -324,13 +324,18 @@
   let deviceId = loadOrInitDeviceId();
   let userIdentity = loadOrInitIdentity();
   let progress = loadProgress();
-  const CLOUD_POLL_INTERVAL_MS = 90000;
+  const CLOUD_POLL_INTERVAL_MS = 150000; // 2.5 minutes (was 90s)
   const USER_IDLE_TIMEOUT_MS = 180000;
-  const VISIBILITY_POLL_COOLDOWN_MS = 15000;
+  const VISIBILITY_POLL_COOLDOWN_MS = 30000; // 30 seconds on tab return (was 15s)
+  const CLOUD_PROGRESS_DEBOUNCE_MS = 8000; // 8 seconds debounce (was 2s)
+  const CLOUD_PROGRESS_MAX_WAIT_MS = 30000; // Guarantee cloud flush within 30s during continuous activity
   let cloudProgressSyncState = isCloudApiConfigured() ? "synced" : "offline";
   let cloudProgressDirty = false;
   let cloudProgressPushTimer = null;
   let cloudProgressSyncPromise = null;
+  let cloudProgressFirstDirtyAt = 0;
+  let lastKeepaliveFlushSnapshot = "";
+  let lastKeepaliveFlushAt = 0;
   let lastVisibilityPullAt = Date.now();
   let lastCommunityVersion = 0;
   let lastSyncedProgressVersion = 0;
@@ -2422,7 +2427,7 @@
       } else if (onlineUsersLoading && !onlineUsersLoaded) {
         subEl.textContent = "טוען רשימת מחוברים...";
       } else {
-        subEl.textContent = "פעילים ב-3 הדקות האחרונות";
+        subEl.textContent = "פעילים ב-5 הדקות האחרונות";
       }
     }
     if (!listEl) return;
@@ -2440,7 +2445,7 @@
     }
 
     if (onlineUsersList.length === 0) {
-      listEl.innerHTML = `<li class="online-users-empty">אין משתמשים פעילים ב-3 הדקות האחרונות.</li>`;
+      listEl.innerHTML = `<li class="online-users-empty">אין משתמשים פעילים ב-5 הדקות האחרונות.</li>`;
       return;
     }
 
@@ -5371,10 +5376,10 @@
     renderResumeSimBanner();
   }
 
-  function clearActiveSimulation({ syncCloud = true } = {}) {
+  function clearActiveSimulation({ syncCloud = true, immediateCloud = false } = {}) {
     progress.activeSim = null;
     progress.activeSimUpdatedAt = Date.now();
-    saveProgress({ syncCloud });
+    saveProgress({ syncCloud, immediateCloud });
     renderResumeSimBanner();
   }
 
@@ -5442,7 +5447,7 @@
 
     const questions = saved.questionIds.map((id) => Q_MAP.get(id)).filter(Boolean);
     if (questions.length === 0) {
-      clearActiveSimulation({ syncCloud: true });
+      clearActiveSimulation({ syncCloud: true, immediateCloud: true });
       showToast("לא נמצאו שאלות לשחזור הסימולציה.");
       return;
     }
@@ -5887,7 +5892,7 @@
       progress.simHistory = [historyEntry, ...existing].slice(0, MAX_SIM_HISTORY_LEN);
     }
 
-    clearActiveSimulation({ syncCloud: true });
+    clearActiveSimulation({ syncCloud: true, immediateCloud: true });
     if (historyEntry) {
       renderSimResults(historyEntry, { fromHistory: false });
     } else {
@@ -7519,7 +7524,7 @@
     el("btnResumeSim")?.addEventListener("click", () => resumeSavedSimulation());
     el("btnDiscardSim")?.addEventListener("click", () => {
       if (confirm("למחוק את הסימולציה השמורה? פעולה זו תמחק אותה בכל המכשירים המחוברים.")) {
-        clearActiveSimulation({ syncCloud: true });
+        clearActiveSimulation({ syncCloud: true, immediateCloud: true });
         showToast("🗑️ הסימולציה השמורה נמחקה.");
       }
     });
@@ -10039,6 +10044,10 @@
   }
 
   function scheduleCloudProgressPush({ immediate = false, keepalive = false } = {}) {
+    const now = Date.now();
+    if (!cloudProgressDirty || !cloudProgressFirstDirtyAt) {
+      cloudProgressFirstDirtyAt = now;
+    }
     cloudProgressDirty = true;
     if (!isCloudApiConfigured()) return;
     if (cloudProgressPushTimer) {
@@ -10046,13 +10055,17 @@
       cloudProgressPushTimer = null;
     }
     if (immediate) {
+      cloudProgressFirstDirtyAt = 0;
       pushCloudProgress({ keepalive });
-    } else {
-      cloudProgressPushTimer = setTimeout(() => {
-        cloudProgressPushTimer = null;
-        pushCloudProgress();
-      }, 2000);
+      return;
     }
+    const elapsed = now - cloudProgressFirstDirtyAt;
+    const delay = Math.max(0, Math.min(CLOUD_PROGRESS_DEBOUNCE_MS, CLOUD_PROGRESS_MAX_WAIT_MS - elapsed));
+    cloudProgressPushTimer = setTimeout(() => {
+      cloudProgressPushTimer = null;
+      cloudProgressFirstDirtyAt = 0;
+      pushCloudProgress();
+    }, delay);
   }
 
   async function pushCloudProgress({ keepalive = false, replace = false, retried = false } = {}) {
@@ -10062,6 +10075,7 @@
       if (!cloudProgressDirty) return true;
     }
 
+    cloudProgressFirstDirtyAt = 0;
     const snapshotJson = JSON.stringify(progress);
 
     const runPush = async () => {
@@ -11030,6 +11044,14 @@
         clearTimeout(cloudProgressPushTimer);
         cloudProgressPushTimer = null;
       }
+      cloudProgressFirstDirtyAt = 0;
+      const snapshot = JSON.stringify(progress);
+      const now = Date.now();
+      if (snapshot === lastKeepaliveFlushSnapshot && now - lastKeepaliveFlushAt < 2500) {
+        return;
+      }
+      lastKeepaliveFlushSnapshot = snapshot;
+      lastKeepaliveFlushAt = now;
       pushCloudProgress({ keepalive: true });
     }
   }
@@ -11040,7 +11062,8 @@
     } else if (document.visibilityState === "visible") {
       const now = Date.now();
       lastUserActivityAt = now;
-      if (now - lastVisibilityPullAt > VISIBILITY_POLL_COOLDOWN_MS) {
+      const lastRelevantPollAt = Math.max(lastVisibilityPullAt, lastCloudPollAt);
+      if (now - lastRelevantPollAt > VISIBILITY_POLL_COOLDOWN_MS) {
         lastVisibilityPullAt = now;
         pollCloudState({ touchPresence: true });
       }

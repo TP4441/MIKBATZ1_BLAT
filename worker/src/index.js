@@ -8,8 +8,30 @@ const SYNC_CODE_REGEX = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{12}$/;
 const MAX_PROGRESS_JSON_BYTES = 1500 * 1024;
 const MAX_FEEDBACK_CHARS = 500;
 const VALID_PROBLEM_TYPES = new Set(["question_issue", "distractor_issue", "out_of_material"]);
-const ONLINE_WINDOW_MS = 3 * 60 * 1000; // 3 minutes active presence window
-const PRESENCE_TOUCH_INTERVAL_MS = 60 * 1000; // Throttle last_seen_at writes to once per minute
+const ONLINE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes active presence window (was 3m)
+const PRESENCE_TOUCH_INTERVAL_MS = 3 * 60 * 1000; // Throttle last_seen_at writes to once per 3 minutes (was 1m)
+const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
+
+// In-memory per-isolate caches (safe across isolates: community cache is keyed by authoritative D1 community_version)
+let communityCache = { version: 0, data: null };
+let communityCacheInFlight = { version: 0, promise: null };
+let communityInvalidationEpoch = 0;
+
+let leaderboardCache = { entries: null, fetchedAt: 0 };
+let leaderboardInFlight = null;
+let leaderboardInvalidationEpoch = 0;
+
+function invalidateCommunityCache() {
+  communityInvalidationEpoch += 1;
+  communityCache = { version: 0, data: null };
+  communityCacheInFlight = { version: 0, promise: null };
+}
+
+function invalidateLeaderboardCache() {
+  leaderboardInvalidationEpoch += 1;
+  leaderboardCache = { entries: null, fetchedAt: 0 };
+  leaderboardInFlight = null;
+}
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -901,6 +923,7 @@ async function bumpCommunityVersion(db, now = Date.now()) {
     )
     .bind(now)
     .run();
+  invalidateCommunityCache();
 }
 
 async function syncDeletionToUserProgress(db, userId, qId, kind, now = Date.now()) {
@@ -956,6 +979,7 @@ async function syncDeletionToUserProgress(db, userId, qId, kind, now = Date.now(
     .prepare("UPDATE user_progress SET progress_json = ?, updated_at = ?, version = ? WHERE user_id = ?")
     .bind(serialized, now, nextVersion, userId)
     .run();
+  invalidateLeaderboardCache();
 }
 
 async function fetchCommunityData(db) {
@@ -1042,14 +1066,42 @@ async function fetchCommunityData(db) {
   return { notes, noteReplies, problems, problemFlags, overrides };
 }
 
+async function getCachedCommunityData(db, version) {
+  const safeVersion = Number(version) || 0;
+  if (safeVersion > 0 && communityCache.version === safeVersion && communityCache.data) {
+    return communityCache.data;
+  }
+  if (safeVersion > 0 && communityCacheInFlight.version === safeVersion && communityCacheInFlight.promise) {
+    return communityCacheInFlight.promise;
+  }
+
+  const epochBefore = communityInvalidationEpoch;
+  const fetchPromise = fetchCommunityData(db).then((data) => {
+    if (safeVersion > 0 && epochBefore === communityInvalidationEpoch && safeVersion >= communityCache.version) {
+      communityCache = { version: safeVersion, data };
+    }
+    return data;
+  });
+
+  if (safeVersion > 0) {
+    communityCacheInFlight = { version: safeVersion, promise: fetchPromise };
+    fetchPromise.finally(() => {
+      if (communityCacheInFlight.promise === fetchPromise) {
+        communityCacheInFlight = { version: 0, promise: null };
+      }
+    });
+  }
+  return fetchPromise;
+}
+
 async function handleBootstrap(env) {
   const now = Date.now();
-  const [communityVersion, communityData, takenNames, onlineUsers] = await Promise.all([
+  const [communityVersion, takenNames, onlineUsers] = await Promise.all([
     getCommunityVersion(env.DB),
-    fetchCommunityData(env.DB),
     getTakenNamesMap(env.DB),
     getOnlineUsersList(env.DB, now),
   ]);
+  const communityData = await getCachedCommunityData(env.DB, communityVersion);
 
   return jsonResponse({
     ok: true,
@@ -1081,7 +1133,7 @@ async function handlePoll(request, env) {
 
   const [onlineUsers, communityData, progressRow] = await Promise.all([
     getOnlineUsersList(env.DB, now),
-    communityChanged ? fetchCommunityData(env.DB) : Promise.resolve(null),
+    communityChanged ? getCachedCommunityData(env.DB, serverCommunityVersion) : Promise.resolve(null),
     auth && auth.ok
       ? env.DB
           .prepare(
@@ -1160,9 +1212,8 @@ async function handleOnlineUsers(env) {
   });
 }
 
-async function handleLeaderboard(env, sortBy = "answers") {
-  const now = Date.now();
-  const { results } = await env.DB
+async function fetchLeaderboardBaseEntries(db) {
+  const { results } = await db
     .prepare(
       `SELECT
          i.user_id AS userId,
@@ -1194,7 +1245,6 @@ async function handleLeaderboard(env, sortBy = "answers") {
       : 0;
     const notesCount = Number(r.notesCount) || 0;
     if (solvedCount <= 0 && notesCount <= 0) continue;
-    const lastSeenAt = Number(r.lastSeenAt) || 0;
     entries.push({
       userId: r.userId,
       name: r.name,
@@ -1202,10 +1252,47 @@ async function handleLeaderboard(env, sortBy = "answers") {
       category: String(r.category || "").trim(),
       solvedCount,
       notesCount,
-      lastSeenAt,
-      isOnline: now - lastSeenAt <= ONLINE_WINDOW_MS,
+      lastSeenAt: Number(r.lastSeenAt) || 0,
     });
   }
+  return entries;
+}
+
+async function getCachedLeaderboardBaseEntries(db, now = Date.now()) {
+  if (
+    leaderboardCache.entries &&
+    now - leaderboardCache.fetchedAt < LEADERBOARD_CACHE_TTL_MS
+  ) {
+    return leaderboardCache.entries;
+  }
+  if (leaderboardInFlight) {
+    return leaderboardInFlight;
+  }
+
+  const epochBefore = leaderboardInvalidationEpoch;
+  const fetchPromise = fetchLeaderboardBaseEntries(db).then((entries) => {
+    if (epochBefore === leaderboardInvalidationEpoch) {
+      leaderboardCache = { entries, fetchedAt: Date.now() };
+    }
+    return entries;
+  });
+
+  leaderboardInFlight = fetchPromise;
+  fetchPromise.finally(() => {
+    if (leaderboardInFlight === fetchPromise) {
+      leaderboardInFlight = null;
+    }
+  });
+  return fetchPromise;
+}
+
+async function handleLeaderboard(env, sortBy = "answers") {
+  const now = Date.now();
+  const baseEntries = await getCachedLeaderboardBaseEntries(env.DB, now);
+  const entries = baseEntries.map((entry) => ({
+    ...entry,
+    isOnline: now - entry.lastSeenAt <= ONLINE_WINDOW_MS,
+  }));
 
   entries.sort((a, b) => {
     if (sortBy === "notes") {
@@ -1252,7 +1339,7 @@ async function handleIdentityPing(request, env) {
 
   const secretHash = await sha256Hex(clientSecret);
   const existing = await env.DB
-    .prepare("SELECT user_id, client_secret_hash FROM identities WHERE user_id = ?")
+    .prepare("SELECT user_id, name, emoji, category, client_secret_hash FROM identities WHERE user_id = ?")
     .bind(userId)
     .first();
 
@@ -1280,6 +1367,10 @@ async function handleIdentityPing(request, env) {
 
   const now = Date.now();
   if (existing) {
+    const profileChanged =
+      existing.name !== name ||
+      existing.emoji !== emoji ||
+      String(existing.category || "") !== category;
     await env.DB
       .prepare(
         `UPDATE identities
@@ -1294,6 +1385,9 @@ async function handleIdentityPing(request, env) {
         .bind(now, secretHash)
         .run();
     }
+    if (profileChanged) {
+      invalidateLeaderboardCache();
+    }
   } else {
     await env.DB
       .prepare(
@@ -1302,6 +1396,7 @@ async function handleIdentityPing(request, env) {
       )
       .bind(userId, name, emoji, category, secretHash, now, now)
       .run();
+    invalidateLeaderboardCache();
   }
 
   const onlineUsers = await getOnlineUsersList(env.DB, now);
@@ -1342,6 +1437,7 @@ async function handlePutNote(request, env, qId) {
     if ((delRes?.meta?.changes ?? 0) > 0 || (delRepliesRes?.meta?.changes ?? 0) > 0) {
       await bumpCommunityVersion(env.DB, now);
       await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
+      invalidateLeaderboardCache();
     }
     return jsonResponse({ ok: true, deleted: true });
   }
@@ -1365,6 +1461,7 @@ async function handlePutNote(request, env, qId) {
     .bind(qId, userId, author || "אנונימי", emoji, category, text, updatedAt)
     .run();
   await bumpCommunityVersion(env.DB, updatedAt);
+  invalidateLeaderboardCache();
 
   return jsonResponse({
     ok: true,
@@ -1396,6 +1493,7 @@ async function handleDeleteNote(request, env, qId) {
     ]);
     await bumpCommunityVersion(env.DB, now);
     await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
+    invalidateLeaderboardCache();
   }
 
   return jsonResponse({ ok: true, deleted: Boolean(existingNote) });
@@ -1879,6 +1977,7 @@ async function handlePutProgress(request, env) {
     )
     .bind(userId, serialized, now, nextVersion)
     .run();
+  invalidateLeaderboardCache();
 
   return jsonResponse({
     ok: true,
@@ -2174,6 +2273,7 @@ async function handleSyncLink(request, env) {
       )
       .bind(target.user_id, serialized, finalUpdatedAt, finalVersion)
       .run();
+    invalidateLeaderboardCache();
   }
 
   // Transfer or release temporary guest identity if provided
@@ -2284,6 +2384,7 @@ async function handleSyncLink(request, env) {
             await env.DB.batch(stmts.slice(idx, idx + CHUNK_SIZE));
           }
           await bumpCommunityVersion(env.DB, now);
+          invalidateLeaderboardCache();
         }
       }
 
@@ -2310,6 +2411,7 @@ async function handleSyncLink(request, env) {
           env.DB.prepare("DELETE FROM user_progress WHERE user_id = ?").bind(guestUserId),
           env.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(guestUserId),
         ]);
+        invalidateLeaderboardCache();
         guestReleased = true;
       }
     }
@@ -2701,6 +2803,9 @@ async function handleAdminImportLegacy(request, env) {
   }
   if (notesImported > 0 || problemsImported > 0) {
     await bumpCommunityVersion(env.DB, now);
+    invalidateLeaderboardCache();
+  } else if (seenUsers.size > 0) {
+    invalidateLeaderboardCache();
   }
 
   return jsonResponse({
@@ -2846,6 +2951,7 @@ export default {
             env.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(userId),
             env.DB.prepare("DELETE FROM user_progress WHERE user_id = ?").bind(userId),
           ]);
+          invalidateLeaderboardCache();
           return jsonResponse({ ok: true, releasedUserId: userId });
         }
 
@@ -2861,6 +2967,7 @@ export default {
           if ((delRes?.meta?.changes ?? 0) > 0 || (delRepliesRes?.meta?.changes ?? 0) > 0) {
             await bumpCommunityVersion(env.DB, now);
             await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
+            invalidateLeaderboardCache();
           }
           return jsonResponse({ ok: true, qId, userId });
         }

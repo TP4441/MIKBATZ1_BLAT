@@ -45,6 +45,7 @@ async function run() {
     const onlineRes = await req("/api/online");
     assert.equal(onlineRes.status, 200);
     assert.equal(onlineRes.data.ok, true);
+    assert.equal(onlineRes.data.windowMs, 300000);
     assert.ok(Array.isArray(onlineRes.data.onlineUsers));
 
     const lbInitRes = await req("/api/leaderboard");
@@ -1261,6 +1262,185 @@ async function run() {
       false
     );
     console.log("✓ User feedback submit, list & admin delete OK");
+  }
+
+  // 8d. Community Cache & Leaderboard Cache + Invalidation
+  {
+    const authHeader = { Authorization: `Bearer ${adminToken}` };
+
+    // Community Cache: consecutive /api/bootstrap calls at same version return identical data
+    const boot1 = await req("/api/bootstrap");
+    const boot2 = await req("/api/bootstrap");
+    assert.equal(boot1.status, 200);
+    assert.equal(boot2.status, 200);
+    assert.equal(boot1.data.communityVersion, boot2.data.communityVersion);
+    assert.deepEqual(boot1.data.notes, boot2.data.notes);
+    assert.deepEqual(boot1.data.overrides, boot2.data.overrides);
+
+    const prevCommVer = boot1.data.communityVersion;
+
+    // PUT note -> immediately visible in /api/bootstrap and /api/poll
+    const putCacheNote = await req("/api/notes/2026_q099", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "הערה לבדיקת אינוולידציית cache",
+      },
+    });
+    assert.equal(putCacheNote.status, 200);
+
+    const bootAfterPut = await req("/api/bootstrap");
+    assert.equal(bootAfterPut.status, 200);
+    assert.ok(bootAfterPut.data.communityVersion > prevCommVer);
+    assert.equal(
+      bootAfterPut.data.notes["2026_q099"]?.[studentA.userId]?.text,
+      "הערה לבדיקת אינוולידציית cache"
+    );
+
+    const pollAfterPut = await req(`/api/poll?communityVersion=${prevCommVer}`);
+    assert.equal(pollAfterPut.status, 200);
+    assert.equal(pollAfterPut.data.communityChanged, true);
+    assert.equal(
+      pollAfterPut.data.notes["2026_q099"]?.[studentA.userId]?.text,
+      "הערה לבדיקת אינוולידציית cache"
+    );
+
+    // DELETE note -> immediately removed in /api/bootstrap and /api/poll
+    const delCacheNote = await req("/api/notes/2026_q099", {
+      method: "DELETE",
+      body: { userId: studentA.userId, clientSecret: studentA.clientSecret },
+    });
+    assert.equal(delCacheNote.status, 200);
+
+    const bootAfterDel = await req("/api/bootstrap");
+    assert.equal(bootAfterDel.status, 200);
+    assert.ok(bootAfterDel.data.communityVersion > bootAfterPut.data.communityVersion);
+    assert.equal(bootAfterDel.data.notes["2026_q099"]?.[studentA.userId], undefined);
+
+    const pollAfterDel = await req(`/api/poll?communityVersion=${bootAfterPut.data.communityVersion}`);
+    assert.equal(pollAfterDel.status, 200);
+    assert.equal(pollAfterDel.data.communityChanged, true);
+    assert.equal(pollAfterDel.data.notes["2026_q099"]?.[studentA.userId], undefined);
+
+    // Leaderboard Cache: shared base entries for sort=answers and sort=notes
+    const lbAnsCache = await req("/api/leaderboard?sort=answers");
+    const lbNotesCache = await req("/api/leaderboard?sort=notes");
+    assert.equal(lbAnsCache.status, 200);
+    assert.equal(lbNotesCache.status, 200);
+    assert.equal(lbAnsCache.data.sort, "answers");
+    assert.equal(lbNotesCache.data.sort, "notes");
+    for (let i = 1; i < lbAnsCache.data.entries.length; i++) {
+      assert.ok(lbAnsCache.data.entries[i - 1].solvedCount >= lbAnsCache.data.entries[i].solvedCount);
+    }
+    for (let i = 1; i < lbNotesCache.data.entries.length; i++) {
+      assert.ok(lbNotesCache.data.entries[i - 1].notesCount >= lbNotesCache.data.entries[i].notesCount);
+    }
+
+    const baseEntryA = lbAnsCache.data.entries.find((e) => e.userId === studentA.userId);
+    assert.ok(baseEntryA);
+    const baseSolvedA = baseEntryA.solvedCount;
+    const baseNotesA = baseEntryA.notesCount;
+
+    // PUT /api/progress invalidates leaderboard cache immediately
+    const addAttemptRes = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        progress: {
+          attempts: {
+            "2026_q099": { selected: 0, isCorrect: true, ts: Date.now() },
+          },
+        },
+      },
+    });
+    assert.equal(addAttemptRes.status, 200);
+    const lbAfterProg = await req("/api/leaderboard?sort=answers");
+    const afterProgA = lbAfterProg.data.entries.find((e) => e.userId === studentA.userId);
+    assert.equal(afterProgA.solvedCount, baseSolvedA + 1);
+
+    // PUT /api/notes & DELETE /api/notes invalidate leaderboard cache immediately
+    await req("/api/notes/2026_q098", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "הערת לידרבורד",
+      },
+    });
+    const lbAfterPutNote = await req("/api/leaderboard?sort=notes");
+    assert.equal(lbAfterPutNote.data.entries.find((e) => e.userId === studentA.userId).notesCount, baseNotesA + 1);
+
+    await req("/api/notes/2026_q098", {
+      method: "DELETE",
+      body: { userId: studentA.userId, clientSecret: studentA.clientSecret },
+    });
+    const lbAfterDelNote = await req("/api/leaderboard?sort=notes");
+    assert.equal(lbAfterDelNote.data.entries.find((e) => e.userId === studentA.userId).notesCount, baseNotesA);
+
+    // DELETE /api/admin/notes invalidates leaderboard cache immediately
+    await req("/api/notes/2026_q097", {
+      method: "PUT",
+      body: {
+        userId: "u_student_c",
+        clientSecret: "secret_ccc_123456",
+        author: "מנגו",
+        emoji: "🥭",
+        category: "פירות",
+        text: "הערה למחיקת מנהל",
+      },
+    });
+    const lbBeforeAdminDel = await req("/api/leaderboard?sort=notes");
+    const cBeforeAdminDel = lbBeforeAdminDel.data.entries.find((e) => e.userId === "u_student_c");
+    assert.ok(cBeforeAdminDel && cBeforeAdminDel.notesCount >= 1);
+
+    await req("/api/admin/notes/2026_q097/u_student_c", {
+      method: "DELETE",
+      headers: authHeader,
+    });
+    const lbAfterAdminDel = await req("/api/leaderboard?sort=notes");
+    const cAfterAdminDel = lbAfterAdminDel.data.entries.find((e) => e.userId === "u_student_c");
+    assert.equal(cAfterAdminDel?.notesCount || 0, cBeforeAdminDel.notesCount - 1);
+
+    // DELETE /api/admin/users invalidates leaderboard cache immediately
+    const tempUser = {
+      userId: "u_lb_temp",
+      name: "אננס",
+      emoji: "🍍",
+      category: "פירות",
+      clientSecret: "secret_temp_lb_123456",
+    };
+    const putTempProg = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: tempUser.userId,
+        clientSecret: tempUser.clientSecret,
+        identity: { name: tempUser.name, emoji: tempUser.emoji, category: tempUser.category },
+        progress: {
+          attempts: { "2026_q001": { selected: 0, isCorrect: true, ts: Date.now() } },
+        },
+      },
+    });
+    assert.equal(putTempProg.status, 200);
+    const lbWithTemp = await req("/api/leaderboard?sort=answers");
+    assert.ok(lbWithTemp.data.entries.some((e) => e.userId === tempUser.userId));
+
+    const delTempUser = await req(`/api/admin/users/${tempUser.userId}`, {
+      method: "DELETE",
+      headers: authHeader,
+    });
+    assert.equal(delTempUser.status, 200);
+    const lbWithoutTemp = await req("/api/leaderboard?sort=answers");
+    assert.equal(lbWithoutTemp.data.entries.some((e) => e.userId === tempUser.userId), false);
+
+    console.log("✓ Community cache & leaderboard cache + invalidation OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts
