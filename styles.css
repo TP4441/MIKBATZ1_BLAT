@@ -5906,3 +5906,101 @@ body.drawboard-resizing {
 .feedback-thanks-wrap .feedback-modal-footer {
   width: 100%;
 }
+
+/* ============================================================
+   Support / PayBox Donation Modal
+   ============================================================ */
+
+.support-modal-box {
+  max-width: 440px;
+}
+
+.support-modal-desc {
+  font-size: 0.92rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.support-active-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.support-actions-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.support-paybox-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-decoration: none;
+  text-align: center;
+  padding: 10px 16px;
+}
+
+.support-copy-btn {
+  width: 100%;
+}
+
+.support-qr-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
+.support-qr-section .sync-qr-frame svg {
+  width: 184px;
+  height: 184px;
+}
+
+.support-qr-caption {
+  font-size: 0.82rem;
+  max-width: 340px;
+}
+
+.support-url-preview {
+  width: 100%;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  word-break: break-all;
+  padding: 6px 8px;
+  border-radius: var(--radius-xs, 6px);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+}
+
+.support-unconfigured-wrap {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.support-unconfigured-wrap code {
+  direction: ltr;
+  unicode-bidi: isolate;
+  font-size: 0.82rem;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.support-disclaimer {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-align: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}

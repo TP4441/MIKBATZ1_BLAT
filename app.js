@@ -23,6 +23,17 @@
   const CLOUD_API_BASE = resolveCloudApiBase();
   const HEBREW_LETTERS = ["א", "ב", "ג", "ד", "ה", "ו"];
 
+  // PayBox donation config:
+  // To publish, paste your PayBox group URL into payboxUrl and change enabled to true.
+  // Preview anytime before publishing by appending ?support=preview to the page URL.
+  const PAYBOX_DONATION_CONFIG = {
+    enabled: true,
+    payboxUrl: "https://links.payboxapp.com/CntSdEQfn8b",
+    subtitle:
+      "האתר חינמי ויישאר פתוח לכולם. אם התרגול עזר לך ומתחשק לך להשתתף סמלית בהוצאות התחזוקה והפיתוח — תודה מכל הלב!",
+    note: "התרומה היא וולונטרית לחלוטין ומתבצעת ישירות דרך PayBox ללא שמירת פרטי תשלום באתר.",
+  };
+
   function resolveCloudApiBase() {
     try {
       const params = new URLSearchParams(window.location.search);
@@ -8049,6 +8060,19 @@
     el("feedbackInput")?.addEventListener("input", updateFeedbackCharCount);
     el("feedbackFormWrap")?.addEventListener("submit", submitFeedbackForm);
 
+    // Support / PayBox Donation Modal
+    el("btnSupport")?.addEventListener("click", openSupportModal);
+    el("btnCloseSupportModal")?.addEventListener("click", closeSupportModal);
+    el("supportModal")?.addEventListener("click", (e) => {
+      if (e.target === el("supportModal")) closeSupportModal();
+    });
+    el("btnCopyPayboxLink")?.addEventListener("click", () => {
+      const safeUrl = normalizePayboxUrl(PAYBOX_DONATION_CONFIG.payboxUrl);
+      if (safeUrl) {
+        copyTextToClipboard(safeUrl, "📋 קישור ה-PayBox הועתק!");
+      }
+    });
+
     // Onboarding Spotlight Tour
     el("btnHelpTour")?.addEventListener("click", () => startOnboardingTour({ manual: true }));
     el("btnTourNext")?.addEventListener("click", nextTourStep);
@@ -8230,6 +8254,7 @@
           !el("lightboxModal").classList.contains("hidden") ||
           !el("onlineUsersPopover")?.classList.contains("hidden") ||
           !el("feedbackModal")?.classList.contains("hidden") ||
+          !el("supportModal")?.classList.contains("hidden") ||
           !el("problemReportModal").classList.contains("hidden") ||
           !el("syncModal")?.classList.contains("hidden") ||
           !el("adminLoginModal").classList.contains("hidden") ||
@@ -8244,6 +8269,7 @@
         closeLightbox();
         closeOnlineUsersPopover();
         closeFeedbackModal();
+        closeSupportModal();
         closeProblemModal();
         closeSyncModal();
         closeAdminLoginModal();
@@ -8255,6 +8281,7 @@
       }
       if (
         !el("feedbackModal")?.classList.contains("hidden") ||
+        !el("supportModal")?.classList.contains("hidden") ||
         !el("problemReportModal").classList.contains("hidden") ||
         !el("syncModal")?.classList.contains("hidden") ||
         !el("adminLoginModal").classList.contains("hidden") ||
@@ -9469,6 +9496,95 @@
     el("feedbackModal")?.classList.add("hidden");
   }
 
+  /** Validates that a donation URL uses HTTPS and returns its normalized href, or "". */
+  function normalizePayboxUrl(rawUrl) {
+    if (typeof rawUrl !== "string") return "";
+    const trimmed = rawUrl.trim();
+    if (!trimmed) return "";
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "https:") return "";
+      return parsed.href;
+    } catch {
+      return "";
+    }
+  }
+
+  function isSupportPreviewRequested() {
+    try {
+      return new URLSearchParams(window.location.search).get("support") === "preview";
+    } catch {
+      return false;
+    }
+  }
+
+  function isSupportDonationActive() {
+    return Boolean(PAYBOX_DONATION_CONFIG.enabled && normalizePayboxUrl(PAYBOX_DONATION_CONFIG.payboxUrl));
+  }
+
+  function initSupportDonation() {
+    const btn = el("btnSupport");
+    if (!btn) return;
+    const active = isSupportDonationActive();
+    const preview = isSupportPreviewRequested();
+    btn.classList.toggle("hidden", !(active || preview));
+    if (preview && !active) {
+      btn.title = "תמיכה באתר (תצוגה מקדימה)";
+    }
+  }
+
+  function openSupportModal() {
+    const subtitleEl = el("supportModalSubtitle");
+    const noteEl = el("supportModalNote");
+    if (subtitleEl && PAYBOX_DONATION_CONFIG.subtitle) {
+      subtitleEl.textContent = PAYBOX_DONATION_CONFIG.subtitle;
+    }
+    if (noteEl && PAYBOX_DONATION_CONFIG.note) {
+      noteEl.textContent = PAYBOX_DONATION_CONFIG.note;
+    }
+
+    const safeUrl = normalizePayboxUrl(PAYBOX_DONATION_CONFIG.payboxUrl);
+    const activeWrap = el("supportActiveWrap");
+    const unconfiguredWrap = el("supportUnconfiguredWrap");
+    const linkEl = el("supportPayboxLink");
+    const qrContainer = el("supportQrContainer");
+    const urlPreviewEl = el("supportUrlPreview");
+
+    if (safeUrl) {
+      activeWrap?.classList.remove("hidden");
+      unconfiguredWrap?.classList.add("hidden");
+      if (linkEl) linkEl.href = safeUrl;
+      if (urlPreviewEl) urlPreviewEl.textContent = safeUrl;
+      if (qrContainer) {
+        if (window.QrSvg && typeof window.QrSvg.renderSvg === "function") {
+          try {
+            qrContainer.innerHTML = window.QrSvg.renderSvg(safeUrl, { size: 184 });
+          } catch {
+            qrContainer.textContent = "לא ניתן ליצור QR עבור כתובת זו";
+          }
+        } else {
+          qrContainer.textContent = "מחולל ה-QR אינו זמין";
+        }
+      }
+    } else {
+      activeWrap?.classList.add("hidden");
+      unconfiguredWrap?.classList.remove("hidden");
+      if (linkEl) linkEl.href = "#";
+      if (urlPreviewEl) urlPreviewEl.textContent = "";
+      if (qrContainer) qrContainer.innerHTML = "";
+    }
+
+    el("supportModal")?.classList.remove("hidden");
+    setTimeout(() => {
+      if (safeUrl) linkEl?.focus();
+      else el("btnCloseSupportModal")?.focus();
+    }, 30);
+  }
+
+  function closeSupportModal() {
+    el("supportModal")?.classList.add("hidden");
+  }
+
   function showFeedbackThanks() {
     stopFeedbackMedia();
     el("feedbackFormWrap")?.classList.add("hidden");
@@ -10469,6 +10585,7 @@
       "backupModal",
       "shortcutsModal",
       "feedbackModal",
+      "supportModal",
       "problemReportModal",
       "adminLoginModal",
       "adminQuestionModal",
@@ -10834,6 +10951,7 @@
   initExamSetup();
   updateDrillBadge();
   bindEvents();
+  initSupportDonation();
   initDrawBoardBridge();
   if (progress.studySession) {
     const s = progress.studySession;

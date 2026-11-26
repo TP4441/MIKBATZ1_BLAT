@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261126b" />
+  <link rel="stylesheet" href="styles.css?v=20261126c" />
 </head>
 <body>
   <header class="topbar">
@@ -118,6 +118,15 @@
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               <path d="M8 9h8" />
               <path d="M8 13h5" />
+            </svg>
+          </button>
+          <button type="button" class="icon-btn icon-only hidden" id="btnSupport" title="תמיכה באתר (PayBox)" aria-label="תמיכה באתר">
+            <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 8h1a4 4 0 0 1 0 8h-1" />
+              <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" />
+              <line x1="6" y1="1" x2="6" y2="4" />
+              <line x1="10" y1="1" x2="10" y2="4" />
+              <line x1="14" y1="1" x2="14" y2="4" />
             </svg>
           </button>
           <button type="button" class="icon-btn icon-only hide-mobile" id="btnShortcuts" title="קיצורי מקלדת" aria-label="קיצורי מקלדת">
@@ -1054,6 +1063,56 @@
     </div>
   </div>
 
+  <!-- Support / PayBox Donation Modal -->
+  <div class="modal-overlay hidden" id="supportModal" role="dialog" aria-modal="true" aria-labelledby="supportModalTitle">
+    <div class="modal-box card support-modal-box">
+      <div class="modal-header">
+        <h2 id="supportModalTitle">☕ תמיכה באתר</h2>
+        <button type="button" class="icon-btn icon-only" id="btnCloseSupportModal" aria-label="סגור חלון">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <p class="support-modal-desc" id="supportModalSubtitle">
+        האתר חינמי ויישאר פתוח לכולם. אם התרגול עזר לך ומתחשק לך להשתתף סמלית בהוצאות התחזוקה והפיתוח — תודה מכל הלב!
+      </p>
+
+      <div id="supportActiveWrap" class="support-active-wrap">
+        <div class="support-actions-stack">
+          <a
+            id="supportPayboxLink"
+            class="btn-primary support-paybox-btn"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            💙 פתח קופת PayBox לתמיכה
+          </a>
+          <button type="button" class="btn-secondary support-copy-btn" id="btnCopyPayboxLink">
+            📋 העתק קישור PayBox
+          </button>
+        </div>
+
+        <div class="support-qr-section">
+          <div class="sync-qr-frame" id="supportQrContainer"></div>
+          <p class="muted support-qr-caption">במחשב? אפשר לסרוק עם מצלמת הטלפון לפתיחה ישירה באפליקציית PayBox.</p>
+          <div class="support-url-preview" id="supportUrlPreview" dir="ltr"></div>
+        </div>
+      </div>
+
+      <div id="supportUnconfiguredWrap" class="support-unconfigured-wrap hidden">
+        <p class="muted">
+          תשתית התמיכה מוכנה, אך עדיין לא הוגדר קישור PayBox פעיל.
+          כדי להפעיל, עדכן את <code>PAYBOX_DONATION_CONFIG</code> בראש <code>app.js</code> (הגדר <code>enabled: true</code> והדבק את קישור הקבוצה ב-<code>payboxUrl</code>).
+        </p>
+      </div>
+
+      <p class="muted support-disclaimer" id="supportModalNote">
+        התרומה היא וולונטרית לחלוטין ומתבצעת ישירות דרך PayBox ללא שמירת פרטי תשלום באתר.
+      </p>
+    </div>
+  </div>
+
   <!-- Problem Report Modal -->
   <div class="modal-overlay hidden" id="problemReportModal" role="dialog" aria-modal="true" aria-labelledby="problemModalTitle">
     <div class="modal-box card problem-modal-box">
@@ -1305,6 +1364,6 @@
   <script src="questions_data.js?v=20261125j"></script>
   <script src="qr.js?v=20261124d"></script>
   <script src="drawboard.js?v=20261126b"></script>
-  <script src="app.js?v=20261126b"></script>
+  <script src="app.js?v=20261126c"></script>
 </body>
 </html>
