@@ -30,6 +30,8 @@ async function run() {
     const h = await req("/api/health");
     assert.equal(h.status, 200);
     assert.equal(h.data.ok, true);
+    assert.ok(h.data.workerVersion, "Health should expose workerVersion");
+    assert.ok(Number(h.data.schemaVersion) >= 7, "Health should expose schemaVersion >= 7");
 
     const b = await req("/api/bootstrap");
     assert.equal(b.status, 200);
@@ -62,6 +64,15 @@ async function run() {
     const routes = [
       ["GET", "/api/admin/verify"],
       ["GET", "/api/admin/users"],
+      ["PUT", "/api/admin/users/u_fake", { name: "שם חדש" }],
+      ["POST", "/api/admin/users/u_fake/block", { reason: "test" }],
+      ["POST", "/api/admin/users/u_fake/unblock"],
+      ["POST", "/api/admin/identities/pool", { name: "טסט", emoji: "🧪", category: "בדיקה" }],
+      ["DELETE", "/api/admin/identities/pool/טסט"],
+      ["GET", "/api/admin/metrics"],
+      ["GET", "/api/admin/versions"],
+      ["POST", "/api/admin/versions", { version: "v1.0.0", title: "test" }],
+      ["DELETE", "/api/admin/versions/rel_fake"],
       ["GET", "/api/admin/feedback"],
       ["DELETE", "/api/admin/feedback/fb_fake"],
       ["DELETE", "/api/admin/users/u_fake"],
@@ -1634,6 +1645,200 @@ async function run() {
     assert.equal(reg202.status, 200);
 
     console.log("✓ User #201+ suffixed identity, note/progress persistence & reload OK");
+  }
+
+  // 8b. Admin custom nickname pool, user rename, user block/unblock, metrics & version tracking
+  {
+    const authHeader = { Authorization: `Bearer ${adminToken}` };
+
+    // 1) Custom nickname pool add / bootstrap / delete
+    const addPool = await req("/api/admin/identities/pool", {
+      method: "POST",
+      headers: authHeader,
+      body: { name: "סטטוסקופ", emoji: "🩺", category: "רפואה" },
+    });
+    assert.equal(addPool.status, 200);
+    assert.equal(addPool.data.entry.name, "סטטוסקופ");
+
+    const dupPool = await req("/api/admin/identities/pool", {
+      method: "POST",
+      headers: authHeader,
+      body: { name: "סטטוסקופ", emoji: "🩺", category: "רפואה" },
+    });
+    assert.equal(dupPool.status, 409);
+
+    const bootPool = await req("/api/bootstrap");
+    assert.equal(bootPool.status, 200);
+    assert.ok(Array.isArray(bootPool.data.customIdentities));
+    assert.ok(bootPool.data.customIdentities.some((c) => c.name === "סטטוסקופ"));
+
+    const delPool = await req(`/api/admin/identities/pool/${encodeURIComponent("סטטוסקופ")}`, {
+      method: "DELETE",
+      headers: authHeader,
+    });
+    assert.equal(delPool.status, 200);
+    assert.equal(delPool.data.deleted, true);
+
+    // 2) Rename user + cascade to notes/progress + preserve on ping/poll
+    const renameTarget = {
+      userId: "u_rename_test",
+      name: "כרוב 99",
+      emoji: "🥬",
+      category: "ירקות",
+      clientSecret: "secret_rename_123456",
+    };
+    const rPing = await req("/api/identities/ping", { method: "POST", body: renameTarget });
+    assert.equal(rPing.status, 200);
+
+    const rNote = await req("/api/notes/2026_q010", {
+      method: "PUT",
+      body: {
+        userId: renameTarget.userId,
+        clientSecret: renameTarget.clientSecret,
+        author: renameTarget.name,
+        emoji: renameTarget.emoji,
+        category: renameTarget.category,
+        text: "הערה לבדיקת שינוי שם",
+      },
+    });
+    assert.equal(rNote.status, 200);
+
+    const rProg = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: renameTarget.userId,
+        clientSecret: renameTarget.clientSecret,
+        identity: { name: renameTarget.name, emoji: renameTarget.emoji, category: renameTarget.category },
+        progress: { attempts: { "2026_q010": { selected: 1, isCorrect: true, ts: Date.now() } } },
+      },
+    });
+    assert.equal(rProg.status, 200);
+
+    // Renaming to an already-taken name ("תפוח 2") -> 409 conflict
+    const renameConflict = await req(`/api/admin/users/${renameTarget.userId}`, {
+      method: "PUT",
+      headers: authHeader,
+      body: { name: "תפוח 2" },
+    });
+    assert.equal(renameConflict.status, 409);
+
+    const renameOk = await req(`/api/admin/users/${renameTarget.userId}`, {
+      method: "PUT",
+      headers: authHeader,
+      body: { name: "דר׳ האוס", emoji: "🩺", category: "מותאם אישית" },
+    });
+    assert.equal(renameOk.status, 200);
+    assert.equal(renameOk.data.user.name, "דר׳ האוס");
+
+    // Client ping with stale old name must NOT overwrite admin rename and should return updated identity
+    const stalePing = await req("/api/identities/ping", { method: "POST", body: renameTarget });
+    assert.equal(stalePing.status, 200);
+    assert.equal(stalePing.data.identity?.name, "דר׳ האוס");
+
+    const pollAfterRename = await req("/api/poll?communityVersion=0&progressVersion=0", {
+      headers: {
+        "X-User-Id": renameTarget.userId,
+        "X-Client-Secret": renameTarget.clientSecret,
+      },
+    });
+    assert.equal(pollAfterRename.status, 200);
+    assert.equal(pollAfterRename.data.identity?.name, "דר׳ האוס");
+    assert.equal(pollAfterRename.data.notes?.["2026_q010"]?.[renameTarget.userId]?.author, "דר׳ האוס");
+    assert.equal(pollAfterRename.data.progress?.identity?.name, "דר׳ האוס");
+
+    // 3) Block & unblock user
+    const blockRes = await req(`/api/admin/users/${renameTarget.userId}/block`, {
+      method: "POST",
+      headers: authHeader,
+      body: { reason: "בדיקת חסימה", purgeContent: true },
+    });
+    assert.equal(blockRes.status, 200);
+    assert.equal(blockRes.data.blocked, true);
+
+    const blockedPing = await req("/api/identities/ping", { method: "POST", body: renameTarget });
+    assert.equal(blockedPing.status, 403);
+    assert.equal(blockedPing.data.blocked, true);
+
+    const blockedNote = await req("/api/notes/2026_q010", {
+      method: "PUT",
+      body: {
+        userId: renameTarget.userId,
+        clientSecret: renameTarget.clientSecret,
+        author: "דר׳ האוס",
+        emoji: "🩺",
+        category: "מותאם אישית",
+        text: "ניסיון כתיבה בזמן חסימה",
+      },
+    });
+    assert.equal(blockedNote.status, 403);
+    assert.equal(blockedNote.data.blocked, true);
+
+    const blockedPoll = await req("/api/poll?communityVersion=0&progressVersion=0", {
+      headers: {
+        "X-User-Id": renameTarget.userId,
+        "X-Client-Secret": renameTarget.clientSecret,
+      },
+    });
+    assert.equal(blockedPoll.status, 200);
+    assert.equal(blockedPoll.data.progressStatus, 403);
+    assert.equal(blockedPoll.data.blocked, true);
+
+    // Blocked user must not appear in online users or leaderboard
+    const onlineWhileBlocked = await req("/api/online");
+    assert.ok(!onlineWhileBlocked.data.onlineUsers.some((u) => u.userId === renameTarget.userId));
+    const lbWhileBlocked = await req("/api/leaderboard");
+    assert.ok(!lbWhileBlocked.data.entries.some((u) => u.userId === renameTarget.userId));
+
+    // Unblock restores access
+    const unblockRes = await req(`/api/admin/users/${renameTarget.userId}/unblock`, {
+      method: "POST",
+      headers: authHeader,
+    });
+    assert.equal(unblockRes.status, 200);
+    assert.equal(unblockRes.data.blocked, false);
+
+    const unblockedPing = await req("/api/identities/ping", { method: "POST", body: renameTarget });
+    assert.equal(unblockedPing.status, 200);
+
+    // 4) Traffic & Quotas endpoint
+    const metricsRes = await req("/api/admin/metrics", { headers: authHeader });
+    assert.equal(metricsRes.status, 200);
+    assert.equal(metricsRes.data.ok, true);
+    assert.ok(metricsRes.data.cloudflare.telemetryToday.requestsTotal > 0, "Telemetry must record requests");
+    assert.ok(metricsRes.data.cloudflare.telemetryToday.d1RowsRead > 0, "Telemetry must record D1 rows read");
+    assert.ok(metricsRes.data.cloudflare.storage.tableCounts.identities >= 1);
+    assert.equal(metricsRes.data.cloudflare.quotas.workerRequestsPerDay, 100000);
+    assert.ok(metricsRes.data.github);
+
+    // 5) Version tracking endpoints
+    const verCreate = await req("/api/admin/versions", {
+      method: "POST",
+      headers: authHeader,
+      body: {
+        version: "v2026.11.26.2",
+        component: "all",
+        title: "טאב טראפיק, גרסאות וחסימת משתמשים",
+        commitSha: "d00f365",
+        notes: "בדיקת מעקב גרסאות",
+      },
+    });
+    assert.equal(verCreate.status, 200);
+    const createdReleaseId = verCreate.data.release.releaseId;
+    assert.ok(createdReleaseId);
+
+    const verList = await req("/api/admin/versions", { headers: authHeader });
+    assert.equal(verList.status, 200);
+    assert.ok(verList.data.worker.version);
+    assert.ok(verList.data.releases.some((r) => r.releaseId === createdReleaseId));
+
+    const verDel = await req(`/api/admin/versions/${createdReleaseId}`, {
+      method: "DELETE",
+      headers: authHeader,
+    });
+    assert.equal(verDel.status, 200);
+    assert.equal(verDel.data.deleted, true);
+
+    console.log("✓ Admin pool names, user rename, block/unblock, telemetry metrics & version tracking OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts

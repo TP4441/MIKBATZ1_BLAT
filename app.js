@@ -16,8 +16,12 @@
   const COMMUNITY_PROBLEM_FLAGS_CACHE_KEY = "med_exam_community_problem_flags_cache_v1";
   const QUESTION_OVERRIDES_CACHE_KEY = "med_exam_question_overrides_cache_v1";
   const TAKEN_NAMES_CACHE_KEY = "med_exam_taken_names_cache_v1";
+  const CUSTOM_IDENTITIES_CACHE_KEY = "med_exam_custom_identities_cache_v1";
   const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
   const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
+  const APP_VERSION = "2026.11.26.2";
+  const APP_BUILD_DATE = "2026-11-26";
+  const GITHUB_REPO_SLUG = "TP4441/MIKBATZ1_BLAT";
   const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
   const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
   const CLOUD_API_BASE = resolveCloudApiBase();
@@ -320,6 +324,8 @@
   let communityProblemFlags = loadCommunityProblemFlagsCache(); // { qId: { problemUserId: { flaggerUserId: { author, emoji, category, createdAt } } } }
   let questionOverrides = loadQuestionOverridesCache(); // { qId: { hidden, stem, options, correct, allAccepted, appealNote, subject, updatedAt } }
   let takenNamesMap = loadTakenNamesCache(); // { name: userId }
+  let customIdentitiesList = loadCustomIdentitiesCache(); // [ { name, emoji, category, custom: true } ]
+  let userBlockedInfo = { blocked: false, reason: "" };
   let identityNeedsCloudCheck = false;
   let deviceId = loadOrInitDeviceId();
   let userIdentity = loadOrInitIdentity();
@@ -409,7 +415,15 @@
     expiresAt: 0,
   };
   let adminUsersCache = [];
+  let adminCustomIdentitiesCache = [];
+  let adminUsersFilter = "all"; // "all" | "active" | "blocked"
   let adminFeedbackCache = [];
+  let adminMetricsCache = null;
+  let adminMetricsLoading = false;
+  let adminVersionsCache = null;
+  let adminVersionsLoading = false;
+  let activeRenameUserId = null;
+  let activeBlockUserId = null;
   let adminActiveTab = "users";
   let feedbackAudioEl = null;
   let adminOverridesFilter = "all";
@@ -1301,6 +1315,42 @@
     } catch {}
   }
 
+  function loadCustomIdentitiesCache() {
+    try {
+      const raw = localStorage.getItem(CUSTOM_IDENTITIES_CACHE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter((item) => item && typeof item.name === "string" && item.name.trim())
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveCustomIdentitiesCache() {
+    try {
+      localStorage.setItem(CUSTOM_IDENTITIES_CACHE_KEY, JSON.stringify(customIdentitiesList));
+    } catch {}
+  }
+
+  function getFullIdentityCatalog() {
+    const merged = [...IDENTITY_CATALOG];
+    const seen = new Set(IDENTITY_CATALOG.map((item) => item.name));
+    (customIdentitiesList || []).forEach((item) => {
+      const name = String(item?.name || "").trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      merged.push({
+        name,
+        emoji: String(item.emoji || "✨").trim(),
+        category: String(item.category || "מותאם אישית").trim(),
+        custom: true,
+      });
+    });
+    return merged;
+  }
+
   function normalizeBaseSubjectName(subject) {
     if (subject === "פתולוגיית ריאות") return "ריאות";
     if (subject === "פתולוגיית קרדיולוגיה") return "קרדיולוגיה";
@@ -1407,14 +1457,15 @@
   function resolveIdentityCatalogMatch(rawName) {
     const trimmed = typeof rawName === "string" ? rawName.trim() : "";
     if (!trimmed) return null;
-    const exact = IDENTITY_CATALOG.find((item) => item.name === trimmed);
+    const fullCatalog = getFullIdentityCatalog();
+    const exact = fullCatalog.find((item) => item.name === trimmed);
     if (exact) return { name: exact.name, emoji: exact.emoji, category: exact.category };
     const suffixed = trimmed.match(/^(.+?)\s+(\d+)$/);
     if (!suffixed) return null;
     const suffixNum = Number(suffixed[2]);
     if (!Number.isInteger(suffixNum) || suffixNum < 2) return null;
     const baseName = suffixed[1].trim();
-    const baseItem = IDENTITY_CATALOG.find((item) => item.name === baseName);
+    const baseItem = fullCatalog.find((item) => item.name === baseName);
     if (!baseItem) return null;
     return {
       name: `${baseItem.name} ${suffixNum}`,
@@ -1427,11 +1478,12 @@
     const taken = getTakenAuthorNames();
     const isUnavailable = (name) =>
       taken.has(name) || Boolean(excludeCurrent && userIdentity && name === userIdentity.name);
-    const pool = IDENTITY_CATALOG.filter((item) => !isUnavailable(item.name));
+    const fullCatalog = getFullIdentityCatalog();
+    const pool = fullCatalog.filter((item) => !isUnavailable(item.name));
     if (pool.length > 0) {
       return pool[Math.floor(Math.random() * pool.length)];
     }
-    const base = IDENTITY_CATALOG[Math.floor(Math.random() * IDENTITY_CATALOG.length)];
+    const base = fullCatalog[Math.floor(Math.random() * fullCatalog.length)];
     let suffix = 2;
     let candidate = `${base.name} ${suffix}`;
     while (isUnavailable(candidate)) {
@@ -1451,7 +1503,14 @@
       if (raw) {
         const parsed = JSON.parse(raw);
         const match = resolveIdentityCatalogMatch(parsed?.name);
-        if (parsed?.userId && match) {
+        const isAdminAssigned = Boolean(
+          parsed?.adminAssigned &&
+          typeof parsed?.name === "string" &&
+          parsed.name.trim() &&
+          typeof parsed?.emoji === "string" &&
+          parsed.emoji.trim()
+        );
+        if (parsed?.userId && (match || isAdminAssigned)) {
           identityNeedsCloudCheck = false;
           const clientSecret =
             typeof parsed.clientSecret === "string" && parsed.clientSecret.length >= 8
@@ -1462,9 +1521,10 @@
           const syncCodeRegistered = Boolean(validSyncCode && parsed.syncCodeRegistered);
           const loaded = {
             userId: String(parsed.userId),
-            name: match.name,
-            emoji: match.emoji,
-            category: match.category,
+            name: match ? match.name : parsed.name.trim(),
+            emoji: match ? match.emoji : parsed.emoji.trim(),
+            category: match ? match.category : String(parsed.category || "").trim(),
+            adminAssigned: isAdminAssigned,
             clientSecret,
             syncCode,
             syncCodeRegistered,
@@ -2512,6 +2572,61 @@
     saveCommunityProblemFlagsCache();
   }
 
+  function handleUserBlockedState(blocked, reason = "", { showNotice = true } = {}) {
+    const wasBlocked = userBlockedInfo.blocked;
+    const cleanReason = String(reason || "").trim();
+    userBlockedInfo = { blocked: Boolean(blocked), reason: cleanReason };
+    if (blocked) {
+      cloudProgressSyncState = "error";
+      updateSyncStatusUI();
+      if (showNotice && !wasBlocked) {
+        const msg = cleanReason
+          ? `🚫 חשבונך נחסם על ידי המנהל: ${cleanReason}`
+          : "🚫 חשבונך נחסם על ידי המנהל.";
+        showToast(msg);
+      }
+    }
+  }
+
+  function applyServerIdentityUpdate(serverIdentity) {
+    if (!serverIdentity || typeof serverIdentity !== "object") return false;
+    if (serverIdentity.userId && serverIdentity.userId !== userIdentity.userId) return false;
+    const nextName = String(serverIdentity.name || "").trim();
+    const nextEmoji = String(serverIdentity.emoji || "").trim() || userIdentity.emoji;
+    const nextCategory = String(serverIdentity.category ?? userIdentity.category ?? "").trim();
+    if (!nextName) return false;
+
+    const changed =
+      nextName !== userIdentity.name ||
+      nextEmoji !== userIdentity.emoji ||
+      nextCategory !== String(userIdentity.category || "");
+
+    const isAdminRenamed = Boolean(Number(serverIdentity.adminRenamedAt) > 0);
+    if (!changed && (!isAdminRenamed || userIdentity.adminAssigned)) return false;
+
+    const oldName = userIdentity.name;
+    userIdentity = {
+      ...userIdentity,
+      name: nextName,
+      emoji: nextEmoji,
+      category: nextCategory,
+      adminAssigned: isAdminRenamed || userIdentity.adminAssigned,
+    };
+    if (oldName && oldName !== nextName && takenNamesMap[oldName] === userIdentity.userId) {
+      delete takenNamesMap[oldName];
+    }
+    takenNamesMap[nextName] = userIdentity.userId;
+    saveTakenNamesCache();
+    saveUserIdentity();
+    if (!el("syncModal")?.classList.contains("hidden")) {
+      renderSyncModal();
+    }
+    if (changed) {
+      showToast(`✏️ שם המשתמש שלך עודכן ל־${nextEmoji} ${nextName}`);
+    }
+    return changed;
+  }
+
   async function registerIdentityPing(retried = false) {
     if (!isCloudApiConfigured()) return false;
     try {
@@ -2527,6 +2642,10 @@
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 403 && data.blocked) {
+        handleUserBlockedState(true, data.blockedReason || data.error || "");
+        return false;
+      }
       if ((res.status === 409 || data.conflict) && !retried) {
         if (data.takenNames && typeof data.takenNames === "object") {
           takenNamesMap = data.takenNames;
@@ -2544,7 +2663,11 @@
         return registerIdentityPing(true);
       }
       if (res.ok) {
+        handleUserBlockedState(false);
         identityRegisteredInCloud = true;
+        if (data.identity) {
+          applyServerIdentityUpdate(data.identity);
+        }
         takenNamesMap[userIdentity.name] = userIdentity.userId;
         saveTakenNamesCache();
         if (Array.isArray(data.onlineUsers)) {
@@ -2761,6 +2884,7 @@
             problemFlags: data?.problemFlags && typeof data.problemFlags === "object" ? data.problemFlags : {},
             overrides: data?.overrides && typeof data.overrides === "object" ? data.overrides : {},
             takenNames: data?.takenNames && typeof data.takenNames === "object" ? data.takenNames : {},
+            customIdentities: Array.isArray(data?.customIdentities) ? data.customIdentities : null,
             onlineUsers: Array.isArray(data?.onlineUsers) ? data.onlineUsers : null,
             serverTime: Number(data?.serverTime) || 0,
           };
@@ -2796,6 +2920,7 @@
       problemFlags = null,
       overrides = null,
       takenNames = null,
+      customIdentities = null,
       onlineUsers = null,
       serverTime = 0,
       communityVersion = 0,
@@ -2866,6 +2991,10 @@
     if (takenNames && typeof takenNames === "object") {
       takenNamesMap = takenNames;
       saveTakenNamesCache();
+    }
+    if (Array.isArray(customIdentities)) {
+      customIdentitiesList = customIdentities;
+      saveCustomIdentitiesCache();
     }
     if (overrides && typeof overrides === "object") {
       questionOverrides = overrides;
@@ -2943,6 +3072,7 @@
         problemFlags: data.problemFlags,
         overrides: data.overrides,
         takenNames: data.takenNames,
+        customIdentities: data.customIdentities,
         onlineUsers: data.onlineUsers,
         serverTime: data.serverTime,
         communityVersion: Number(data.communityVersion) || 0,
@@ -8811,10 +8941,62 @@
     el("btnAdminLogout")?.addEventListener("click", adminLogout);
     el("btnAdminRefreshUsers")?.addEventListener("click", () => loadAdminUsers(true));
     el("btnAdminRefreshFeedback")?.addEventListener("click", () => loadAdminFeedback(true));
+    el("btnAdminRefreshTraffic")?.addEventListener("click", () => loadAdminMetrics(true, true));
+    el("btnAdminRefreshVersions")?.addEventListener("click", () => loadAdminVersions(true, true));
+    el("btnAdminOpenAddName")?.addEventListener("click", openAdminAddNameModal);
+    el("btnAdminOpenAddRelease")?.addEventListener("click", openAdminAddReleaseModal);
     el("adminUsersSearch")?.addEventListener("input", renderAdminUsersTab);
     el("adminOverridesSearch")?.addEventListener("input", renderAdminOverridesTab);
     el("adminModerationSearch")?.addEventListener("input", renderAdminModerationTab);
     el("adminFeedbackSearch")?.addEventListener("input", renderAdminFeedbackTab);
+    el("adminVersionsSearch")?.addEventListener("input", renderAdminVersionsTab);
+
+    el("adminUsersFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        el("adminUsersFilterChips").querySelectorAll(".chip").forEach((x) => x.classList.remove("active"));
+        chip.classList.add("active");
+        adminUsersFilter = chip.dataset.userFilter || "all";
+        renderAdminUsersTab();
+      });
+    });
+
+    el("adminRenameQuickPick")?.addEventListener("change", (e) => {
+      const val = e.target.value;
+      if (!val) return;
+      try {
+        const picked = JSON.parse(val);
+        if (picked?.name) el("adminRenameNameInput").value = picked.name;
+        if (picked?.emoji) el("adminRenameEmojiInput").value = picked.emoji;
+        if (picked?.category) el("adminRenameCategoryInput").value = picked.category;
+      } catch {}
+    });
+    el("adminRenameUserForm")?.addEventListener("submit", handleAdminRenameUserSubmit);
+    el("btnCloseAdminRename")?.addEventListener("click", closeAdminRenameUserModal);
+    el("btnAdminCancelRename")?.addEventListener("click", closeAdminRenameUserModal);
+    el("adminRenameUserModal")?.addEventListener("click", (e) => {
+      if (e.target === el("adminRenameUserModal")) closeAdminRenameUserModal();
+    });
+
+    el("adminAddNameForm")?.addEventListener("submit", handleAdminAddPoolNameSubmit);
+    el("btnCloseAdminAddName")?.addEventListener("click", closeAdminAddNameModal);
+    el("btnAdminCancelAddName")?.addEventListener("click", closeAdminAddNameModal);
+    el("adminAddNameModal")?.addEventListener("click", (e) => {
+      if (e.target === el("adminAddNameModal")) closeAdminAddNameModal();
+    });
+
+    el("adminBlockUserForm")?.addEventListener("submit", handleAdminBlockUserSubmit);
+    el("btnCloseAdminBlock")?.addEventListener("click", closeAdminBlockUserModal);
+    el("btnAdminCancelBlock")?.addEventListener("click", closeAdminBlockUserModal);
+    el("adminBlockUserModal")?.addEventListener("click", (e) => {
+      if (e.target === el("adminBlockUserModal")) closeAdminBlockUserModal();
+    });
+
+    el("adminAddReleaseForm")?.addEventListener("submit", handleAdminAddReleaseSubmit);
+    el("btnCloseAdminAddRelease")?.addEventListener("click", closeAdminAddReleaseModal);
+    el("btnAdminCancelAddRelease")?.addEventListener("click", closeAdminAddReleaseModal);
+    el("adminAddReleaseModal")?.addEventListener("click", (e) => {
+      if (e.target === el("adminAddReleaseModal")) closeAdminAddReleaseModal();
+    });
 
     document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
       btn.addEventListener("click", () => switchAdminTab(btn.dataset.adminTab));
@@ -8860,6 +9042,10 @@
         !el("adminLoginModal")?.classList.contains("hidden") ||
         !el("adminQuestionModal")?.classList.contains("hidden") ||
         !el("adminDashboardModal")?.classList.contains("hidden") ||
+        !el("adminRenameUserModal")?.classList.contains("hidden") ||
+        !el("adminAddNameModal")?.classList.contains("hidden") ||
+        !el("adminBlockUserModal")?.classList.contains("hidden") ||
+        !el("adminAddReleaseModal")?.classList.contains("hidden") ||
         !el("exportModal")?.classList.contains("hidden") ||
         !el("backupModal")?.classList.contains("hidden") ||
         !el("shortcutsModal")?.classList.contains("hidden")
@@ -8904,6 +9090,10 @@
         closeSyncModal();
         closeAdminLoginModal();
         closeAdminQuestionModal();
+        closeAdminRenameUserModal();
+        closeAdminAddNameModal();
+        closeAdminBlockUserModal();
+        closeAdminAddReleaseModal();
         closeAdminDashboardModal();
         closeExportModal();
         el("backupModal").classList.add("hidden");
@@ -9605,11 +9795,20 @@
     el("adminTabOverrides").classList.toggle("hidden", adminActiveTab !== "overrides");
     el("adminTabModeration").classList.toggle("hidden", adminActiveTab !== "moderation");
     el("adminTabFeedback")?.classList.toggle("hidden", adminActiveTab !== "feedback");
+    el("adminTabTraffic")?.classList.toggle("hidden", adminActiveTab !== "traffic");
+    el("adminTabVersions")?.classList.toggle("hidden", adminActiveTab !== "versions");
 
     if (adminActiveTab === "users") renderAdminUsersTab();
     else if (adminActiveTab === "overrides") renderAdminOverridesTab();
     else if (adminActiveTab === "moderation") renderAdminModerationTab();
     else if (adminActiveTab === "feedback") renderAdminFeedbackTab();
+    else if (adminActiveTab === "traffic") {
+      renderAdminTrafficTab();
+      if (!adminMetricsCache && !adminMetricsLoading) loadAdminMetrics(false, false);
+    } else if (adminActiveTab === "versions") {
+      renderAdminVersionsTab();
+      if (!adminVersionsCache && !adminVersionsLoading) loadAdminVersions(false, false);
+    }
   }
 
   async function loadAdminUsers(showFeedback = false) {
@@ -9617,9 +9816,14 @@
     try {
       const data = await adminFetch("/api/admin/users");
       adminUsersCache = Array.isArray(data.users) ? data.users : [];
+      if (Array.isArray(data.customIdentities)) {
+        adminCustomIdentitiesCache = data.customIdentities;
+        customIdentitiesList = data.customIdentities;
+        saveCustomIdentitiesCache();
+      }
       takenNamesMap = {};
       adminUsersCache.forEach((u) => {
-        if (u.name && u.userId) takenNamesMap[u.name] = u.userId;
+        if (u.name && u.userId && !u.orphanBlocked) takenNamesMap[u.name] = u.userId;
       });
       saveTakenNamesCache();
       renderAdminUsersTab();
@@ -9647,28 +9851,295 @@
     }
   }
 
+  function openAdminRenameUserModal(userId) {
+    const user = adminUsersCache.find((u) => u.userId === userId);
+    if (!user) return;
+    activeRenameUserId = userId;
+    el("adminRenameUserMeta").textContent = `${user.emoji || "👤"} ${user.name} · ${user.userId}`;
+    el("adminRenameNameInput").value = user.name || "";
+    el("adminRenameEmojiInput").value = user.emoji || "";
+    el("adminRenameCategoryInput").value = user.category || "";
+
+    const quickPick = el("adminRenameQuickPick");
+    if (quickPick) {
+      const takenSet = new Set(
+        adminUsersCache.filter((u) => u.userId !== userId && u.name).map((u) => u.name)
+      );
+      const pool = getFullIdentityCatalog().filter((item) => !takenSet.has(item.name));
+      quickPick.innerHTML = `<option value="">— בחר מהמאגר הפנוי או הקלד ידנית למטה —</option>`;
+      pool.forEach((item) => {
+        const opt = document.createElement("option");
+        opt.value = JSON.stringify({ name: item.name, emoji: item.emoji, category: item.category });
+        opt.textContent = `${item.emoji} ${item.name} (${item.category})${item.custom ? " · מותאם" : ""}`;
+        quickPick.appendChild(opt);
+      });
+    }
+
+    const errEl = el("adminRenameError");
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    el("adminRenameUserModal")?.classList.remove("hidden");
+    setTimeout(() => el("adminRenameNameInput")?.focus(), 30);
+  }
+
+  function closeAdminRenameUserModal() {
+    activeRenameUserId = null;
+    el("adminRenameUserModal")?.classList.add("hidden");
+  }
+
+  async function handleAdminRenameUserSubmit(e) {
+    e.preventDefault();
+    if (!activeRenameUserId) return;
+    const errEl = el("adminRenameError");
+    const submitBtn = el("btnAdminSaveRename");
+    const name = (el("adminRenameNameInput")?.value || "").trim();
+    const emoji = (el("adminRenameEmojiInput")?.value || "").trim();
+    const category = (el("adminRenameCategoryInput")?.value || "").trim();
+
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    if (!name) {
+      if (errEl) {
+        errEl.textContent = "יש להזין כינוי חדש.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    submitBtn.disabled = true;
+    const origText = submitBtn.textContent;
+    submitBtn.textContent = "שומר...";
+    try {
+      const data = await adminFetch(`/api/admin/users/${encodeURIComponent(activeRenameUserId)}`, {
+        method: "PUT",
+        body: JSON.stringify({ name, emoji, category }),
+      });
+      const updated = data.user || { userId: activeRenameUserId, name, emoji, category };
+      if (updated.userId === userIdentity.userId) {
+        applyServerIdentityUpdate({ ...updated, adminRenamedAt: updated.adminRenamedAt || Date.now() });
+      }
+      closeAdminRenameUserModal();
+      await loadAdminUsers(false);
+      await bootstrapCloudState(false);
+      showToast(`✏️ שם המשתמש עודכן ל־${updated.emoji || ""} ${updated.name}`);
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err?.message || "שגיאה בעדכון שם המשתמש";
+        errEl.classList.remove("hidden");
+      }
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origText;
+    }
+  }
+
+  function openAdminAddNameModal() {
+    el("adminAddPoolNameInput").value = "";
+    el("adminAddPoolEmojiInput").value = "🩺";
+    el("adminAddPoolCategoryInput").value = "מותאם אישית";
+    const errEl = el("adminAddNameError");
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    el("adminAddNameModal")?.classList.remove("hidden");
+    setTimeout(() => el("adminAddPoolNameInput")?.focus(), 30);
+  }
+
+  function closeAdminAddNameModal() {
+    el("adminAddNameModal")?.classList.add("hidden");
+  }
+
+  async function handleAdminAddPoolNameSubmit(e) {
+    e.preventDefault();
+    const errEl = el("adminAddNameError");
+    const submitBtn = el("btnAdminSaveAddName");
+    const name = (el("adminAddPoolNameInput")?.value || "").trim();
+    const emoji = (el("adminAddPoolEmojiInput")?.value || "").trim() || "✨";
+    const category = (el("adminAddPoolCategoryInput")?.value || "").trim() || "מותאם אישית";
+
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    if (!name) {
+      if (errEl) {
+        errEl.textContent = "יש להזין שם להוספה למאגר.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+    if (IDENTITY_CATALOG.some((item) => item.name === name)) {
+      if (errEl) {
+        errEl.textContent = `הכינוי "${name}" כבר קיים ברשימת הבסיס.`;
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    submitBtn.disabled = true;
+    const origText = submitBtn.textContent;
+    submitBtn.textContent = "מוסיף...";
+    try {
+      await adminFetch("/api/admin/identities/pool", {
+        method: "POST",
+        body: JSON.stringify({ name, emoji, category }),
+      });
+      closeAdminAddNameModal();
+      await loadAdminUsers(false);
+      showToast(`➕ הכינוי "${emoji} ${name}" נוסף למאגר!`);
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err?.message || "שגיאה בהוספת שם";
+        errEl.classList.remove("hidden");
+      }
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origText;
+    }
+  }
+
+  async function adminDeletePoolName(name) {
+    if (!confirm(`להסיר את "${name}" ממאגר השמות המותאמים? (משתמש שכבר קיבל שם זה ישמור עליו)`)) return;
+    try {
+      await adminFetch(`/api/admin/identities/pool/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      });
+      await loadAdminUsers(false);
+      showToast(`🗑️ "${name}" הוסר ממאגר השמות.`);
+    } catch (err) {
+      showToast(`❌ שגיאה בהסרת שם: ${err.message}`);
+    }
+  }
+
+  function openAdminBlockUserModal(userId) {
+    const user = adminUsersCache.find((u) => u.userId === userId);
+    if (!user) return;
+    activeBlockUserId = userId;
+    el("adminBlockUserMeta").textContent = `${user.emoji || "👤"} ${user.name} · ${user.userId}`;
+    el("adminBlockReasonInput").value = "";
+    el("adminBlockPurgeCheck").checked = false;
+    const errEl = el("adminBlockError");
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    el("adminBlockUserModal")?.classList.remove("hidden");
+    setTimeout(() => el("adminBlockReasonInput")?.focus(), 30);
+  }
+
+  function closeAdminBlockUserModal() {
+    activeBlockUserId = null;
+    el("adminBlockUserModal")?.classList.add("hidden");
+  }
+
+  async function handleAdminBlockUserSubmit(e) {
+    e.preventDefault();
+    if (!activeBlockUserId) return;
+    const errEl = el("adminBlockError");
+    const submitBtn = el("btnAdminConfirmBlock");
+    const reason = (el("adminBlockReasonInput")?.value || "").trim();
+    const purgeContent = Boolean(el("adminBlockPurgeCheck")?.checked);
+
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    submitBtn.disabled = true;
+    const origText = submitBtn.textContent;
+    submitBtn.textContent = "חוסם...";
+    try {
+      await adminFetch(`/api/admin/users/${encodeURIComponent(activeBlockUserId)}/block`, {
+        method: "POST",
+        body: JSON.stringify({ reason, purgeContent }),
+      });
+      closeAdminBlockUserModal();
+      await loadAdminUsers(false);
+      if (purgeContent) {
+        await bootstrapCloudState(false);
+        await loadAdminFeedback(false);
+      }
+      showToast("🚫 המשתמש נחסם בהצלחה.");
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err?.message || "שגיאה בחסימת משתמש";
+        errEl.classList.remove("hidden");
+      }
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origText;
+    }
+  }
+
+  async function adminUnblockUser(userId, name) {
+    if (!confirm(`לבטל את החסימה עבור "${name}" (${userId})?`)) return;
+    try {
+      await adminFetch(`/api/admin/users/${encodeURIComponent(userId)}/unblock`, {
+        method: "POST",
+      });
+      await loadAdminUsers(false);
+      showToast(`✅ החסימה עבור "${name}" בוטלה.`);
+    } catch (err) {
+      showToast(`❌ שגיאה בביטול חסימה: ${err.message}`);
+    }
+  }
+
   function renderAdminUsersTab() {
     const now = Date.now();
-    const active24h = adminUsersCache.filter((u) => now - (Number(u.lastSeenAt) || 0) <= 24 * 60 * 60 * 1000).length;
-    const takenNamesSet = new Set(adminUsersCache.map((u) => u.name));
-    const baseNamesSet = new Set(IDENTITY_CATALOG.map((item) => item.name));
+    const active24h = adminUsersCache.filter((u) => !u.blocked && now - (Number(u.lastSeenAt) || 0) <= 24 * 60 * 60 * 1000).length;
+    const blockedCount = adminUsersCache.filter((u) => u.blocked).length;
+    const takenNamesSet = new Set(adminUsersCache.filter((u) => !u.orphanBlocked).map((u) => u.name));
+    const fullCatalog = getFullIdentityCatalog();
+    const fullNamesSet = new Set(fullCatalog.map((item) => item.name));
     const takenBaseCount = IDENTITY_CATALOG.filter((item) => takenNamesSet.has(item.name)).length;
+    const customPoolList = adminCustomIdentitiesCache.length > 0 ? adminCustomIdentitiesCache : customIdentitiesList;
     const extraUsers = adminUsersCache
-      .filter((u) => u && u.name && !baseNamesSet.has(u.name))
+      .filter((u) => u && u.name && !u.orphanBlocked && !fullNamesSet.has(u.name))
       .sort((a, b) => String(a.name).localeCompare(String(b.name), "he"));
 
     el("adminUsersKpis").innerHTML = `
-      <div class="kpi-card"><div class="kpi-label">👥 סה״כ משתמשים</div><div class="kpi-value">${adminUsersCache.length}</div></div>
+      <div class="kpi-card"><div class="kpi-label">👥 סה״כ משתמשים</div><div class="kpi-value tabular-text">${adminUsersCache.length}</div></div>
       <div class="kpi-card">
         <div class="kpi-label">🏷️ כינויים תפוסים</div>
-        <div class="kpi-value">${takenNamesSet.size}</div>
-        <div class="muted" style="font-size:0.75rem;margin-top:2px;">${takenBaseCount} / ${IDENTITY_CATALOG.length} בסיס${extraUsers.length ? ` · +${extraUsers.length} ממוספרים` : ""}</div>
+        <div class="kpi-value tabular-text">${takenNamesSet.size}</div>
+        <div class="muted tabular-text" style="font-size:0.75rem;margin-top:2px;">${takenBaseCount}/${IDENTITY_CATALOG.length} בסיס · ${customPoolList.length} מותאמים${extraUsers.length ? ` · +${extraUsers.length} מיוחדים/ממוספרים` : ""}</div>
       </div>
-      <div class="kpi-card"><div class="kpi-label">🟢 פעילים ב-24 ש׳</div><div class="kpi-value">${active24h}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🟢 פעילים ב-24 ש׳</div><div class="kpi-value tabular-text">${active24h}</div></div>
+      <div class="kpi-card"><div class="kpi-label">🚫 חסומים</div><div class="kpi-value tabular-text">${blockedCount}</div></div>
     `;
+
+    const summaryEl = el("adminNamesSummary");
+    if (summaryEl) {
+      summaryEl.textContent = `🏷️ מפת הכינויים (${IDENTITY_CATALOG.length} בסיס + ${customPoolList.length} מותאמים)`;
+    }
 
     const namesGrid = el("adminNamesGrid");
     namesGrid.innerHTML = "";
+    customPoolList.forEach((item) => {
+      const chip = document.createElement("span");
+      const userObj = adminUsersCache.find((u) => u.name === item.name);
+      chip.className = "admin-name-chip custom" + (userObj ? " taken" : "");
+      chip.title = userObj
+        ? `מותאם אישית · תפוס · פעילות אחרונה: ${formatNoteTime(userObj.lastSeenAt)}`
+        : `מותאם אישית · פנוי (${item.category})`;
+      const labelSpan = document.createElement("span");
+      labelSpan.textContent = `${item.emoji} ${item.name}`;
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "admin-name-chip-del";
+      delBtn.textContent = "×";
+      delBtn.title = `הסר את "${item.name}" מהמאגר`;
+      delBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        adminDeletePoolName(item.name);
+      };
+      chip.append(labelSpan, delBtn);
+      namesGrid.appendChild(chip);
+    });
     IDENTITY_CATALOG.forEach((item) => {
       const chip = document.createElement("span");
       const userObj = adminUsersCache.find((u) => u.name === item.name);
@@ -9683,17 +10154,20 @@
       const chip = document.createElement("span");
       chip.className = "admin-name-chip taken";
       chip.textContent = `${u.emoji || "👤"} ${u.name}`;
-      chip.title = `תפוס (ממוספר) · פעילות אחרונה: ${formatNoteTime(u.lastSeenAt)}`;
+      chip.title = `תפוס (מיוחד/ממוספר) · פעילות אחרונה: ${formatNoteTime(u.lastSeenAt)}`;
       namesGrid.appendChild(chip);
     });
 
     const term = (el("adminUsersSearch")?.value || "").trim().toLowerCase();
     const filteredUsers = adminUsersCache.filter((u) => {
+      if (adminUsersFilter === "active" && u.blocked) return false;
+      if (adminUsersFilter === "blocked" && !u.blocked) return false;
       if (!term) return true;
       return (
         String(u.name || "").toLowerCase().includes(term) ||
         String(u.category || "").toLowerCase().includes(term) ||
-        String(u.userId || "").toLowerCase().includes(term)
+        String(u.userId || "").toLowerCase().includes(term) ||
+        String(u.blockedReason || "").toLowerCase().includes(term)
       );
     });
 
@@ -9721,9 +10195,19 @@
     const tbody = table.querySelector("tbody");
     filteredUsers.forEach((u) => {
       const tr = document.createElement("tr");
+      if (u.blocked) tr.className = "is-blocked-user";
       const syncTag = u.hasSyncCode ? " · ☁️ מסונכרן" : "";
+      const blockedBadge = u.blocked
+        ? `<span class="admin-user-badge blocked" title="${escapeHtml(u.blockedReason || "חסום")}">🚫 חסום</span>`
+        : "";
+      const renamedBadge = u.adminRenamedAt
+        ? `<span class="admin-user-badge renamed" title="שם עודכן ע״י מנהל">✏️ עודכן</span>`
+        : "";
+      const reasonLine = u.blocked && u.blockedReason
+        ? `<br/><span class="muted" style="font-size:0.72rem;color:var(--danger-ink);">סיבה: ${escapeHtml(u.blockedReason)}</span>`
+        : "";
       tr.innerHTML = `
-        <td><strong>${escapeHtml(u.emoji)} ${escapeHtml(u.name)}</strong><br/><span class="muted" style="font-size:0.72rem;">${escapeHtml(u.userId)}${syncTag}</span></td>
+        <td><strong>${escapeHtml(u.emoji)} ${escapeHtml(u.name)}</strong>${blockedBadge}${renamedBadge}<br/><span class="muted" style="font-size:0.72rem;">${escapeHtml(u.userId)}${syncTag}</span>${reasonLine}</td>
         <td>${escapeHtml(u.category || "—")}</td>
         <td>${escapeHtml(formatNoteTime(u.firstSeenAt) || "—")}</td>
         <td>${escapeHtml(formatNoteTime(u.lastSeenAt) || "—")}</td>
@@ -9731,12 +10215,39 @@
         <td></td>
       `;
       const actionTd = tr.lastElementChild;
-      const relBtn = document.createElement("button");
-      relBtn.type = "button";
-      relBtn.className = "note-card-action-btn danger";
-      relBtn.textContent = "🔓 שחרר כינוי";
-      relBtn.onclick = () => adminReleaseNickname(u.userId, u.name);
-      actionTd.appendChild(relBtn);
+      const actionWrap = document.createElement("div");
+      actionWrap.className = "admin-user-actions-cell";
+
+      if (!u.orphanBlocked) {
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.className = "note-card-action-btn";
+        renameBtn.textContent = "✏️ שנה שם";
+        renameBtn.onclick = () => openAdminRenameUserModal(u.userId);
+        actionWrap.appendChild(renameBtn);
+      }
+
+      const blockBtn = document.createElement("button");
+      blockBtn.type = "button";
+      blockBtn.className = u.blocked ? "note-card-action-btn" : "note-card-action-btn danger";
+      blockBtn.textContent = u.blocked ? "✅ בטל חסימה" : "🚫 חסום";
+      blockBtn.onclick = () => {
+        if (u.blocked) adminUnblockUser(u.userId, u.name);
+        else openAdminBlockUserModal(u.userId);
+      };
+      actionWrap.appendChild(blockBtn);
+
+      if (!u.orphanBlocked) {
+        const relBtn = document.createElement("button");
+        relBtn.type = "button";
+        relBtn.className = "note-card-action-btn danger";
+        relBtn.textContent = "🔓 שחרר";
+        relBtn.title = "מחק משתמש ושחרר את הכינוי";
+        relBtn.onclick = () => adminReleaseNickname(u.userId, u.name);
+        actionWrap.appendChild(relBtn);
+      }
+
+      actionTd.appendChild(actionWrap);
       tbody.appendChild(tr);
     });
 
@@ -10116,6 +10627,549 @@
   }
 
   // ============================================================
+  // Admin Traffic & Quotas Tab (Cloudflare & GitHub)
+  // ============================================================
+
+  function formatCompactBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+    if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+    if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${n} B`;
+  }
+
+  function renderQuotaCardHtml({ label, used, limit, usedLabel, limitLabel }) {
+    const safeLimit = Math.max(1, Number(limit) || 1);
+    const safeUsed = Math.max(0, Number(used) || 0);
+    const rawPct = (safeUsed / safeLimit) * 100;
+    const pct = Math.min(100, rawPct);
+    const pctText = rawPct >= 10 ? `${rawPct.toFixed(1)}%` : `${rawPct.toFixed(2)}%`;
+    const levelClass = rawPct >= 85 ? "is-crit" : rawPct >= 60 ? "is-warn" : "is-ok";
+    return `
+      <div class="admin-quota-card">
+        <div class="admin-quota-top">
+          <span class="admin-quota-label">${escapeHtml(label)}</span>
+          <span class="admin-quota-pct tabular-text">${escapeHtml(pctText)}</span>
+        </div>
+        <div class="admin-quota-values tabular-text">${escapeHtml(usedLabel)} <span class="muted" style="font-weight:500;font-size:0.78rem;">/ ${escapeHtml(limitLabel)}</span></div>
+        <div class="admin-quota-bar-track">
+          <div class="admin-quota-bar-fill ${levelClass}" style="width:${pct.toFixed(1)}%"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadAdminMetrics(forceRefresh = false, showFeedback = false) {
+    if (!adminState.authenticated) return;
+    adminMetricsLoading = true;
+    renderAdminTrafficTab();
+    try {
+      const qs = forceRefresh ? "?refresh=1" : "";
+      const data = await adminFetch(`/api/admin/metrics${qs}`);
+      adminMetricsCache = data;
+      if (showFeedback) showToast("🔄 נתוני הטראפיק והמכסות רועננו.");
+    } catch (err) {
+      if (showFeedback) showToast(`❌ שגיאה בטעינת טראפיק ומכסות: ${err.message}`);
+    } finally {
+      adminMetricsLoading = false;
+      renderAdminTrafficTab();
+    }
+  }
+
+  function renderAdminTrafficTab() {
+    const contentEl = el("adminTrafficContent");
+    const metaEl = el("adminTrafficMeta");
+    if (!contentEl) return;
+
+    if (adminMetricsLoading && !adminMetricsCache) {
+      if (metaEl) metaEl.textContent = "טוען נתוני טראפיק ומכסות...";
+      contentEl.innerHTML = `<div class="community-notes-empty" style="padding:24px;">⏳ אוסף נתוני Cloudflare ו-GitHub...</div>`;
+      return;
+    }
+
+    if (!adminMetricsCache) {
+      if (metaEl) metaEl.textContent = "לא נטענו נתונים עדיין.";
+      contentEl.innerHTML = `<div class="community-notes-empty" style="padding:24px;">לחץ על "רענן טראפיק ומכסות" כדי לטעון נתונים.</div>`;
+      return;
+    }
+
+    const cf = adminMetricsCache.cloudflare || {};
+    const gh = adminMetricsCache.github || {};
+    const quotas = cf.quotas || {};
+    const telemetryToday = cf.telemetryToday || {};
+    const official = cf.official || {};
+    const offData = official.available && official.data ? official.data : null;
+    const storage = cf.storage || {};
+    const dailyHistory = Array.isArray(cf.dailyHistory) ? cf.dailyHistory : [];
+
+    const reqToday = offData ? offData.workerRequestsToday : Number(telemetryToday.requestsTotal) || 0;
+    const d1ReadsToday = offData ? offData.d1RowsReadToday : Number(telemetryToday.d1RowsRead) || 0;
+    const d1WritesToday = offData ? offData.d1RowsWrittenToday : Number(telemetryToday.d1RowsWritten) || 0;
+    const d1StorageBytes = offData && offData.d1StorageBytes ? offData.d1StorageBytes : Number(storage.dbSizeBytes) || 0;
+
+    const reqLimit = Number(quotas.workerRequestsPerDay) || 100000;
+    const readLimit = Number(quotas.d1RowsReadPerDay) || 5000000;
+    const writeLimit = Number(quotas.d1RowsWrittenPerDay) || 100000;
+    const storageLimit = Number(quotas.d1StorageBytes) || 500 * 1024 * 1024;
+
+    if (metaEl) {
+      const updatedLabel = formatNoteTime(adminMetricsCache.serverTime);
+      metaEl.textContent = `עודכן לאחרונה: ${updatedLabel} · יום UTC: ${adminMetricsCache.todayUtc || "—"}`;
+    }
+
+    const cfSourcePill = offData
+      ? `<span class="admin-source-pill ok">✓ Cloudflare GraphQL API + טלמטריה</span>`
+      : `<span class="admin-source-pill">⚡ טלמטריית Worker + D1 חיה</span>`;
+
+    const endpointEntries = Object.entries(telemetryToday.endpoints || {}).sort((a, b) => (Number(b[1]) || 0) - (Number(a[1]) || 0));
+    const maxEndpointHits = endpointEntries.length > 0 ? Math.max(1, Number(endpointEntries[0][1]) || 1) : 1;
+
+    const endpointsHtml = endpointEntries.length > 0
+      ? `<div class="admin-endpoints-list">${endpointEntries
+          .map(([ep, hits]) => {
+            const pct = Math.round(((Number(hits) || 0) / maxEndpointHits) * 100);
+            return `<div class="admin-endpoint-row">
+              <span class="admin-endpoint-name" dir="ltr">${escapeHtml(ep)}</span>
+              <div class="admin-endpoint-bar-wrap"><div class="admin-endpoint-bar-fill" style="width:${pct}%"></div></div>
+              <strong class="tabular-text">${Number(hits).toLocaleString()}</strong>
+            </div>`;
+          })
+          .join("")}</div>`
+      : `<div class="muted" style="font-size:0.82rem;">טרם נרשמו בקשות בדף הטלמטריה של היום.</div>`;
+
+    const dailyTableHtml = dailyHistory.length > 0
+      ? `<div class="admin-table-wrap"><table class="admin-users-table">
+          <thead>
+            <tr>
+              <th>תאריך (UTC)</th>
+              <th>בקשות Worker</th>
+              <th>שגיאות 4xx / 5xx</th>
+              <th>קריאות D1 (שורות)</th>
+              <th>כתיבות D1 (שורות)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${dailyHistory
+              .map(
+                (d) => `<tr>
+                  <td dir="ltr" class="tabular-text">${escapeHtml(d.dayUtc)}</td>
+                  <td class="tabular-text"><strong>${Number(d.requestsTotal).toLocaleString()}</strong></td>
+                  <td class="tabular-text">${Number(d.errors4xx).toLocaleString()} / ${Number(d.errors5xx).toLocaleString()}</td>
+                  <td class="tabular-text">${Number(d.d1RowsRead).toLocaleString()}</td>
+                  <td class="tabular-text">${Number(d.d1RowsWritten).toLocaleString()}</td>
+                </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table></div>`
+      : `<div class="muted" style="font-size:0.82rem;">אין עדיין היסטוריה יומית ב-D1.</div>`;
+
+    const tableCountsHtml = Object.entries(storage.tableCounts || {})
+      .map(
+        ([tbl, cnt]) => `<div class="admin-table-stat">
+          <code dir="ltr">${escapeHtml(tbl)}</code>
+          <strong class="tabular-text">${Number(cnt).toLocaleString()}</strong>
+        </div>`
+      )
+      .join("");
+
+    // GitHub section
+    const ghRepo = gh.repo;
+    const ghQuotas = gh.quotas || { pagesSiteSizeKb: 1048576, pagesBandwidthGbPerMonth: 100, pagesBuildsPerHour: 10 };
+    const ghRate = gh.rateLimit || {};
+    const ghSourcePill = gh.ok
+      ? gh.tokenConfigured
+        ? `<span class="admin-source-pill ok">✓ GitHub API (מאומת)</span>`
+        : `<span class="admin-source-pill ok">✓ GitHub API ציבורי</span>`
+      : `<span class="admin-source-pill warn">⚠️ GitHub API לא זמין כרגע</span>`;
+
+    const ghSizeKb = ghRepo ? Number(ghRepo.sizeKb) || 0 : 0;
+    const ghSizeLimitKb = Number(ghQuotas.pagesSiteSizeKb) || 1048576;
+    const ghLatestDep = Array.isArray(gh.deployments) && gh.deployments.length > 0 ? gh.deployments[0] : null;
+    const ghViews = gh.traffic?.views14d;
+    const ghClones = gh.traffic?.clones14d;
+
+    const ghQuotasHtml = ghRepo
+      ? `<div class="admin-quota-grid">
+          ${renderQuotaCardHtml({
+            label: "📦 גודל ריפו / אתר GitHub Pages",
+            used: ghSizeKb,
+            limit: ghSizeLimitKb,
+            usedLabel: `${(ghSizeKb / 1024).toFixed(1)} MB`,
+            limitLabel: "1,024 MB (1 GB)",
+          })}
+          ${renderQuotaCardHtml({
+            label: "🔌 מכסת קריאות GitHub API (לשעה)",
+            used: Math.max(0, (Number(ghRate.limit) || 60) - (Number(ghRate.remaining) ?? (Number(ghRate.limit) || 60))),
+            limit: Number(ghRate.limit) || 60,
+            usedLabel: `${ghRate.remaining ?? "—"} נותרו`,
+            limitLabel: `${Number(ghRate.limit) || 60} לשעה`,
+          })}
+          <div class="admin-quota-card">
+            <div class="admin-quota-top">
+              <span class="admin-quota-label">🌐 תקרת GitHub Pages (חינמי)</span>
+              <span class="admin-quota-pct">Soft Limit</span>
+            </div>
+            <div class="admin-quota-values tabular-text">100 GB / חודש · 10 בנייות / שעה</div>
+            <div class="muted" style="font-size:0.76rem;">
+              ${ghLatestDep ? `פריסה אחרונה: <code dir="ltr">${escapeHtml(ghLatestDep.shortSha)}</code> (${escapeHtml(formatNoteTime(new Date(ghLatestDep.createdAt).getTime()))})` : "אין מידע פריסות זמין"}
+            </div>
+          </div>
+        </div>`
+      : `<div class="muted" style="font-size:0.84rem;">לא ניתן למשוך נתונים מ-GitHub כרגע${gh.error ? `: ${escapeHtml(gh.error)}` : ""}.</div>`;
+
+    const ghTrafficExtraHtml = ghViews || ghClones
+      ? `<div class="kpi-grid admin-kpis">
+          ${ghViews ? `<div class="kpi-card"><div class="kpi-label">👁️ צפיות בריפו (14 יום)</div><div class="kpi-value tabular-text">${Number(ghViews.count || 0).toLocaleString()}</div><div class="muted" style="font-size:0.74rem;">${Number(ghViews.uniques || 0).toLocaleString()} ייחודיים</div></div>` : ""}
+          ${ghClones ? `<div class="kpi-card"><div class="kpi-label">⬇️ שיבוטים (14 יום)</div><div class="kpi-value tabular-text">${Number(ghClones.count || 0).toLocaleString()}</div><div class="muted" style="font-size:0.74rem;">${Number(ghClones.uniques || 0).toLocaleString()} ייחודיים</div></div>` : ""}
+        </div>`
+      : `<div class="muted" style="font-size:0.78rem;">💡 נתוני צפיות/תעבורה פרטיים של GitHub (Views/Clones) זמינים אם מגדירים <code dir="ltr">GITHUB_TOKEN</code> ב-Worker.</div>`;
+
+    const cfHintHtml = !official.configured
+      ? `<div class="muted" style="font-size:0.78rem;">💡 לחיבור אנליטיקה רשמית מלוח הבקרה של Cloudflare, ניתן להגדיר סוד <code dir="ltr">CF_API_TOKEN</code> ב-Worker (<code dir="ltr">npx wrangler secret put CF_API_TOKEN</code>). כרגע מוצגים מדדי הטלמטריה החיים של ה-Worker + D1.</div>`
+      : !official.available
+      ? `<div class="muted" style="font-size:0.78rem;color:var(--warning-ink);">⚠️ שגיאה בשליפת Cloudflare GraphQL (${escapeHtml(official.error || "שגיאה")}) — מוצגים נתוני טלמטריה פנימיים.</div>`
+      : "";
+
+    contentEl.innerHTML = `
+      <section class="admin-section-card">
+        <div class="admin-section-head">
+          <h3>☁️ Cloudflare Worker & D1 — מכסות יומיות ואחסון</h3>
+          ${cfSourcePill}
+        </div>
+        <div class="admin-quota-grid">
+          ${renderQuotaCardHtml({
+            label: "⚡ בקשות Worker היום",
+            used: reqToday,
+            limit: reqLimit,
+            usedLabel: Number(reqToday).toLocaleString(),
+            limitLabel: Number(reqLimit).toLocaleString(),
+          })}
+          ${renderQuotaCardHtml({
+            label: "📖 קריאות D1 היום (שורות)",
+            used: d1ReadsToday,
+            limit: readLimit,
+            usedLabel: Number(d1ReadsToday).toLocaleString(),
+            limitLabel: Number(readLimit).toLocaleString(),
+          })}
+          ${renderQuotaCardHtml({
+            label: "✍️ כתיבות D1 היום (שורות)",
+            used: d1WritesToday,
+            limit: writeLimit,
+            usedLabel: Number(d1WritesToday).toLocaleString(),
+            limitLabel: Number(writeLimit).toLocaleString(),
+          })}
+          ${renderQuotaCardHtml({
+            label: "🗄️ נפח מסד הנתונים D1",
+            used: d1StorageBytes,
+            limit: storageLimit,
+            usedLabel: formatCompactBytes(d1StorageBytes),
+            limitLabel: formatCompactBytes(storageLimit),
+          })}
+        </div>
+        ${cfHintHtml}
+        <details class="admin-names-details" open>
+          <summary>📡 פילוח בקשות היום לפי נקודת קצה (Endpoints)</summary>
+          <div style="margin-top:8px;">${endpointsHtml}</div>
+        </details>
+        <details class="admin-names-details">
+          <summary>📅 היסטוריית טראפיק יומית (14 ימים אחרונים)</summary>
+          <div style="margin-top:8px;">${dailyTableHtml}</div>
+        </details>
+        <details class="admin-names-details">
+          <summary>🧱 כמות רשומות לפי טבלה ב-D1 (נפח התקדמות משתמשים: ${escapeHtml(formatCompactBytes(storage.progressBytes || 0))})</summary>
+          <div class="admin-tables-grid" style="margin-top:8px;">${tableCountsHtml}</div>
+        </details>
+      </section>
+
+      <section class="admin-section-card">
+        <div class="admin-section-head">
+          <h3>🐙 GitHub & GitHub Pages — מכסות ומצב ריפו</h3>
+          ${ghSourcePill}
+        </div>
+        ${ghQuotasHtml}
+        ${ghRepo ? `<div class="muted" style="font-size:0.8rem;">ריפו: <a href="${escapeHtml(ghRepo.htmlUrl)}" target="_blank" rel="noopener" dir="ltr">${escapeHtml(ghRepo.fullName)}</a> · ענף ראשי: <code dir="ltr">${escapeHtml(ghRepo.defaultBranch)}</code> · דחיפה אחרונה: ${escapeHtml(ghRepo.pushedAt ? formatNoteTime(new Date(ghRepo.pushedAt).getTime()) : "—")}</div>` : ""}
+        ${ghTrafficExtraHtml}
+      </section>
+    `;
+  }
+
+  // ============================================================
+  // Admin Version Tracking Tab
+  // ============================================================
+
+  function getLoadedAssetVersions() {
+    const assets = [];
+    document.querySelectorAll('link[rel="stylesheet"][href], script[src]').forEach((node) => {
+      const rawUrl = node.getAttribute("href") || node.getAttribute("src") || "";
+      if (!rawUrl || rawUrl.startsWith("http")) return;
+      const [filePart, queryPart] = rawUrl.split("?");
+      const params = new URLSearchParams(queryPart || "");
+      assets.push({
+        file: filePart,
+        version: params.get("v") || "—",
+      });
+    });
+    return assets;
+  }
+
+  async function loadAdminVersions(forceRefresh = false, showFeedback = false) {
+    if (!adminState.authenticated) return;
+    adminVersionsLoading = true;
+    renderAdminVersionsTab();
+    try {
+      const qs = forceRefresh ? "?refresh=1" : "";
+      const data = await adminFetch(`/api/admin/versions${qs}`);
+      adminVersionsCache = data;
+      if (showFeedback) showToast("🔄 מעקב הגרסאות רוענן.");
+    } catch (err) {
+      if (showFeedback) showToast(`❌ שגיאה בטעינת מעקב גרסאות: ${err.message}`);
+    } finally {
+      adminVersionsLoading = false;
+      renderAdminVersionsTab();
+    }
+  }
+
+  function openAdminAddReleaseModal() {
+    const latestSha = adminVersionsCache?.github?.commits?.[0]?.shortSha || "";
+    el("adminReleaseVersionInput").value = `v${APP_VERSION}`;
+    el("adminReleaseComponentSelect").value = "all";
+    el("adminReleaseTitleInput").value = "";
+    el("adminReleaseCommitInput").value = latestSha;
+    el("adminReleaseNotesInput").value = "";
+    const errEl = el("adminAddReleaseError");
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    el("adminAddReleaseModal")?.classList.remove("hidden");
+    setTimeout(() => el("adminReleaseTitleInput")?.focus(), 30);
+  }
+
+  function closeAdminAddReleaseModal() {
+    el("adminAddReleaseModal")?.classList.add("hidden");
+  }
+
+  async function handleAdminAddReleaseSubmit(e) {
+    e.preventDefault();
+    const errEl = el("adminAddReleaseError");
+    const submitBtn = el("btnAdminSaveRelease");
+    const version = (el("adminReleaseVersionInput")?.value || "").trim();
+    const component = (el("adminReleaseComponentSelect")?.value || "all").trim();
+    const title = (el("adminReleaseTitleInput")?.value || "").trim();
+    const commitSha = (el("adminReleaseCommitInput")?.value || "").trim();
+    const notes = (el("adminReleaseNotesInput")?.value || "").trim();
+
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+    if (!version || !title) {
+      if (errEl) {
+        errEl.textContent = "יש להזין מספר גרסה וכותרת.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+
+    submitBtn.disabled = true;
+    const origText = submitBtn.textContent;
+    submitBtn.textContent = "שומר...";
+    try {
+      await adminFetch("/api/admin/versions", {
+        method: "POST",
+        body: JSON.stringify({ version, component, title, commitSha, notes }),
+      });
+      closeAdminAddReleaseModal();
+      await loadAdminVersions(false, false);
+      showToast(`🏷️ תיעוד גרסה "${version}" נשמר.`);
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err?.message || "שגיאה בשמירת תיעוד גרסה";
+        errEl.classList.remove("hidden");
+      }
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = origText;
+    }
+  }
+
+  async function adminDeleteVersionRelease(releaseId) {
+    if (!confirm("למחוק תיעוד גרסה זה?")) return;
+    try {
+      await adminFetch(`/api/admin/versions/${encodeURIComponent(releaseId)}`, {
+        method: "DELETE",
+      });
+      if (adminVersionsCache?.releases) {
+        adminVersionsCache.releases = adminVersionsCache.releases.filter((r) => r.releaseId !== releaseId);
+      }
+      renderAdminVersionsTab();
+      showToast("🗑️ תיעוד הגרסה נמחק.");
+    } catch (err) {
+      showToast(`❌ שגיאה במחיקת תיעוד גרסה: ${err.message}`);
+    }
+  }
+
+  function renderAdminVersionsTab() {
+    const contentEl = el("adminVersionsContent");
+    if (!contentEl) return;
+
+    if (adminVersionsLoading && !adminVersionsCache) {
+      contentEl.innerHTML = `<div class="community-notes-empty" style="padding:24px;">⏳ טוען נתוני גרסאות ופריסות...</div>`;
+      return;
+    }
+
+    const term = (el("adminVersionsSearch")?.value || "").trim().toLowerCase();
+    const workerInfo = adminVersionsCache?.worker || {};
+    const gh = adminVersionsCache?.github || {};
+    const commits = Array.isArray(gh.commits) ? gh.commits : [];
+    const deployments = Array.isArray(gh.deployments) ? gh.deployments : [];
+    const releases = Array.isArray(adminVersionsCache?.releases) ? adminVersionsCache.releases : [];
+    const assets = getLoadedAssetVersions();
+
+    const latestCommit = commits[0] || null;
+    const latestDeploy = deployments[0] || null;
+    const pagesSynced = Boolean(latestCommit && latestDeploy && latestCommit.sha === latestDeploy.sha);
+
+    const filteredReleases = releases.filter((r) => {
+      if (!term) return true;
+      const hay = `${r.version} ${r.component} ${r.title} ${r.notes} ${r.commitSha}`.toLowerCase();
+      return hay.includes(term);
+    });
+
+    const filteredCommits = commits.filter((c) => {
+      if (!term) return true;
+      const hay = `${c.sha} ${c.shortSha} ${c.message} ${c.author}`.toLowerCase();
+      return hay.includes(term);
+    });
+
+    const componentLabels = {
+      all: "🌐 מערכת מלאה",
+      frontend: "🖥️ אתר (Frontend)",
+      worker: "⚡ שרת (Worker + D1)",
+      questions: "📚 מאגר שאלות",
+    };
+
+    const releasesHtml = filteredReleases.length > 0
+      ? filteredReleases
+          .map(
+            (r) => `<div class="admin-feed-card">
+              <div class="admin-feed-head">
+                <div class="admin-feed-badges">
+                  <span class="admin-version-tag" dir="ltr">${escapeHtml(r.version)}</span>
+                  <span class="admin-status-badge">${escapeHtml(componentLabels[r.component] || r.component)}</span>
+                  <strong>${escapeHtml(r.title)}</strong>
+                  ${r.commitSha ? `<code class="admin-commit-sha" dir="ltr">${escapeHtml(r.commitSha)}</code>` : ""}
+                  <span class="muted tabular-text">${escapeHtml(formatNoteTime(r.createdAt))}</span>
+                </div>
+                <div class="admin-feed-actions">
+                  <button type="button" class="note-card-action-btn danger admin-del" data-del-release="${escapeHtml(r.releaseId)}">🗑️ מחק</button>
+                </div>
+              </div>
+              ${r.notes ? `<div class="admin-feed-text">${escapeHtml(r.notes)}</div>` : ""}
+            </div>`
+          )
+          .join("")
+      : `<div class="community-notes-empty" style="padding:12px;">${
+          releases.length === 0 ? "אין עדיין תיעודי גרסאות ידניים — ניתן להוסיף בלחיצה על \"➕ תעד גרסה\"." : "אין תיעודים תואמים לחיפוש."
+        }</div>`;
+
+    const commitsHtml = filteredCommits.length > 0
+      ? filteredCommits
+          .map((c) => {
+            const ts = c.date ? new Date(c.date).getTime() : 0;
+            return `<div class="admin-commit-row">
+              <div class="admin-commit-top">
+                <div class="admin-feed-badges">
+                  <a class="admin-commit-sha" dir="ltr" href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.shortSha)}</a>
+                  ${c.deployedToPages ? `<span class="admin-source-pill ok">🚀 GitHub Pages</span>` : ""}
+                  <span class="muted">${escapeHtml(c.author || "")}</span>
+                </div>
+                <span class="muted tabular-text">${escapeHtml(ts ? formatNoteTime(ts) : "")}</span>
+              </div>
+              <div class="admin-commit-msg">${escapeHtml(c.message)}</div>
+            </div>`;
+          })
+          .join("")
+      : `<div class="community-notes-empty" style="padding:12px;">${
+          gh.error ? `שגיאה בטעינת קומיטים מ-GitHub: ${escapeHtml(gh.error)}` : "לא נמצאו קומיטים תואמים."
+        }</div>`;
+
+    const assetsHtml = assets
+      .map(
+        (a) => `<div class="admin-table-stat">
+          <code dir="ltr">${escapeHtml(a.file)}</code>
+          <strong class="tabular-text" dir="ltr">v=${escapeHtml(a.version)}</strong>
+        </div>`
+      )
+      .join("");
+
+    contentEl.innerHTML = `
+      <section class="admin-section-card">
+        <div class="admin-section-head">
+          <h3>🧭 מצב גרסאות חי במערכת</h3>
+          <span class="admin-source-pill ${pagesSynced ? "ok" : "warn"}">
+            ${pagesSynced ? "✓ GitHub Pages מסונכרן עם main" : latestDeploy ? "⏳ קיימים קומיטים חדשים לאחר הפריסה האחרונה" : "ℹ️ מצב פריסה"}
+          </span>
+        </div>
+        <div class="admin-version-cards">
+          <div class="admin-version-card">
+            <div class="admin-version-card-head">
+              <strong>🖥️ Frontend (בדפדפן זה)</strong>
+              <span class="admin-version-tag" dir="ltr">v${escapeHtml(APP_VERSION)}</span>
+            </div>
+            <div class="muted tabular-text" style="font-size:0.78rem;">תאריך בנייה: ${escapeHtml(APP_BUILD_DATE)}</div>
+            <div class="muted tabular-text" style="font-size:0.78rem;">בנק שאלות: ${QUESTIONS.length} שאלות · ${EXAMS.length} מבחנים</div>
+            <div class="muted" style="font-size:0.74rem;word-break:break-all;" dir="ltr">${escapeHtml(CLOUD_API_BASE)}</div>
+          </div>
+          <div class="admin-version-card">
+            <div class="admin-version-card-head">
+              <strong>⚡ Backend (Cloudflare Worker)</strong>
+              <span class="admin-version-tag" dir="ltr">v${escapeHtml(workerInfo.version || "—")}</span>
+            </div>
+            <div class="muted tabular-text" style="font-size:0.78rem;">סכימת D1: מיגרציה #${escapeHtml(String(workerInfo.schemaVersion || "—"))}</div>
+            <div class="muted tabular-text" style="font-size:0.78rem;">גרסת תוכן קהילתי (sync_meta): #${escapeHtml(String(workerInfo.communityVersion || "—"))}</div>
+            <div class="muted tabular-text" style="font-size:0.74rem;">עדכון קהילה אחרון: ${escapeHtml(workerInfo.communityUpdatedAt ? formatNoteTime(workerInfo.communityUpdatedAt) : "—")}</div>
+          </div>
+          <div class="admin-version-card">
+            <div class="admin-version-card-head">
+              <strong>🚀 פריסת GitHub Pages</strong>
+              <span class="admin-version-tag" dir="ltr">${escapeHtml(latestDeploy ? latestDeploy.shortSha : "—")}</span>
+            </div>
+            <div class="muted tabular-text" style="font-size:0.78rem;">קומיט אחרון ב-main: <code dir="ltr">${escapeHtml(latestCommit ? latestCommit.shortSha : "—")}</code></div>
+            <div class="muted tabular-text" style="font-size:0.78rem;">פריסה אחרונה: ${escapeHtml(latestDeploy?.createdAt ? formatNoteTime(new Date(latestDeploy.createdAt).getTime()) : "—")}</div>
+            <div class="muted" style="font-size:0.74rem;"><a href="https://github.com/${GITHUB_REPO_SLUG}/deployments" target="_blank" rel="noopener">פתח היסטוריית פריסות ב-GitHub ↗</a></div>
+          </div>
+        </div>
+        <details class="admin-names-details">
+          <summary>📦 גרסאות קבצים טעונות (Cache Busters)</summary>
+          <div class="admin-tables-grid" style="margin-top:8px;">${assetsHtml}</div>
+        </details>
+      </section>
+
+      <section class="admin-section-card">
+        <div class="admin-section-head">
+          <h3>📝 יומן גרסאות מתועדות</h3>
+          <span class="muted tabular-text" style="font-size:0.78rem;">${filteredReleases.length} רשומות</span>
+        </div>
+        <div class="admin-feed-list">${releasesHtml}</div>
+      </section>
+
+      <section class="admin-section-card">
+        <div class="admin-section-head">
+          <h3>🔀 היסטוריית קומיטים אחרונה (<span dir="ltr">${GITHUB_REPO_SLUG}</span>)</h3>
+          <span class="muted tabular-text" style="font-size:0.78rem;">${filteredCommits.length} קומיטים</span>
+        </div>
+        <div class="admin-feed-list">${commitsHtml}</div>
+      </section>
+    `;
+
+    contentEl.querySelectorAll("[data-del-release]").forEach((btn) => {
+      btn.addEventListener("click", () => adminDeleteVersionRelease(btn.dataset.delRelease));
+    });
+  }
+
+  // ============================================================
   // User Feedback (Suggestions / Complaints) Modal
   // ============================================================
 
@@ -10366,7 +11420,6 @@
           locked: true,
         };
         saveUserIdentity();
-        renderIdentityBadge();
         return await submitFeedbackForm(null, true);
       }
       if (!res.ok || !data.ok) {
@@ -10792,6 +11845,10 @@
           }
         }
         const data = await res.json().catch(() => ({}));
+        if (res.status === 403 && data.blocked) {
+          handleUserBlockedState(true, data.blockedReason || data.error || "");
+          return false;
+        }
         if (res.status === 409 && data.conflict && !retried) {
           await registerIdentityPing(false);
           return await pushCloudProgress({ keepalive: useKeepalive, replace, retried: true });
@@ -10859,6 +11916,11 @@
         cache: "no-store",
       });
       if (res.status === 403) {
+        const errData = await res.json().catch(() => ({}));
+        if (errData.blocked) {
+          handleUserBlockedState(true, errData.blockedReason || errData.error || "");
+          return false;
+        }
         cloudProgressSyncState = "error";
         updateSyncStatusUI();
         if (!silent) showToast("⚠️ חיבור המכשיר בוטל ממכשיר אחר.");
@@ -10942,10 +12004,18 @@
         }
 
         if (data.progressStatus === 403) {
-          cloudProgressSyncState = "error";
-          updateSyncStatusUI();
-          if (!silent) showToast("⚠️ חיבור המכשיר בוטל ממכשיר אחר.");
+          if (data.blocked) {
+            handleUserBlockedState(true, data.blockedReason || data.progressError || "");
+          } else {
+            cloudProgressSyncState = "error";
+            updateSyncStatusUI();
+            if (!silent) showToast("⚠️ חיבור המכשיר בוטל ממכשיר אחר.");
+          }
         } else if (data.progressStatus === 200) {
+          handleUserBlockedState(false);
+          if (data.identity) {
+            applyServerIdentityUpdate(data.identity);
+          }
           if (data.progressChanged && data.progress) {
             applyMergedCloudProgress(data.progress, { rerender: true });
             if (Number(data.progressVersion) > 0) {
@@ -11310,6 +12380,10 @@
       "adminLoginModal",
       "adminQuestionModal",
       "adminDashboardModal",
+      "adminRenameUserModal",
+      "adminAddNameModal",
+      "adminBlockUserModal",
+      "adminAddReleaseModal",
       "lightboxModal",
     ];
     return modalIds.some((id) => {

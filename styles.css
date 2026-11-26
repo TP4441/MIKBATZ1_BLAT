@@ -3971,9 +3971,327 @@ kbd {
   color: #FFFFFF;
 }
 
+.admin-submodal-box {
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+  gap: 12px;
+}
+
+.admin-toolbar-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-inline-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-user-actions-cell {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-users-table tr.is-blocked-user td {
+  background: var(--danger-soft);
+}
+
+.admin-user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 999px;
+  margin-inline-start: 4px;
+}
+
+.admin-user-badge.blocked {
+  background: var(--danger);
+  color: #FFFFFF;
+}
+
+.admin-user-badge.renamed {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.admin-name-chip.custom {
+  border-style: dashed;
+  border-color: var(--primary-ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.admin-name-chip-del {
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  font-weight: 800;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.admin-traffic-content,
+.admin-versions-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.admin-section-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-section-head h3 {
+  font-size: 0.96rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.admin-source-pill {
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+}
+
+.admin-source-pill.ok {
+  background: var(--success-soft);
+  color: var(--success-ink);
+}
+
+.admin-source-pill.warn {
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+}
+
+.admin-quota-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.admin-quota-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-quota-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.admin-quota-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.admin-quota-pct {
+  font-size: 0.78rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-quota-values {
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-quota-bar-track {
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.admin-quota-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--success);
+  transition: width 0.25s ease;
+}
+
+.admin-quota-bar-fill.is-warn {
+  background: var(--warning);
+}
+
+.admin-quota-bar-fill.is-crit {
+  background: var(--danger);
+}
+
+.admin-endpoints-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-endpoint-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 190px) 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.8rem;
+}
+
+.admin-endpoint-name {
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-endpoint-bar-wrap {
+  height: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.admin-endpoint-bar-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 999px;
+}
+
+.admin-tables-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+.admin-table-stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.78rem;
+}
+
+.admin-table-stat code {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.admin-version-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.admin-version-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-version-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.admin-version-tag {
+  font-family: ui-monospace, monospace;
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+}
+
+.admin-commit-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-commit-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.admin-commit-sha {
+  font-family: ui-monospace, monospace;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  text-decoration: none;
+}
+
+.admin-commit-msg {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+
 @media (max-width: 720px) {
   .admin-dashboard-box,
-  .admin-question-box {
+  .admin-question-box,
+  .admin-submodal-box {
     max-height: 94vh;
     padding: 12px;
   }
@@ -3984,6 +4302,14 @@ kbd {
 
   .admin-opt-input {
     min-width: calc(100% - 36px);
+  }
+
+  .admin-endpoint-row {
+    grid-template-columns: 1fr auto;
+  }
+
+  .admin-endpoint-bar-wrap {
+    display: none;
   }
 }
 

@@ -12,6 +12,47 @@ const ONLINE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes active presence window (was
 const PRESENCE_TOUCH_INTERVAL_MS = 3 * 60 * 1000; // Throttle last_seen_at writes to once per 3 minutes (was 1m)
 const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
 
+const WORKER_VERSION = "2026.11.26.2";
+const WORKER_SCHEMA_VERSION = 7;
+const GITHUB_REPO_OWNER = "TP4441";
+const GITHUB_REPO_NAME = "MIKBATZ1_BLAT";
+const DEFAULT_CF_ACCOUNT_ID = "e612e80b92d2545210e838c4825c5ca0";
+const DEFAULT_D1_DATABASE_ID = "60baa58e-1b62-4a62-9d03-999465bbc05a";
+const TELEMETRY_FLUSH_INTERVAL_MS = 60 * 1000;
+const TELEMETRY_FLUSH_REQUESTS = 25;
+const EXTERNAL_METRICS_CACHE_TTL_MS = 60 * 1000;
+
+const CLOUDFLARE_FREE_QUOTAS = {
+  workerRequestsPerDay: 100000,
+  d1RowsReadPerDay: 5000000,
+  d1RowsWrittenPerDay: 100000,
+  d1StorageBytes: 500 * 1024 * 1024, // 500 MB per D1 database
+  workerCpuMsPerRequest: 10,
+};
+
+const GITHUB_FREE_QUOTAS = {
+  pagesSiteSizeKb: 1024 * 1024, // 1 GB
+  pagesBandwidthGbPerMonth: 100,
+  pagesBuildsPerHour: 10,
+};
+
+// In-memory per-isolate telemetry accumulator (flushed periodically to D1 to keep writes near-zero)
+let telemetryState = {
+  dayUtc: "",
+  requestsTotal: 0,
+  errors4xx: 0,
+  errors5xx: 0,
+  d1RowsRead: 0,
+  d1RowsWritten: 0,
+  endpoints: {},
+  lastFlushAt: 0,
+  flushing: null,
+};
+
+let githubMetricsCache = { fetchedAt: 0, data: null };
+let githubVersionsCache = { fetchedAt: 0, data: null };
+let cfAnalyticsCache = { fetchedAt: 0, data: null };
+
 // In-memory per-isolate caches (safe across isolates: community cache is keyed by authoritative D1 community_version)
 let communityCache = { version: 0, data: null };
 let communityCacheInFlight = { version: 0, promise: null };
@@ -218,6 +259,23 @@ function formatOverrideRow(row) {
   return obj;
 }
 
+async function getCustomIdentitiesList(db) {
+  try {
+    const { results } = await db
+      .prepare("SELECT name, emoji, category, created_at FROM custom_identities ORDER BY created_at ASC")
+      .all();
+    return (results || []).map((row) => ({
+      name: row.name,
+      emoji: row.emoji,
+      category: row.category,
+      createdAt: Number(row.created_at) || 0,
+      custom: true,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 async function getTakenNamesMap(db) {
   const { results } = await db.prepare("SELECT user_id, name FROM identities").all();
   const takenNames = {};
@@ -235,7 +293,10 @@ async function getOnlineUsersList(db, now = Date.now()) {
     .prepare(
       `SELECT user_id, name, emoji, category, last_seen_at
        FROM identities
-       WHERE last_seen_at >= ? AND name != ''
+       WHERE last_seen_at >= ?
+         AND name != ''
+         AND COALESCE(blocked, 0) = 0
+         AND user_id NOT IN (SELECT user_id FROM blocked_users)
        ORDER BY last_seen_at DESC`
     )
     .bind(cutoff)
@@ -831,6 +892,49 @@ async function verifyAgainstExistingIdentity(db, existing, userId, secretHash, t
   return { ok: false, status: 403, error: "Forbidden: clientSecret mismatch" };
 }
 
+async function getBlockedStatus(db, userId, existingIdentity = null) {
+  if (existingIdentity && Number(existingIdentity.blocked) === 1) {
+    return {
+      blocked: true,
+      blockedAt: Number(existingIdentity.blocked_at) || 0,
+      reason: String(existingIdentity.blocked_reason || "").trim(),
+    };
+  }
+  if (!userId) return { blocked: false, blockedAt: 0, reason: "" };
+  try {
+    const row = await db
+      .prepare("SELECT reason, blocked_at FROM blocked_users WHERE user_id = ?")
+      .bind(userId)
+      .first();
+    if (row) {
+      return {
+        blocked: true,
+        blockedAt: Number(row.blocked_at) || 0,
+        reason: String(row.reason || "").trim(),
+      };
+    }
+  } catch {
+    // Table might not exist yet before migration
+  }
+  return { blocked: false, blockedAt: 0, reason: "" };
+}
+
+function buildBlockedErrorResult(blockInfo) {
+  const reason = String(blockInfo?.reason || "").trim();
+  return {
+    ok: false,
+    status: 403,
+    blocked: true,
+    blockedReason: reason,
+    error: reason ? `המשתמש נחסם על ידי המנהל: ${reason}` : "המשתמש נחסם על ידי המנהל",
+  };
+}
+
+function authFailureResponse(auth) {
+  const extra = auth.blocked ? { blocked: true, blockedReason: auth.blockedReason || "" } : {};
+  return errorResponse(auth.error, auth.status, extra);
+}
+
 async function verifyExistingClientSecret(db, userId, clientSecret, options = {}) {
   const { touchPresence = true } = options || {};
   if (!userId || typeof userId !== "string" || userId.length > 80) {
@@ -843,10 +947,17 @@ async function verifyExistingClientSecret(db, userId, clientSecret, options = {}
   const secretHash = await sha256Hex(clientSecret);
   const existing = await db
     .prepare(
-      "SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at FROM identities WHERE user_id = ?"
+      `SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at,
+              blocked, blocked_at, blocked_reason, admin_renamed_at
+       FROM identities WHERE user_id = ?`
     )
     .bind(userId)
     .first();
+
+  const blockInfo = await getBlockedStatus(db, userId, existing);
+  if (blockInfo.blocked) {
+    return buildBlockedErrorResult(blockInfo);
+  }
 
   if (!existing) {
     return { ok: false, status: 404, error: "Identity not found" };
@@ -867,10 +978,17 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
   const secretHash = await sha256Hex(clientSecret);
   const existing = await db
     .prepare(
-      "SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at FROM identities WHERE user_id = ?"
+      `SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at,
+              blocked, blocked_at, blocked_reason, admin_renamed_at
+       FROM identities WHERE user_id = ?`
     )
     .bind(userId)
     .first();
+
+  const blockInfo = await getBlockedStatus(db, userId, existing);
+  if (blockInfo.blocked) {
+    return buildBlockedErrorResult(blockInfo);
+  }
 
   if (existing) {
     return verifyAgainstExistingIdentity(db, existing, userId, secretHash, touchPresence);
@@ -898,7 +1016,9 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
       .run();
     const created = await db
       .prepare(
-        "SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at FROM identities WHERE user_id = ?"
+        `SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at,
+                blocked, blocked_at, blocked_reason, admin_renamed_at
+         FROM identities WHERE user_id = ?`
       )
       .bind(userId)
       .first();
@@ -1096,10 +1216,11 @@ async function getCachedCommunityData(db, version) {
 
 async function handleBootstrap(env) {
   const now = Date.now();
-  const [communityVersion, takenNames, onlineUsers] = await Promise.all([
+  const [communityVersion, takenNames, onlineUsers, customIdentities] = await Promise.all([
     getCommunityVersion(env.DB),
     getTakenNamesMap(env.DB),
     getOnlineUsersList(env.DB, now),
+    getCustomIdentitiesList(env.DB),
   ]);
   const communityData = await getCachedCommunityData(env.DB, communityVersion);
 
@@ -1108,6 +1229,7 @@ async function handleBootstrap(env) {
     communityVersion,
     ...communityData,
     takenNames,
+    customIdentities,
     onlineUsers,
     serverTime: now,
   });
@@ -1167,7 +1289,13 @@ async function handlePoll(request, env) {
 
   if (hasAuthHeaders && auth) {
     if (!auth.ok) {
-      if (auth.status === 404) {
+      if (auth.blocked) {
+        payload.progressStatus = 403;
+        payload.blocked = true;
+        payload.blockedReason = auth.blockedReason || "";
+        payload.progressChanged = false;
+        payload.progressError = auth.error;
+      } else if (auth.status === 404) {
         payload.progressStatus = 200;
         payload.progressChanged = false;
         payload.progressVersion = 0;
@@ -1178,22 +1306,33 @@ async function handlePoll(request, env) {
         payload.progressChanged = false;
         payload.progressError = auth.error;
       }
-    } else if (!progressRow) {
-      payload.progressStatus = 200;
-      payload.progressChanged = false;
-      payload.progressVersion = 0;
-      payload.progressUpdatedAt = 0;
-      payload.hasServerProgress = false;
     } else {
-      const serverProgressVersion = Number(progressRow.version) || 1;
-      const progressChanged = serverProgressVersion !== clientProgressVersion;
-      payload.progressStatus = 200;
-      payload.progressChanged = progressChanged;
-      payload.progressVersion = serverProgressVersion;
-      payload.progressUpdatedAt = Number(progressRow.updated_at) || 0;
-      payload.hasServerProgress = true;
-      if (progressChanged) {
-        payload.progress = parseJsonSafe(progressRow.progress_json, {});
+      if (auth.identity) {
+        payload.identity = {
+          userId: auth.identity.user_id,
+          name: auth.identity.name,
+          emoji: auth.identity.emoji,
+          category: auth.identity.category,
+          adminRenamedAt: Number(auth.identity.admin_renamed_at) || 0,
+        };
+      }
+      if (!progressRow) {
+        payload.progressStatus = 200;
+        payload.progressChanged = false;
+        payload.progressVersion = 0;
+        payload.progressUpdatedAt = 0;
+        payload.hasServerProgress = false;
+      } else {
+        const serverProgressVersion = Number(progressRow.version) || 1;
+        const progressChanged = serverProgressVersion !== clientProgressVersion;
+        payload.progressStatus = 200;
+        payload.progressChanged = progressChanged;
+        payload.progressVersion = serverProgressVersion;
+        payload.progressUpdatedAt = Number(progressRow.updated_at) || 0;
+        payload.hasServerProgress = true;
+        if (progressChanged) {
+          payload.progress = parseJsonSafe(progressRow.progress_json, {});
+        }
       }
     }
   }
@@ -1233,7 +1372,9 @@ async function fetchLeaderboardBaseEntries(db) {
          GROUP BY user_id
        ) n
          ON i.user_id = n.user_id
-       WHERE i.name != ''`
+       WHERE i.name != ''
+         AND COALESCE(i.blocked, 0) = 0
+         AND i.user_id NOT IN (SELECT user_id FROM blocked_users)`
     )
     .all();
 
@@ -1339,9 +1480,22 @@ async function handleIdentityPing(request, env) {
 
   const secretHash = await sha256Hex(clientSecret);
   const existing = await env.DB
-    .prepare("SELECT user_id, name, emoji, category, client_secret_hash FROM identities WHERE user_id = ?")
+    .prepare(
+      `SELECT user_id, name, emoji, category, client_secret_hash,
+              blocked, blocked_at, blocked_reason, admin_renamed_at
+       FROM identities WHERE user_id = ?`
+    )
     .bind(userId)
     .first();
+
+  const blockInfo = await getBlockedStatus(env.DB, userId, existing);
+  if (blockInfo.blocked) {
+    const blockedRes = buildBlockedErrorResult(blockInfo);
+    return errorResponse(blockedRes.error, 403, {
+      blocked: true,
+      blockedReason: blockedRes.blockedReason,
+    });
+  }
 
   let matchedDeviceSecret = false;
   if (existing && existing.client_secret_hash && existing.client_secret_hash !== secretHash) {
@@ -1355,29 +1509,18 @@ async function handleIdentityPing(request, env) {
     matchedDeviceSecret = true;
   }
 
-  const conflictRow = await env.DB
-    .prepare("SELECT user_id FROM identities WHERE name = ? AND user_id != ?")
-    .bind(name, userId)
-    .first();
-
-  if (conflictRow) {
-    const takenNames = await getTakenNamesMap(env.DB);
-    return jsonResponse({ ok: false, conflict: true, takenNames }, 409);
-  }
-
   const now = Date.now();
-  if (existing) {
-    const profileChanged =
-      existing.name !== name ||
-      existing.emoji !== emoji ||
-      String(existing.category || "") !== category;
+  const isAdminRenamed = Boolean(existing && Number(existing.admin_renamed_at) > 0);
+  let effectiveIdentity = { userId, name, emoji, category, adminRenamedAt: 0 };
+
+  if (isAdminRenamed) {
     await env.DB
       .prepare(
         `UPDATE identities
-         SET name = ?, emoji = ?, category = ?, client_secret_hash = COALESCE(client_secret_hash, ?), last_seen_at = ?
+         SET client_secret_hash = COALESCE(client_secret_hash, ?), last_seen_at = ?
          WHERE user_id = ?`
       )
-      .bind(name, emoji, category, secretHash, now, userId)
+      .bind(secretHash, now, userId)
       .run();
     if (matchedDeviceSecret) {
       await env.DB
@@ -1385,22 +1528,67 @@ async function handleIdentityPing(request, env) {
         .bind(now, secretHash)
         .run();
     }
-    if (profileChanged) {
+    effectiveIdentity = {
+      userId: existing.user_id,
+      name: existing.name,
+      emoji: existing.emoji,
+      category: existing.category || "",
+      adminRenamedAt: Number(existing.admin_renamed_at) || 0,
+    };
+  } else {
+    const conflictRow = await env.DB
+      .prepare("SELECT user_id FROM identities WHERE name = ? AND user_id != ?")
+      .bind(name, userId)
+      .first();
+
+    if (conflictRow) {
+      const takenNames = await getTakenNamesMap(env.DB);
+      return jsonResponse({ ok: false, conflict: true, takenNames }, 409);
+    }
+
+    if (existing) {
+      const profileChanged =
+        existing.name !== name ||
+        existing.emoji !== emoji ||
+        String(existing.category || "") !== category;
+      await env.DB
+        .prepare(
+          `UPDATE identities
+           SET name = ?, emoji = ?, category = ?, client_secret_hash = COALESCE(client_secret_hash, ?), last_seen_at = ?
+           WHERE user_id = ?`
+        )
+        .bind(name, emoji, category, secretHash, now, userId)
+        .run();
+      if (matchedDeviceSecret) {
+        await env.DB
+          .prepare("UPDATE user_device_secrets SET last_seen_at = ? WHERE secret_hash = ?")
+          .bind(now, secretHash)
+          .run();
+      }
+      if (profileChanged) {
+        invalidateLeaderboardCache();
+      }
+    } else {
+      await env.DB
+        .prepare(
+          `INSERT INTO identities (user_id, name, emoji, category, client_secret_hash, first_seen_at, last_seen_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(userId, name, emoji, category, secretHash, now, now)
+        .run();
       invalidateLeaderboardCache();
     }
-  } else {
-    await env.DB
-      .prepare(
-        `INSERT INTO identities (user_id, name, emoji, category, client_secret_hash, first_seen_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(userId, name, emoji, category, secretHash, now, now)
-      .run();
-    invalidateLeaderboardCache();
   }
 
   const onlineUsers = await getOnlineUsersList(env.DB, now);
-  return jsonResponse({ ok: true, conflict: false, lastSeenAt: now, onlineUsers, serverTime: now });
+  return jsonResponse({
+    ok: true,
+    conflict: false,
+    identity: effectiveIdentity,
+    lastSeenAt: now,
+    onlineUsers,
+    serverTime: now,
+  });
 }
 
 async function handlePutNote(request, env, qId) {
@@ -1424,7 +1612,7 @@ async function handlePutNote(request, env, qId) {
       const takenNames = await getTakenNamesMap(env.DB);
       return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   const trimmed = text.trim();
@@ -1477,7 +1665,7 @@ async function handleDeleteNote(request, env, qId) {
   const clientSecret = String(body.clientSecret || request.headers.get("X-Client-Secret") || "");
 
   const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret);
-  if (!auth.ok) return errorResponse(auth.error, auth.status);
+  if (!auth.ok) return authFailureResponse(auth);
 
   // Prevent creating a bogus empty identity from deleting a non-existent note, or deleting someone else's
   const existingNote = await env.DB
@@ -1556,7 +1744,7 @@ async function handleCreateNoteReply(request, env, qId, noteUserId) {
       const takenNames = await getTakenNamesMap(env.DB);
       return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   const targetNote = await env.DB
@@ -1622,7 +1810,7 @@ async function handlePutNoteReply(request, env, replyId) {
   const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
 
   const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
-  if (!auth.ok) return errorResponse(auth.error, auth.status);
+  if (!auth.ok) return authFailureResponse(auth);
 
   const existing = await env.DB
     .prepare("SELECT reply_id, q_id, note_user_id, parent_reply_id, reply_to_author, user_id, created_at FROM note_replies WHERE reply_id = ?")
@@ -1670,7 +1858,7 @@ async function handleDeleteNoteReply(request, env, replyId) {
   const clientSecret = String(body.clientSecret || request.headers.get("X-Client-Secret") || "");
 
   const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
-  if (!auth.ok) return errorResponse(auth.error, auth.status);
+  if (!auth.ok) return authFailureResponse(auth);
 
   const existing = await env.DB
     .prepare("SELECT reply_id, q_id, note_user_id, user_id FROM note_replies WHERE reply_id = ?")
@@ -1713,7 +1901,7 @@ async function handlePutProblemFlag(request, env, qId, problemUserId) {
       const takenNames = await getTakenNamesMap(env.DB);
       return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   const targetProb = await env.DB
@@ -1753,7 +1941,7 @@ async function handleDeleteProblemFlag(request, env, qId, problemUserId) {
   const clientSecret = String(body.clientSecret || request.headers.get("X-Client-Secret") || "");
 
   const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret);
-  if (!auth.ok) return errorResponse(auth.error, auth.status);
+  if (!auth.ok) return authFailureResponse(auth);
 
   const now = Date.now();
   const delRes = await env.DB
@@ -1800,7 +1988,7 @@ async function handlePutProblem(request, env, qId) {
       const takenNames = await getTakenNamesMap(env.DB);
       return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   const updatedAt = Date.now();
@@ -1834,7 +2022,7 @@ async function handleDeleteProblem(request, env, qId) {
   const clientSecret = String(body.clientSecret || request.headers.get("X-Client-Secret") || "");
 
   const auth = await verifyOrBindClientSecret(env.DB, userId, clientSecret);
-  if (!auth.ok) return errorResponse(auth.error, auth.status);
+  if (!auth.ok) return authFailureResponse(auth);
 
   const existing = await env.DB
     .prepare("SELECT user_id FROM community_problems WHERE q_id = ? AND user_id = ?")
@@ -1899,7 +2087,7 @@ async function handleGetProgress(request, env) {
     if (auth.status === 404) {
       return jsonResponse({ ok: true, progress: null, updatedAt: 0, version: 1 });
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   const row = await env.DB
@@ -1940,7 +2128,7 @@ async function handlePutProgress(request, env) {
       const takenNames = await getTakenNamesMap(env.DB);
       return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   const existingRow = await env.DB
@@ -2008,7 +2196,7 @@ async function handleSyncRegisterCode(request, env) {
       const takenNames = await getTakenNamesMap(env.DB);
       return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   if (!auth.identity) {
@@ -2053,7 +2241,7 @@ async function handleSyncRotateCode(request, env) {
   }
 
   const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
-  if (!auth.ok) return errorResponse(auth.error, auth.status);
+  if (!auth.ok) return authFailureResponse(auth);
 
   const newHash = await sha256Hex(normalizedCode);
   const collision = await env.DB
@@ -2081,7 +2269,7 @@ async function handleSyncRevokeOtherDevices(request, env) {
   const clientSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
 
   const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret);
-  if (!auth.ok) return errorResponse(auth.error, auth.status);
+  if (!auth.ok) return authFailureResponse(auth);
 
   const now = Date.now();
   await env.DB.batch([
@@ -2124,7 +2312,7 @@ async function handleSyncPreview(request, env) {
 
   const syncCodeHash = await sha256Hex(normalizedCode);
   const target = await env.DB
-    .prepare("SELECT user_id, name, emoji, category FROM identities WHERE sync_code_hash = ?")
+    .prepare("SELECT user_id, name, emoji, category, blocked, blocked_at, blocked_reason FROM identities WHERE sync_code_hash = ?")
     .bind(syncCodeHash)
     .first();
 
@@ -2136,6 +2324,11 @@ async function handleSyncPreview(request, env) {
       });
     }
     return errorResponse("קוד סנכרון לא נמצא", 404);
+  }
+
+  const targetBlock = await getBlockedStatus(env.DB, target.user_id, target);
+  if (targetBlock.blocked) {
+    return authFailureResponse(buildBlockedErrorResult(targetBlock));
   }
 
   await clearSyncRateLimit(env.DB, ipHash);
@@ -2199,7 +2392,7 @@ async function handleSyncLink(request, env) {
 
   const syncCodeHash = await sha256Hex(normalizedCode);
   const target = await env.DB
-    .prepare("SELECT user_id, name, emoji, category FROM identities WHERE sync_code_hash = ?")
+    .prepare("SELECT user_id, name, emoji, category, blocked, blocked_at, blocked_reason FROM identities WHERE sync_code_hash = ?")
     .bind(syncCodeHash)
     .first();
 
@@ -2211,6 +2404,11 @@ async function handleSyncLink(request, env) {
       });
     }
     return errorResponse("קוד סנכרון לא נמצא", 404);
+  }
+
+  const targetBlock = await getBlockedStatus(env.DB, target.user_id, target);
+  if (targetBlock.blocked) {
+    return authFailureResponse(buildBlockedErrorResult(targetBlock));
   }
 
   await clearSyncRateLimit(env.DB, ipHash);
@@ -2489,29 +2687,46 @@ async function handleAdminLogin(request, env) {
 }
 
 async function handleAdminUsers(env) {
-  const { results } = await env.DB
-    .prepare(
-      `SELECT
-         i.user_id AS userId,
-         i.name,
-         i.emoji,
-         i.category,
-         i.first_seen_at AS firstSeenAt,
-         i.last_seen_at AS lastSeenAt,
-         CASE WHEN i.sync_code_hash IS NOT NULL AND i.sync_code_hash != '' THEN 1 ELSE 0 END AS hasSyncCode,
-         up.progress_json AS progressJson,
-         COALESCE(n.cnt, 0) AS notesCount,
-         COALESCE(p.cnt, 0) AS problemsCount
-       FROM identities i
-       LEFT JOIN user_progress up
-         ON i.user_id = up.user_id
-       LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_notes WHERE TRIM(text) != '' GROUP BY user_id) n
-         ON i.user_id = n.user_id
-       LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_problems GROUP BY user_id) p
-         ON i.user_id = p.user_id
-       ORDER BY i.last_seen_at DESC`
-    )
-    .all();
+  const [{ results }, customIdentities, blockedOrphansRes] = await Promise.all([
+    env.DB
+      .prepare(
+        `SELECT
+           i.user_id AS userId,
+           i.name,
+           i.emoji,
+           i.category,
+           i.first_seen_at AS firstSeenAt,
+           i.last_seen_at AS lastSeenAt,
+           COALESCE(i.blocked, 0) AS blocked,
+           COALESCE(i.blocked_at, 0) AS blockedAt,
+           COALESCE(i.blocked_reason, '') AS blockedReason,
+           COALESCE(i.admin_renamed_at, 0) AS adminRenamedAt,
+           CASE WHEN i.sync_code_hash IS NOT NULL AND i.sync_code_hash != '' THEN 1 ELSE 0 END AS hasSyncCode,
+           up.progress_json AS progressJson,
+           COALESCE(n.cnt, 0) AS notesCount,
+           COALESCE(p.cnt, 0) AS problemsCount
+         FROM identities i
+         LEFT JOIN user_progress up
+           ON i.user_id = up.user_id
+         LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_notes WHERE TRIM(text) != '' GROUP BY user_id) n
+           ON i.user_id = n.user_id
+         LEFT JOIN (SELECT user_id, COUNT(*) AS cnt FROM community_problems GROUP BY user_id) p
+           ON i.user_id = p.user_id
+         ORDER BY i.last_seen_at DESC`
+      )
+      .all(),
+    getCustomIdentitiesList(env.DB),
+    env.DB
+      .prepare(
+        `SELECT b.user_id AS userId, b.name, b.reason, b.blocked_at AS blockedAt
+         FROM blocked_users b
+         LEFT JOIN identities i ON b.user_id = i.user_id
+         WHERE i.user_id IS NULL
+         ORDER BY b.blocked_at DESC`
+      )
+      .all()
+      .catch(() => ({ results: [] })),
+  ]);
 
   const users = (results || []).map((r) => {
     const parsed = r.progressJson ? parseJsonSafe(r.progressJson, null) : null;
@@ -2525,6 +2740,10 @@ async function handleAdminUsers(env) {
       category: r.category,
       firstSeenAt: r.firstSeenAt,
       lastSeenAt: r.lastSeenAt,
+      blocked: Boolean(r.blocked),
+      blockedAt: Number(r.blockedAt) || 0,
+      blockedReason: r.blockedReason || "",
+      adminRenamedAt: Number(r.adminRenamedAt) || 0,
       notesCount: Number(r.notesCount) || 0,
       problemsCount: Number(r.problemsCount) || 0,
       hasSyncCode: Boolean(r.hasSyncCode),
@@ -2532,7 +2751,252 @@ async function handleAdminUsers(env) {
     };
   });
 
-  return jsonResponse({ ok: true, users });
+  for (const b of blockedOrphansRes?.results || []) {
+    users.push({
+      userId: b.userId,
+      name: b.name || b.userId,
+      emoji: "🚫",
+      category: "חסום",
+      firstSeenAt: 0,
+      lastSeenAt: Number(b.blockedAt) || 0,
+      blocked: true,
+      blockedAt: Number(b.blockedAt) || 0,
+      blockedReason: b.reason || "",
+      adminRenamedAt: 0,
+      notesCount: 0,
+      problemsCount: 0,
+      hasSyncCode: false,
+      solvedCount: 0,
+      orphanBlocked: true,
+    });
+  }
+
+  return jsonResponse({ ok: true, users, customIdentities });
+}
+
+async function handleAdminRenameUser(request, env, userId) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const newName = String(body.name || "").trim();
+  const hasEmoji = body.emoji !== undefined;
+  const hasCategory = body.category !== undefined;
+
+  if (!newName || newName.length > 64) {
+    return errorResponse("יש להזין שם תקין (עד 64 תווים)", 400);
+  }
+
+  const existing = await env.DB
+    .prepare("SELECT user_id, name, emoji, category FROM identities WHERE user_id = ?")
+    .bind(userId)
+    .first();
+  if (!existing) {
+    return errorResponse("המשתמש לא נמצא", 404);
+  }
+
+  const conflict = await env.DB
+    .prepare("SELECT user_id FROM identities WHERE name = ? AND user_id != ?")
+    .bind(newName, userId)
+    .first();
+  if (conflict) {
+    return errorResponse(`הכינוי "${newName}" כבר תפוס על ידי משתמש אחר`, 409, { conflict: true });
+  }
+
+  const newEmoji = hasEmoji ? String(body.emoji || "").trim() || existing.emoji : existing.emoji;
+  const newCategory = hasCategory ? String(body.category || "").trim() : existing.category || "";
+  if (newEmoji.length > 16 || newCategory.length > 48) {
+    return errorResponse("אורך אימוג׳י או קטגוריה חורג מהמותר", 400);
+  }
+
+  const now = Date.now();
+  const batchRes = await env.DB.batch([
+    env.DB
+      .prepare(
+        `UPDATE identities
+         SET name = ?, emoji = ?, category = ?, admin_renamed_at = ?
+         WHERE user_id = ?`
+      )
+      .bind(newName, newEmoji, newCategory, now, userId),
+    env.DB
+      .prepare("UPDATE community_notes SET author = ?, emoji = ?, category = ? WHERE user_id = ?")
+      .bind(newName, newEmoji, newCategory, userId),
+    env.DB
+      .prepare("UPDATE note_replies SET author = ?, emoji = ?, category = ? WHERE user_id = ?")
+      .bind(newName, newEmoji, newCategory, userId),
+    env.DB
+      .prepare("UPDATE community_problems SET author = ?, emoji = ?, category = ? WHERE user_id = ?")
+      .bind(newName, newEmoji, newCategory, userId),
+    env.DB
+      .prepare("UPDATE problem_flags SET author = ?, emoji = ?, category = ? WHERE flagger_user_id = ?")
+      .bind(newName, newEmoji, newCategory, userId),
+    env.DB
+      .prepare("UPDATE user_feedback SET author = ?, emoji = ?, category = ? WHERE user_id = ?")
+      .bind(newName, newEmoji, newCategory, userId),
+  ]);
+
+  const communityChanges =
+    (batchRes[1]?.meta?.changes ?? 0) +
+    (batchRes[2]?.meta?.changes ?? 0) +
+    (batchRes[3]?.meta?.changes ?? 0) +
+    (batchRes[4]?.meta?.changes ?? 0);
+
+  if (communityChanges > 0) {
+    await bumpCommunityVersion(env.DB, now);
+  }
+
+  const progRow = await env.DB
+    .prepare("SELECT progress_json, version FROM user_progress WHERE user_id = ?")
+    .bind(userId)
+    .first();
+  if (progRow) {
+    const parsed = parseJsonSafe(progRow.progress_json, null);
+    if (parsed && typeof parsed === "object") {
+      parsed.identity = {
+        userId,
+        name: newName,
+        emoji: newEmoji,
+        category: newCategory,
+      };
+      const serialized = JSON.stringify(parsed);
+      if (serialized.length <= MAX_PROGRESS_JSON_BYTES) {
+        const nextVersion = (Number(progRow.version) || 1) + 1;
+        await env.DB
+          .prepare("UPDATE user_progress SET progress_json = ?, updated_at = ?, version = ? WHERE user_id = ?")
+          .bind(serialized, now, nextVersion, userId)
+          .run();
+      }
+    }
+  }
+
+  invalidateLeaderboardCache();
+
+  return jsonResponse({
+    ok: true,
+    user: {
+      userId,
+      name: newName,
+      emoji: newEmoji,
+      category: newCategory,
+      adminRenamedAt: now,
+    },
+  });
+}
+
+async function handleAdminBlockUser(request, env, userId) {
+  const body = await readJsonBody(request);
+  if (body === null) return errorResponse("Invalid JSON", 400);
+
+  const reason = String(body.reason || "").trim().slice(0, 200);
+  const purgeContent = Boolean(body.purgeContent);
+  const now = Date.now();
+
+  const existing = await env.DB
+    .prepare("SELECT user_id, name FROM identities WHERE user_id = ?")
+    .bind(userId)
+    .first();
+
+  const stmts = [
+    env.DB
+      .prepare(
+        `INSERT INTO blocked_users (user_id, name, reason, blocked_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           name = excluded.name,
+           reason = excluded.reason,
+           blocked_at = excluded.blocked_at`
+      )
+      .bind(userId, existing?.name || "", reason, now),
+  ];
+
+  if (existing) {
+    stmts.push(
+      env.DB
+        .prepare("UPDATE identities SET blocked = 1, blocked_at = ?, blocked_reason = ? WHERE user_id = ?")
+        .bind(now, reason, userId)
+    );
+  }
+
+  if (purgeContent) {
+    stmts.push(
+      env.DB.prepare("DELETE FROM note_replies WHERE user_id = ? OR note_user_id = ?").bind(userId, userId),
+      env.DB.prepare("DELETE FROM community_notes WHERE user_id = ?").bind(userId),
+      env.DB.prepare("DELETE FROM problem_flags WHERE flagger_user_id = ? OR problem_user_id = ?").bind(userId, userId),
+      env.DB.prepare("DELETE FROM community_problems WHERE user_id = ?").bind(userId),
+      env.DB.prepare("DELETE FROM user_feedback WHERE user_id = ?").bind(userId)
+    );
+  }
+
+  const res = await env.DB.batch(stmts);
+  if (purgeContent) {
+    const contentChanged = res.slice(existing ? 2 : 1).some((r) => (r?.meta?.changes ?? 0) > 0);
+    if (contentChanged) {
+      await bumpCommunityVersion(env.DB, now);
+    }
+  }
+  invalidateLeaderboardCache();
+
+  return jsonResponse({
+    ok: true,
+    userId,
+    blocked: true,
+    blockedAt: now,
+    blockedReason: reason,
+    purgedContent: purgeContent,
+  });
+}
+
+async function handleAdminUnblockUser(env, userId) {
+  await env.DB.batch([
+    env.DB
+      .prepare("UPDATE identities SET blocked = 0, blocked_at = 0, blocked_reason = '' WHERE user_id = ?")
+      .bind(userId),
+    env.DB.prepare("DELETE FROM blocked_users WHERE user_id = ?").bind(userId),
+  ]);
+  invalidateLeaderboardCache();
+  return jsonResponse({ ok: true, userId, blocked: false });
+}
+
+async function handleAdminAddPoolName(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const name = String(body.name || "").trim();
+  const emoji = String(body.emoji || "✨").trim();
+  const category = String(body.category || "מותאם אישית").trim();
+
+  if (!name || name.length > 48) {
+    return errorResponse("יש להזין שם תקין למאגר (עד 48 תווים)", 400);
+  }
+  if (!emoji || emoji.length > 16) {
+    return errorResponse("אימוג׳י לא תקין", 400);
+  }
+  if (!category || category.length > 40) {
+    return errorResponse("קטגוריה לא תקינה", 400);
+  }
+
+  const existing = await env.DB
+    .prepare("SELECT name FROM custom_identities WHERE name = ?")
+    .bind(name)
+    .first();
+  if (existing) {
+    return errorResponse(`הכינוי "${name}" כבר קיים במאגר המותאם אישית`, 409);
+  }
+
+  const now = Date.now();
+  await env.DB
+    .prepare("INSERT INTO custom_identities (name, emoji, category, created_at) VALUES (?, ?, ?, ?)")
+    .bind(name, emoji, category, now)
+    .run();
+
+  return jsonResponse({
+    ok: true,
+    entry: { name, emoji, category, createdAt: now, custom: true },
+  });
+}
+
+async function handleAdminDeletePoolName(env, name) {
+  const delRes = await env.DB.prepare("DELETE FROM custom_identities WHERE name = ?").bind(name).run();
+  return jsonResponse({ ok: true, name, deleted: (delRes?.meta?.changes ?? 0) > 0 });
 }
 
 async function handlePostFeedback(request, env) {
@@ -2561,7 +3025,7 @@ async function handlePostFeedback(request, env) {
       const takenNames = await getTakenNamesMap(env.DB);
       return jsonResponse({ ok: false, conflict: true, takenNames, error: auth.error }, 409);
     }
-    return errorResponse(auth.error, auth.status);
+    return authFailureResponse(auth);
   }
 
   const now = Date.now();
@@ -2816,8 +3280,638 @@ async function handleAdminImportLegacy(request, env) {
   });
 }
 
+function getUtcDayKey(ts = Date.now()) {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+function classifyEndpointBucket(path) {
+  if (path === "/api/poll") return "/api/poll";
+  if (path === "/api/bootstrap") return "/api/bootstrap";
+  if (path === "/api/progress") return "/api/progress";
+  if (path === "/api/online") return "/api/online";
+  if (path === "/api/leaderboard") return "/api/leaderboard";
+  if (path === "/api/identities/ping") return "/api/identities/ping";
+  if (path === "/api/feedback") return "/api/feedback";
+  if (path === "/api/health") return "/api/health";
+  if (path.startsWith("/api/sync/")) return "/api/sync/*";
+  if (path.startsWith("/api/notes/")) return "/api/notes/*";
+  if (path.startsWith("/api/note-replies/")) return "/api/note-replies/*";
+  if (path.startsWith("/api/problems/")) return "/api/problems/*";
+  if (path.startsWith("/api/problem-flags/")) return "/api/problem-flags/*";
+  if (path.startsWith("/api/admin/")) return "/api/admin/*";
+  return "other";
+}
+
+function wrapTrackedStatement(rawStmt) {
+  const wrapResult = (promise) =>
+    promise.then((res) => {
+      if (res && typeof res === "object" && res.meta) {
+        telemetryState.d1RowsRead += Number(res.meta.rows_read) || 0;
+        telemetryState.d1RowsWritten += Number(res.meta.rows_written) || 0;
+      }
+      return res;
+    });
+  return {
+    _raw: rawStmt,
+    bind(...args) {
+      return wrapTrackedStatement(rawStmt.bind(...args));
+    },
+    first(...args) {
+      return rawStmt.first(...args);
+    },
+    all(...args) {
+      return wrapResult(rawStmt.all(...args));
+    },
+    run(...args) {
+      return wrapResult(rawStmt.run(...args));
+    },
+    raw(...args) {
+      return rawStmt.raw(...args);
+    },
+  };
+}
+
+function wrapTrackedDb(rawDb) {
+  if (!rawDb) return rawDb;
+  return {
+    prepare(sql) {
+      return wrapTrackedStatement(rawDb.prepare(sql));
+    },
+    async batch(stmts) {
+      const rawStmts = stmts.map((s) => (s && s._raw ? s._raw : s));
+      const results = await rawDb.batch(rawStmts);
+      if (Array.isArray(results)) {
+        for (const r of results) {
+          if (r && typeof r === "object" && r.meta) {
+            telemetryState.d1RowsRead += Number(r.meta.rows_read) || 0;
+            telemetryState.d1RowsWritten += Number(r.meta.rows_written) || 0;
+          }
+        }
+      }
+      return results;
+    },
+    exec(sql) {
+      return rawDb.exec(sql);
+    },
+    dump() {
+      return rawDb.dump();
+    },
+  };
+}
+
+function recordTelemetry(path, status) {
+  const now = Date.now();
+  const day = getUtcDayKey(now);
+  if (telemetryState.dayUtc && telemetryState.dayUtc !== day) {
+    // Keep current counters for next flush under the previous day or roll over cleanly
+    telemetryState.dayUtc = day;
+  } else if (!telemetryState.dayUtc) {
+    telemetryState.dayUtc = day;
+  }
+  telemetryState.requestsTotal += 1;
+  if (status >= 400 && status < 500) telemetryState.errors4xx += 1;
+  else if (status >= 500) telemetryState.errors5xx += 1;
+
+  const bucket = classifyEndpointBucket(path);
+  telemetryState.endpoints[bucket] = (telemetryState.endpoints[bucket] || 0) + 1;
+}
+
+async function flushTelemetry(rawDb, force = false) {
+  if (!rawDb) return;
+  const now = Date.now();
+  const hasPending =
+    telemetryState.requestsTotal > 0 ||
+    telemetryState.d1RowsRead > 0 ||
+    telemetryState.d1RowsWritten > 0;
+  if (!hasPending) return;
+
+  if (
+    !force &&
+    telemetryState.requestsTotal < TELEMETRY_FLUSH_REQUESTS &&
+    now - telemetryState.lastFlushAt < TELEMETRY_FLUSH_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  if (telemetryState.flushing) {
+    if (force) await telemetryState.flushing.catch(() => {});
+    return;
+  }
+
+  const dayUtc = telemetryState.dayUtc || getUtcDayKey(now);
+  const deltaReq = telemetryState.requestsTotal;
+  const delta4xx = telemetryState.errors4xx;
+  const delta5xx = telemetryState.errors5xx;
+  const deltaRead = telemetryState.d1RowsRead;
+  const deltaWrite = telemetryState.d1RowsWritten;
+  const deltaEndpoints = { ...telemetryState.endpoints };
+
+  // Reset synchronously before await so concurrent requests aren't lost or double-counted
+  telemetryState.requestsTotal = 0;
+  telemetryState.errors4xx = 0;
+  telemetryState.errors5xx = 0;
+  telemetryState.d1RowsRead = 0;
+  telemetryState.d1RowsWritten = 0;
+  telemetryState.endpoints = {};
+  telemetryState.lastFlushAt = now;
+
+  const doFlush = (async () => {
+    try {
+      const existing = await rawDb
+        .prepare("SELECT endpoints_json FROM telemetry_daily WHERE day_utc = ?")
+        .bind(dayUtc)
+        .first();
+      const mergedEndpoints = parseJsonSafe(existing?.endpoints_json, {});
+      for (const [k, v] of Object.entries(deltaEndpoints)) {
+        mergedEndpoints[k] = (Number(mergedEndpoints[k]) || 0) + (Number(v) || 0);
+      }
+      await rawDb
+        .prepare(
+          `INSERT INTO telemetry_daily
+             (day_utc, requests_total, errors_4xx, errors_5xx, d1_rows_read, d1_rows_written, endpoints_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(day_utc) DO UPDATE SET
+             requests_total = requests_total + excluded.requests_total,
+             errors_4xx = errors_4xx + excluded.errors_4xx,
+             errors_5xx = errors_5xx + excluded.errors_5xx,
+             d1_rows_read = d1_rows_read + excluded.d1_rows_read,
+             d1_rows_written = d1_rows_written + excluded.d1_rows_written,
+             endpoints_json = excluded.endpoints_json,
+             updated_at = excluded.updated_at`
+        )
+        .bind(dayUtc, deltaReq, delta4xx, delta5xx, deltaRead, deltaWrite, JSON.stringify(mergedEndpoints), now)
+        .run();
+    } catch {
+      // Never fail user requests due to telemetry persistence
+    }
+  })();
+
+  telemetryState.flushing = doFlush.finally(() => {
+    telemetryState.flushing = null;
+  });
+  await telemetryState.flushing;
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    const data = await res.json().catch(() => null);
+    return { ok: res.ok, status: res.status, headers: res.headers, data };
+  } catch (err) {
+    return { ok: false, status: 0, headers: new Headers(), data: null, error: err?.message || "Fetch failed" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchGitHubMetrics(env, forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && githubMetricsCache.data && now - githubMetricsCache.fetchedAt < EXTERNAL_METRICS_CACHE_TTL_MS) {
+    return githubMetricsCache.data;
+  }
+
+  const headers = {
+    "User-Agent": "mikbatz1-admin-dashboard",
+    Accept: "application/vnd.github+json",
+  };
+  const hasToken = Boolean(env.GITHUB_TOKEN && String(env.GITHUB_TOKEN).trim());
+  if (hasToken) {
+    headers.Authorization = `Bearer ${String(env.GITHUB_TOKEN).trim()}`;
+  }
+
+  const base = `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}`;
+  const reqs = [
+    fetchJsonWithTimeout(base, { headers }),
+    fetchJsonWithTimeout(`${base}/deployments?per_page=5`, { headers }),
+  ];
+  if (hasToken) {
+    reqs.push(
+      fetchJsonWithTimeout(`${base}/traffic/views`, { headers }),
+      fetchJsonWithTimeout(`${base}/traffic/clones`, { headers }),
+      fetchJsonWithTimeout(`${base}/pages`, { headers })
+    );
+  }
+
+  const [repoRes, depRes, viewsRes, clonesRes, pagesRes] = await Promise.all(reqs);
+
+  const rlLimit = Number(repoRes.headers.get("x-ratelimit-limit")) || (hasToken ? 5000 : 60);
+  const rlRemaining = repoRes.headers.has("x-ratelimit-remaining")
+    ? Number(repoRes.headers.get("x-ratelimit-remaining"))
+    : null;
+  const rlResetSec = Number(repoRes.headers.get("x-ratelimit-reset")) || 0;
+
+  const repo = repoRes.ok && repoRes.data
+    ? {
+        fullName: repoRes.data.full_name,
+        private: Boolean(repoRes.data.private),
+        sizeKb: Number(repoRes.data.size) || 0,
+        stars: Number(repoRes.data.stargazers_count) || 0,
+        forks: Number(repoRes.data.forks_count) || 0,
+        openIssues: Number(repoRes.data.open_issues_count) || 0,
+        defaultBranch: repoRes.data.default_branch || "main",
+        pushedAt: repoRes.data.pushed_at || null,
+        updatedAt: repoRes.data.updated_at || null,
+        hasPages: Boolean(repoRes.data.has_pages),
+        htmlUrl: repoRes.data.html_url || `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}`,
+      }
+    : null;
+
+  const deployments = depRes?.ok && Array.isArray(depRes.data)
+    ? depRes.data.map((d) => ({
+        id: d.id,
+        environment: d.environment,
+        sha: d.sha,
+        shortSha: String(d.sha || "").slice(0, 7),
+        createdAt: d.created_at,
+        creator: d.creator?.login || "",
+      }))
+    : [];
+
+  const result = {
+    ok: Boolean(repo),
+    tokenConfigured: hasToken,
+    error: repoRes.ok ? null : repoRes.error || `GitHub HTTP ${repoRes.status}`,
+    rateLimit: {
+      limit: rlLimit,
+      remaining: rlRemaining,
+      resetAt: rlResetSec ? rlResetSec * 1000 : 0,
+    },
+    repo,
+    deployments,
+    traffic: hasToken
+      ? {
+          views14d: viewsRes?.ok ? viewsRes.data : null,
+          clones14d: clonesRes?.ok ? clonesRes.data : null,
+          pages: pagesRes?.ok ? pagesRes.data : null,
+        }
+      : null,
+    quotas: GITHUB_FREE_QUOTAS,
+    fetchedAt: now,
+  };
+
+  if (repo) {
+    githubMetricsCache = { fetchedAt: now, data: result };
+  }
+  return result;
+}
+
+async function fetchCloudflareOfficialAnalytics(env, forceRefresh = false) {
+  const token = env.CF_API_TOKEN ? String(env.CF_API_TOKEN).trim() : "";
+  if (!token) {
+    return { configured: false, available: false, data: null };
+  }
+  const now = Date.now();
+  if (!forceRefresh && cfAnalyticsCache.data && now - cfAnalyticsCache.fetchedAt < EXTERNAL_METRICS_CACHE_TTL_MS) {
+    return cfAnalyticsCache.data;
+  }
+
+  const accountId = String(env.CF_ACCOUNT_ID || DEFAULT_CF_ACCOUNT_ID).trim();
+  const dbId = String(env.CF_D1_DATABASE_ID || DEFAULT_D1_DATABASE_ID).trim();
+  const dayStartIso = `${getUtcDayKey(now)}T00:00:00Z`;
+  const dayEndIso = new Date(now).toISOString();
+  const dayDate = getUtcDayKey(now);
+
+  const query = `
+    query AdminMetrics($accountTag: string!, $since: Time!, $until: Time!, $date: Date!, $dbId: string!) {
+      viewer {
+        accounts(filter: { accountTag: $accountTag }) {
+          workersInvocationsAdaptive(limit: 100, filter: { datetime_geq: $since, datetime_leq: $until }) {
+            sum { requests errors subrequests }
+            quantiles { cpuTimeP50 cpuTimeP99 }
+          }
+          d1AnalyticsAdaptiveGroups(limit: 100, filter: { date_geq: $date, date_leq: $date, databaseId: $dbId }) {
+            sum { readQueries writeQueries rowsRead rowsWritten }
+          }
+          d1StorageAdaptiveGroups(limit: 10, filter: { date_geq: $date, date_leq: $date, databaseId: $dbId }) {
+            max { databaseSizeBytes }
+          }
+        }
+      }
+    }
+  `;
+
+  const res = await fetchJsonWithTimeout("https://api.cloudflare.com/client/v4/graphql", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      variables: { accountTag: accountId, since: dayStartIso, until: dayEndIso, date: dayDate, dbId },
+    }),
+  });
+
+  const acct = res.data?.data?.viewer?.accounts?.[0];
+  if (!res.ok || !acct || (Array.isArray(res.data?.errors) && res.data.errors.length > 0)) {
+    return {
+      configured: true,
+      available: false,
+      error: res.data?.errors?.[0]?.message || res.error || `Cloudflare HTTP ${res.status}`,
+      data: null,
+    };
+  }
+
+  const workerGroups = acct.workersInvocationsAdaptive || [];
+  const d1Groups = acct.d1AnalyticsAdaptiveGroups || [];
+  const d1Storage = acct.d1StorageAdaptiveGroups || [];
+
+  const sumReducer = (arr, keys) =>
+    arr.reduce((acc, g) => {
+      for (const k of keys) acc[k] = (acc[k] || 0) + (Number(g?.sum?.[k]) || 0);
+      return acc;
+    }, {});
+
+  const workerSum = sumReducer(workerGroups, ["requests", "errors", "subrequests"]);
+  const d1Sum = sumReducer(d1Groups, ["readQueries", "writeQueries", "rowsRead", "rowsWritten"]);
+  const dbSizeBytes = d1Storage.reduce((mx, g) => Math.max(mx, Number(g?.max?.databaseSizeBytes) || 0), 0);
+
+  const out = {
+    configured: true,
+    available: true,
+    fetchedAt: now,
+    data: {
+      workerRequestsToday: workerSum.requests || 0,
+      workerErrorsToday: workerSum.errors || 0,
+      workerSubrequestsToday: workerSum.subrequests || 0,
+      d1ReadQueriesToday: d1Sum.readQueries || 0,
+      d1WriteQueriesToday: d1Sum.writeQueries || 0,
+      d1RowsReadToday: d1Sum.rowsRead || 0,
+      d1RowsWrittenToday: d1Sum.rowsWritten || 0,
+      d1StorageBytes: dbSizeBytes,
+    },
+  };
+  cfAnalyticsCache = { fetchedAt: now, data: out };
+  return out;
+}
+
+async function getD1StorageAndCounts(rawDb) {
+  const tableNames = [
+    "identities",
+    "user_progress",
+    "community_notes",
+    "note_replies",
+    "community_problems",
+    "problem_flags",
+    "question_overrides",
+    "user_feedback",
+    "user_device_secrets",
+    "custom_identities",
+    "blocked_users",
+    "version_releases",
+    "telemetry_daily",
+  ];
+
+  const counts = {};
+  await Promise.all(
+    tableNames.map(async (tbl) => {
+      try {
+        const row = await rawDb.prepare(`SELECT COUNT(*) AS cnt FROM ${tbl}`).first();
+        counts[tbl] = Number(row?.cnt) || 0;
+      } catch {
+        counts[tbl] = 0;
+      }
+    })
+  );
+
+  let dbSizeBytes = 0;
+  try {
+    const [pageCountRow, pageSizeRow] = await Promise.all([
+      rawDb.prepare("PRAGMA page_count").first(),
+      rawDb.prepare("PRAGMA page_size").first(),
+    ]);
+    const pageCount = Number(pageCountRow?.page_count) || 0;
+    const pageSize = Number(pageSizeRow?.page_size) || 4096;
+    dbSizeBytes = pageCount * pageSize;
+  } catch {
+    dbSizeBytes = 0;
+  }
+
+  let progressBytes = 0;
+  try {
+    const row = await rawDb.prepare("SELECT COALESCE(SUM(LENGTH(progress_json)), 0) AS totalBytes FROM user_progress").first();
+    progressBytes = Number(row?.totalBytes) || 0;
+  } catch {
+    progressBytes = 0;
+  }
+
+  if (!dbSizeBytes && progressBytes > 0) {
+    dbSizeBytes = progressBytes;
+  }
+
+  return { dbSizeBytes, progressBytes, tableCounts: counts };
+}
+
+async function handleAdminMetrics(request, env, rawDb) {
+  const url = new URL(request.url);
+  const forceRefresh = url.searchParams.get("refresh") === "1";
+
+  await flushTelemetry(rawDb, true);
+
+  const todayUtc = getUtcDayKey();
+  const [dailyRes, storageStats, github, cloudflareOfficial] = await Promise.all([
+    rawDb
+      .prepare(
+        `SELECT day_utc, requests_total, errors_4xx, errors_5xx, d1_rows_read, d1_rows_written, endpoints_json, updated_at
+         FROM telemetry_daily
+         ORDER BY day_utc DESC
+         LIMIT 14`
+      )
+      .all()
+      .catch(() => ({ results: [] })),
+    getD1StorageAndCounts(rawDb),
+    fetchGitHubMetrics(env, forceRefresh),
+    fetchCloudflareOfficialAnalytics(env, forceRefresh),
+  ]);
+
+  const daily = (dailyRes?.results || []).map((r) => ({
+    dayUtc: r.day_utc,
+    requestsTotal: Number(r.requests_total) || 0,
+    errors4xx: Number(r.errors_4xx) || 0,
+    errors5xx: Number(r.errors_5xx) || 0,
+    d1RowsRead: Number(r.d1_rows_read) || 0,
+    d1RowsWritten: Number(r.d1_rows_written) || 0,
+    endpoints: parseJsonSafe(r.endpoints_json, {}),
+    updatedAt: Number(r.updated_at) || 0,
+  }));
+
+  const todayRow = daily.find((d) => d.dayUtc === todayUtc) || {
+    dayUtc: todayUtc,
+    requestsTotal: 0,
+    errors4xx: 0,
+    errors5xx: 0,
+    d1RowsRead: 0,
+    d1RowsWritten: 0,
+    endpoints: {},
+    updatedAt: 0,
+  };
+
+  return jsonResponse({
+    ok: true,
+    serverTime: Date.now(),
+    todayUtc,
+    cloudflare: {
+      quotas: CLOUDFLARE_FREE_QUOTAS,
+      telemetryToday: todayRow,
+      dailyHistory: daily,
+      storage: storageStats,
+      official: cloudflareOfficial,
+    },
+    github,
+  });
+}
+
+async function fetchGitHubVersions(env, forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && githubVersionsCache.data && now - githubVersionsCache.fetchedAt < EXTERNAL_METRICS_CACHE_TTL_MS) {
+    return githubVersionsCache.data;
+  }
+
+  const headers = {
+    "User-Agent": "mikbatz1-admin-dashboard",
+    Accept: "application/vnd.github+json",
+  };
+  if (env.GITHUB_TOKEN && String(env.GITHUB_TOKEN).trim()) {
+    headers.Authorization = `Bearer ${String(env.GITHUB_TOKEN).trim()}`;
+  }
+
+  const base = `https://api.github.com/repos/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}`;
+  const [commitsRes, depsRes] = await Promise.all([
+    fetchJsonWithTimeout(`${base}/commits?per_page=20`, { headers }),
+    fetchJsonWithTimeout(`${base}/deployments?per_page=10`, { headers }),
+  ]);
+
+  const deployments = depsRes.ok && Array.isArray(depsRes.data)
+    ? depsRes.data.map((d) => ({
+        id: d.id,
+        environment: d.environment,
+        sha: d.sha,
+        shortSha: String(d.sha || "").slice(0, 7),
+        createdAt: d.created_at,
+      }))
+    : [];
+
+  const deployedShas = new Set(deployments.map((d) => d.sha).filter(Boolean));
+  const commits = commitsRes.ok && Array.isArray(commitsRes.data)
+    ? commitsRes.data.map((c) => ({
+        sha: c.sha,
+        shortSha: String(c.sha || "").slice(0, 7),
+        message: String(c.commit?.message || "").split("\n")[0],
+        author: c.commit?.author?.name || c.author?.login || "",
+        date: c.commit?.author?.date || "",
+        url: c.html_url || `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/commit/${c.sha}`,
+        deployedToPages: deployedShas.has(c.sha),
+      }))
+    : [];
+
+  const out = {
+    ok: commitsRes.ok,
+    error: commitsRes.ok ? null : commitsRes.error || `GitHub HTTP ${commitsRes.status}`,
+    repo: `${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}`,
+    commits,
+    deployments,
+    fetchedAt: now,
+  };
+
+  if (commitsRes.ok) {
+    githubVersionsCache = { fetchedAt: now, data: out };
+  }
+  return out;
+}
+
+async function handleAdminVersions(request, env) {
+  const url = new URL(request.url);
+  const forceRefresh = url.searchParams.get("refresh") === "1";
+
+  const [syncMetaRow, releasesRes, github] = await Promise.all([
+    env.DB.prepare("SELECT community_version, updated_at FROM sync_meta WHERE id = 1").first().catch(() => null),
+    env.DB
+      .prepare(
+        `SELECT release_id, version, component, title, notes, commit_sha, created_at
+         FROM version_releases
+         ORDER BY created_at DESC
+         LIMIT 100`
+      )
+      .all()
+      .catch(() => ({ results: [] })),
+    fetchGitHubVersions(env, forceRefresh),
+  ]);
+
+  const releases = (releasesRes?.results || []).map((r) => ({
+    releaseId: r.release_id,
+    version: r.version,
+    component: r.component,
+    title: r.title,
+    notes: r.notes || "",
+    commitSha: r.commit_sha || "",
+    createdAt: Number(r.created_at) || 0,
+  }));
+
+  return jsonResponse({
+    ok: true,
+    serverTime: Date.now(),
+    worker: {
+      version: WORKER_VERSION,
+      schemaVersion: WORKER_SCHEMA_VERSION,
+      communityVersion: Number(syncMetaRow?.community_version) || 1,
+      communityUpdatedAt: Number(syncMetaRow?.updated_at) || 0,
+    },
+    github,
+    releases,
+  });
+}
+
+async function handleAdminCreateVersionRelease(request, env) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const version = String(body.version || "").trim().slice(0, 48);
+  const component = String(body.component || "all").trim().slice(0, 32);
+  const title = String(body.title || "").trim().slice(0, 140);
+  const notes = String(body.notes || "").trim().slice(0, 2000);
+  const commitSha = String(body.commitSha || "").trim().slice(0, 64);
+
+  if (!version || !title) {
+    return errorResponse("יש להזין מספר גרסה וכותרת", 400);
+  }
+
+  const now = Date.now();
+  const releaseId = `rel_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+  await env.DB
+    .prepare(
+      `INSERT INTO version_releases (release_id, version, component, title, notes, commit_sha, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(releaseId, version, component || "all", title, notes, commitSha, now)
+    .run();
+
+  return jsonResponse({
+    ok: true,
+    release: {
+      releaseId,
+      version,
+      component: component || "all",
+      title,
+      notes,
+      commitSha,
+      createdAt: now,
+    },
+  });
+}
+
+async function handleAdminDeleteVersionRelease(env, releaseId) {
+  const delRes = await env.DB
+    .prepare("DELETE FROM version_releases WHERE release_id = ?")
+    .bind(releaseId)
+    .run();
+  return jsonResponse({ ok: true, deletedId: releaseId, deleted: (delRes?.meta?.changes ?? 0) > 0 });
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
@@ -2825,134 +3919,198 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const method = request.method.toUpperCase();
+    const rawDb = env.DB;
+    const trackedEnv = rawDb ? { ...env, DB: wrapTrackedDb(rawDb) } : env;
+
+    const finalize = (response) => {
+      recordTelemetry(path, response?.status || 200);
+      const flushPromise = flushTelemetry(rawDb, false);
+      if (ctx && typeof ctx.waitUntil === "function") {
+        ctx.waitUntil(flushPromise);
+      }
+      return response;
+    };
 
     try {
       if (method === "GET" && path === "/api/health") {
-        return jsonResponse({ ok: true });
+        return finalize(
+          jsonResponse({
+            ok: true,
+            workerVersion: WORKER_VERSION,
+            schemaVersion: WORKER_SCHEMA_VERSION,
+            serverTime: Date.now(),
+          })
+        );
       }
 
       if (method === "GET" && path === "/api/bootstrap") {
-        return await handleBootstrap(env);
+        return finalize(await handleBootstrap(trackedEnv));
       }
 
       if (method === "GET" && path === "/api/poll") {
-        return await handlePoll(request, env);
+        return finalize(await handlePoll(request, trackedEnv));
       }
 
       if (method === "GET" && path === "/api/online") {
-        return await handleOnlineUsers(env);
+        return finalize(await handleOnlineUsers(trackedEnv));
       }
 
       if (method === "GET" && path === "/api/leaderboard") {
         const sortParam = url.searchParams.get("sort") === "notes" ? "notes" : "answers";
-        return await handleLeaderboard(env, sortParam);
+        return finalize(await handleLeaderboard(trackedEnv, sortParam));
       }
 
       if (method === "POST" && path === "/api/identities/ping") {
-        return await handleIdentityPing(request, env);
+        return finalize(await handleIdentityPing(request, trackedEnv));
       }
 
       if (method === "POST" && path === "/api/feedback") {
-        return await handlePostFeedback(request, env);
+        return finalize(await handlePostFeedback(request, trackedEnv));
       }
 
       if (path === "/api/progress") {
-        if (method === "GET") return await handleGetProgress(request, env);
-        if (method === "PUT") return await handlePutProgress(request, env);
+        if (method === "GET") return finalize(await handleGetProgress(request, trackedEnv));
+        if (method === "PUT") return finalize(await handlePutProgress(request, trackedEnv));
       }
 
       if (method === "POST" && path === "/api/sync/register-code") {
-        return await handleSyncRegisterCode(request, env);
+        return finalize(await handleSyncRegisterCode(request, trackedEnv));
       }
       if (method === "POST" && path === "/api/sync/rotate-code") {
-        return await handleSyncRotateCode(request, env);
+        return finalize(await handleSyncRotateCode(request, trackedEnv));
       }
       if (method === "POST" && path === "/api/sync/revoke-other-devices") {
-        return await handleSyncRevokeOtherDevices(request, env);
+        return finalize(await handleSyncRevokeOtherDevices(request, trackedEnv));
       }
       if (method === "POST" && path === "/api/sync/preview") {
-        return await handleSyncPreview(request, env);
+        return finalize(await handleSyncPreview(request, trackedEnv));
       }
       if (method === "POST" && path === "/api/sync/link") {
-        return await handleSyncLink(request, env);
+        return finalize(await handleSyncLink(request, trackedEnv));
       }
 
       const noteMatch = path.match(/^\/api\/notes\/([^/]+)$/);
       if (noteMatch) {
         const qId = decodeURIComponent(noteMatch[1]);
-        if (method === "PUT") return await handlePutNote(request, env, qId);
-        if (method === "DELETE") return await handleDeleteNote(request, env, qId);
+        if (method === "PUT") return finalize(await handlePutNote(request, trackedEnv, qId));
+        if (method === "DELETE") return finalize(await handleDeleteNote(request, trackedEnv, qId));
       }
 
       const noteReplyCreateMatch = path.match(/^\/api\/note-replies\/([^/]+)\/([^/]+)$/);
       if (noteReplyCreateMatch && method === "POST") {
         const qId = decodeURIComponent(noteReplyCreateMatch[1]);
         const noteUserId = decodeURIComponent(noteReplyCreateMatch[2]);
-        return await handleCreateNoteReply(request, env, qId, noteUserId);
+        return finalize(await handleCreateNoteReply(request, trackedEnv, qId, noteUserId));
       }
 
       const noteReplyItemMatch = path.match(/^\/api\/note-replies\/([^/]+)$/);
       if (noteReplyItemMatch) {
         const replyId = decodeURIComponent(noteReplyItemMatch[1]);
-        if (method === "PUT") return await handlePutNoteReply(request, env, replyId);
-        if (method === "DELETE") return await handleDeleteNoteReply(request, env, replyId);
+        if (method === "PUT") return finalize(await handlePutNoteReply(request, trackedEnv, replyId));
+        if (method === "DELETE") return finalize(await handleDeleteNoteReply(request, trackedEnv, replyId));
       }
 
       const problemMatch = path.match(/^\/api\/problems\/([^/]+)$/);
       if (problemMatch) {
         const qId = decodeURIComponent(problemMatch[1]);
-        if (method === "PUT") return await handlePutProblem(request, env, qId);
-        if (method === "DELETE") return await handleDeleteProblem(request, env, qId);
+        if (method === "PUT") return finalize(await handlePutProblem(request, trackedEnv, qId));
+        if (method === "DELETE") return finalize(await handleDeleteProblem(request, trackedEnv, qId));
       }
 
       const problemFlagMatch = path.match(/^\/api\/problem-flags\/([^/]+)\/([^/]+)$/);
       if (problemFlagMatch) {
         const qId = decodeURIComponent(problemFlagMatch[1]);
         const problemUserId = decodeURIComponent(problemFlagMatch[2]);
-        if (method === "PUT") return await handlePutProblemFlag(request, env, qId, problemUserId);
-        if (method === "DELETE") return await handleDeleteProblemFlag(request, env, qId, problemUserId);
+        if (method === "PUT") return finalize(await handlePutProblemFlag(request, trackedEnv, qId, problemUserId));
+        if (method === "DELETE") return finalize(await handleDeleteProblemFlag(request, trackedEnv, qId, problemUserId));
       }
 
       if (method === "POST" && path === "/api/admin/login") {
-        return await handleAdminLogin(request, env);
+        return finalize(await handleAdminLogin(request, trackedEnv));
       }
 
       // All other /api/admin/* endpoints require valid Bearer HMAC token
       if (path.startsWith("/api/admin/")) {
-        const auth = await verifyAdminToken(request, env);
+        const auth = await verifyAdminToken(request, trackedEnv);
         if (!auth.valid) {
-          return errorResponse(auth.error, auth.status);
+          return finalize(errorResponse(auth.error, auth.status));
         }
 
         if (method === "GET" && path === "/api/admin/verify") {
-          return jsonResponse({ ok: true, admin: true, expiresAt: auth.expiresAt });
+          return finalize(jsonResponse({ ok: true, admin: true, expiresAt: auth.expiresAt }));
         }
 
         if (method === "GET" && path === "/api/admin/users") {
-          return await handleAdminUsers(env);
+          return finalize(await handleAdminUsers(trackedEnv));
+        }
+
+        if (method === "POST" && path === "/api/admin/identities/pool") {
+          return finalize(await handleAdminAddPoolName(request, trackedEnv));
+        }
+
+        const adminPoolDeleteMatch = path.match(/^\/api\/admin\/identities\/pool\/([^/]+)$/);
+        if (adminPoolDeleteMatch && method === "DELETE") {
+          const poolName = decodeURIComponent(adminPoolDeleteMatch[1]);
+          return finalize(await handleAdminDeletePoolName(trackedEnv, poolName));
+        }
+
+        if (method === "GET" && path === "/api/admin/metrics") {
+          return finalize(await handleAdminMetrics(request, trackedEnv, rawDb));
+        }
+
+        if (method === "GET" && path === "/api/admin/versions") {
+          return finalize(await handleAdminVersions(request, trackedEnv));
+        }
+
+        if (method === "POST" && path === "/api/admin/versions") {
+          return finalize(await handleAdminCreateVersionRelease(request, trackedEnv));
+        }
+
+        const adminVersionMatch = path.match(/^\/api\/admin\/versions\/([^/]+)$/);
+        if (adminVersionMatch && method === "DELETE") {
+          const releaseId = decodeURIComponent(adminVersionMatch[1]);
+          return finalize(await handleAdminDeleteVersionRelease(trackedEnv, releaseId));
         }
 
         if (method === "GET" && path === "/api/admin/feedback") {
-          return await handleAdminFeedback(env);
+          return finalize(await handleAdminFeedback(trackedEnv));
         }
 
         const adminFeedbackMatch = path.match(/^\/api\/admin\/feedback\/([^/]+)$/);
         if (adminFeedbackMatch && method === "DELETE") {
           const feedbackId = decodeURIComponent(adminFeedbackMatch[1]);
-          await env.DB.prepare("DELETE FROM user_feedback WHERE feedback_id = ?").bind(feedbackId).run();
-          return jsonResponse({ ok: true, deletedId: feedbackId });
+          await trackedEnv.DB.prepare("DELETE FROM user_feedback WHERE feedback_id = ?").bind(feedbackId).run();
+          return finalize(jsonResponse({ ok: true, deletedId: feedbackId }));
+        }
+
+        const adminUserBlockMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/block$/);
+        if (adminUserBlockMatch && method === "POST") {
+          const userId = decodeURIComponent(adminUserBlockMatch[1]);
+          return finalize(await handleAdminBlockUser(request, trackedEnv, userId));
+        }
+
+        const adminUserUnblockMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/unblock$/);
+        if (adminUserUnblockMatch && method === "POST") {
+          const userId = decodeURIComponent(adminUserUnblockMatch[1]);
+          return finalize(await handleAdminUnblockUser(trackedEnv, userId));
         }
 
         const adminUserMatch = path.match(/^\/api\/admin\/users\/([^/]+)$/);
-        if (adminUserMatch && method === "DELETE") {
+        if (adminUserMatch) {
           const userId = decodeURIComponent(adminUserMatch[1]);
-          await env.DB.batch([
-            env.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(userId),
-            env.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(userId),
-            env.DB.prepare("DELETE FROM user_progress WHERE user_id = ?").bind(userId),
-          ]);
-          invalidateLeaderboardCache();
-          return jsonResponse({ ok: true, releasedUserId: userId });
+          if (method === "PUT") {
+            return finalize(await handleAdminRenameUser(request, trackedEnv, userId));
+          }
+          if (method === "DELETE") {
+            await trackedEnv.DB.batch([
+              trackedEnv.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(userId),
+              trackedEnv.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(userId),
+              trackedEnv.DB.prepare("DELETE FROM user_progress WHERE user_id = ?").bind(userId),
+              trackedEnv.DB.prepare("DELETE FROM blocked_users WHERE user_id = ?").bind(userId),
+            ]);
+            invalidateLeaderboardCache();
+            return finalize(jsonResponse({ ok: true, releasedUserId: userId }));
+          }
         }
 
         const adminNoteMatch = path.match(/^\/api\/admin\/notes\/([^/]+)\/([^/]+)$/);
@@ -2960,35 +4118,37 @@ export default {
           const qId = decodeURIComponent(adminNoteMatch[1]);
           const userId = decodeURIComponent(adminNoteMatch[2]);
           const now = Date.now();
-          const [delRes, delRepliesRes] = await env.DB.batch([
-            env.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
-            env.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+          const [delRes, delRepliesRes] = await trackedEnv.DB.batch([
+            trackedEnv.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+            trackedEnv.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
           ]);
           if ((delRes?.meta?.changes ?? 0) > 0 || (delRepliesRes?.meta?.changes ?? 0) > 0) {
-            await bumpCommunityVersion(env.DB, now);
-            await syncDeletionToUserProgress(env.DB, userId, qId, "note", now);
+            await bumpCommunityVersion(trackedEnv.DB, now);
+            await syncDeletionToUserProgress(trackedEnv.DB, userId, qId, "note", now);
             invalidateLeaderboardCache();
           }
-          return jsonResponse({ ok: true, qId, userId });
+          return finalize(jsonResponse({ ok: true, qId, userId }));
         }
 
         const adminNoteReplyMatch = path.match(/^\/api\/admin\/note-replies\/([^/]+)$/);
         if (adminNoteReplyMatch && method === "DELETE") {
           const replyId = decodeURIComponent(adminNoteReplyMatch[1]);
-          const existing = await env.DB
+          const existing = await trackedEnv.DB
             .prepare("SELECT reply_id, q_id, note_user_id FROM note_replies WHERE reply_id = ?")
             .bind(replyId)
             .first();
           let deletedIds = [];
           if (existing) {
-            deletedIds = await collectDescendantReplyIds(env.DB, existing.q_id, existing.note_user_id, replyId);
-            const stmts = deletedIds.map((id) => env.DB.prepare("DELETE FROM note_replies WHERE reply_id = ?").bind(id));
+            deletedIds = await collectDescendantReplyIds(trackedEnv.DB, existing.q_id, existing.note_user_id, replyId);
+            const stmts = deletedIds.map((id) =>
+              trackedEnv.DB.prepare("DELETE FROM note_replies WHERE reply_id = ?").bind(id)
+            );
             for (let idx = 0; idx < stmts.length; idx += 50) {
-              await env.DB.batch(stmts.slice(idx, idx + 50));
+              await trackedEnv.DB.batch(stmts.slice(idx, idx + 50));
             }
-            await bumpCommunityVersion(env.DB, Date.now());
+            await bumpCommunityVersion(trackedEnv.DB, Date.now());
           }
-          return jsonResponse({ ok: true, replyId, deletedIds });
+          return finalize(jsonResponse({ ok: true, replyId, deletedIds }));
         }
 
         const adminProblemMatch = path.match(/^\/api\/admin\/problems\/([^/]+)\/([^/]+)$/);
@@ -2996,15 +4156,15 @@ export default {
           const qId = decodeURIComponent(adminProblemMatch[1]);
           const userId = decodeURIComponent(adminProblemMatch[2]);
           const now = Date.now();
-          const [delRes, delFlagsRes] = await env.DB.batch([
-            env.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(qId, userId),
-            env.DB.prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?").bind(qId, userId),
+          const [delRes, delFlagsRes] = await trackedEnv.DB.batch([
+            trackedEnv.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+            trackedEnv.DB.prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?").bind(qId, userId),
           ]);
           if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
-            await bumpCommunityVersion(env.DB, now);
-            await syncDeletionToUserProgress(env.DB, userId, qId, "problem", now);
+            await bumpCommunityVersion(trackedEnv.DB, now);
+            await syncDeletionToUserProgress(trackedEnv.DB, userId, qId, "problem", now);
           }
-          return jsonResponse({ ok: true, qId, userId });
+          return finalize(jsonResponse({ ok: true, qId, userId }));
         }
 
         const adminProblemFlagsMatch = path.match(/^\/api\/admin\/problem-flags\/([^/]+)\/([^/]+)$/);
@@ -3012,37 +4172,37 @@ export default {
           const qId = decodeURIComponent(adminProblemFlagsMatch[1]);
           const problemUserId = decodeURIComponent(adminProblemFlagsMatch[2]);
           const now = Date.now();
-          const delRes = await env.DB
+          const delRes = await trackedEnv.DB
             .prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?")
             .bind(qId, problemUserId)
             .run();
           if ((delRes?.meta?.changes ?? 0) > 0) {
-            await bumpCommunityVersion(env.DB, now);
+            await bumpCommunityVersion(trackedEnv.DB, now);
           }
-          return jsonResponse({ ok: true, qId, problemUserId });
+          return finalize(jsonResponse({ ok: true, qId, problemUserId }));
         }
 
         const adminOverrideMatch = path.match(/^\/api\/admin\/overrides\/([^/]+)$/);
         if (adminOverrideMatch) {
           const qId = decodeURIComponent(adminOverrideMatch[1]);
-          if (method === "PUT") return await handleAdminPutOverride(request, env, qId);
+          if (method === "PUT") return finalize(await handleAdminPutOverride(request, trackedEnv, qId));
           if (method === "DELETE") {
-            const delRes = await env.DB.prepare("DELETE FROM question_overrides WHERE q_id = ?").bind(qId).run();
+            const delRes = await trackedEnv.DB.prepare("DELETE FROM question_overrides WHERE q_id = ?").bind(qId).run();
             if ((delRes?.meta?.changes ?? 1) > 0) {
-              await bumpCommunityVersion(env.DB);
+              await bumpCommunityVersion(trackedEnv.DB);
             }
-            return jsonResponse({ ok: true, reset: qId });
+            return finalize(jsonResponse({ ok: true, reset: qId }));
           }
         }
 
         if (method === "POST" && path === "/api/admin/import-legacy") {
-          return await handleAdminImportLegacy(request, env);
+          return finalize(await handleAdminImportLegacy(request, trackedEnv));
         }
       }
 
-      return errorResponse("Not found", 404);
+      return finalize(errorResponse("Not found", 404));
     } catch (err) {
-      return errorResponse(err?.message || "Internal server error", 500);
+      return finalize(errorResponse(err?.message || "Internal server error", 500));
     }
   },
 };
