@@ -5664,6 +5664,45 @@
     el("simAnsweredDisplay").textContent = `${simState.answers.size} / ${simState.questions.length}`;
   }
 
+  function selectSimOption(q, origIdx) {
+    if (!simState.active || !q) return;
+    simState.answers.set(q.id, origIdx);
+    persistActiveSimulation({ syncCloud: true });
+    renderSimQuestion();
+  }
+
+  function toggleSimStrike(q, origIdx) {
+    if (!simState.active || !q) return;
+    if (!simState.struck.has(q.id)) simState.struck.set(q.id, new Set());
+    const st = simState.struck.get(q.id);
+    if (st.has(origIdx)) st.delete(origIdx);
+    else st.add(origIdx);
+    persistActiveSimulation({ syncCloud: true });
+    renderSimQuestion();
+  }
+
+  function toggleSimFlag(q) {
+    if (!simState.active || !q) return;
+    if (simState.flagged.has(q.id)) simState.flagged.delete(q.id);
+    else simState.flagged.add(q.id);
+    persistActiveSimulation({ syncCloud: true });
+    renderSimQuestion();
+  }
+
+  function prevSimQuestion() {
+    if (!simState.active || simState.currentIndex <= 0) return;
+    simState.currentIndex--;
+    persistActiveSimulation({ syncCloud: true });
+    renderSimQuestion();
+  }
+
+  function nextSimQuestion() {
+    if (!simState.active || simState.currentIndex >= simState.questions.length - 1) return;
+    simState.currentIndex++;
+    persistActiveSimulation({ syncCloud: true });
+    renderSimQuestion();
+  }
+
   function renderSimQuestion() {
     renderSimGrid();
     const q = simState.questions[simState.currentIndex];
@@ -5728,12 +5767,7 @@
       toggleQuestionFlag(q.id, "unsure");
       renderSimQuestion();
     };
-    el("simFlagBtn").onclick = () => {
-      if (simState.flagged.has(q.id)) simState.flagged.delete(q.id);
-      else simState.flagged.add(q.id);
-      persistActiveSimulation({ syncCloud: true });
-      renderSimQuestion();
-    };
+    el("simFlagBtn").onclick = () => toggleSimFlag(q);
     el("simProblemBtn").onclick = () => openProblemModal(q.id);
     updateProblemFlagButton(el("simProblemBtn"), el("simProblemCount"), q);
     renderProblemBanner(el("simProblemBanner"), q);
@@ -5770,18 +5804,10 @@
       const btn = document.createElement("button");
       btn.className = "option-btn" + (selectedOrig === origIdx ? " selected" : "");
       btn.innerHTML = `<span class="option-letter">${HEBREW_LETTERS[dispIdx]}.</span><span>${escapeHtml(opt.text)}</span>`;
-      btn.onclick = () => {
-        simState.answers.set(q.id, origIdx);
-        persistActiveSimulation({ syncCloud: true });
-        renderSimQuestion();
-      };
+      btn.onclick = () => selectSimOption(q, origIdx);
       btn.oncontextmenu = (e) => {
         e.preventDefault();
-        if (!simState.struck.has(q.id)) simState.struck.set(q.id, new Set());
-        const st = simState.struck.get(q.id);
-        if (st.has(origIdx)) st.delete(origIdx); else st.add(origIdx);
-        persistActiveSimulation({ syncCloud: true });
-        renderSimQuestion();
+        toggleSimStrike(q, origIdx);
       };
 
       const strikeBtn = document.createElement("button");
@@ -5789,32 +5815,14 @@
       strikeBtn.className = "strike-btn";
       strikeBtn.setAttribute("aria-label", "פסול מסיח");
       strikeBtn.textContent = "✂️";
-      strikeBtn.onclick = () => {
-        if (!simState.struck.has(q.id)) simState.struck.set(q.id, new Set());
-        const st = simState.struck.get(q.id);
-        if (st.has(origIdx)) st.delete(origIdx); else st.add(origIdx);
-        persistActiveSimulation({ syncCloud: true });
-        renderSimQuestion();
-      };
+      strikeBtn.onclick = () => toggleSimStrike(q, origIdx);
 
       row.append(btn, strikeBtn);
       optWrap.appendChild(row);
     });
 
-    el("simPrevBtn").onclick = () => {
-      if (simState.currentIndex > 0) {
-        simState.currentIndex--;
-        persistActiveSimulation({ syncCloud: true });
-        renderSimQuestion();
-      }
-    };
-    el("simNextBtn").onclick = () => {
-      if (simState.currentIndex < simState.questions.length - 1) {
-        simState.currentIndex++;
-        persistActiveSimulation({ syncCloud: true });
-        renderSimQuestion();
-      }
-    };
+    el("simPrevBtn").onclick = prevSimQuestion;
+    el("simNextBtn").onclick = nextSimQuestion;
   }
 
   /**
@@ -8711,6 +8719,36 @@
       });
     });
 
+    function getOptionShortcutIndex(e) {
+      if (e.key >= "1" && e.key <= "6") {
+        return parseInt(e.key, 10) - 1;
+      }
+      if (e.shiftKey && typeof e.code === "string") {
+        const match = /^(?:Digit|Numpad)([1-6])$/.exec(e.code);
+        if (match) return parseInt(match[1], 10) - 1;
+      }
+      if (!e.shiftKey && HEBREW_LETTERS.includes(e.key)) {
+        return HEBREW_LETTERS.indexOf(e.key);
+      }
+      return -1;
+    }
+
+    function hasBlockingShortcutModal() {
+      return (
+        !el("lightboxModal")?.classList.contains("hidden") ||
+        !el("feedbackModal")?.classList.contains("hidden") ||
+        !el("supportModal")?.classList.contains("hidden") ||
+        !el("problemReportModal")?.classList.contains("hidden") ||
+        !el("syncModal")?.classList.contains("hidden") ||
+        !el("adminLoginModal")?.classList.contains("hidden") ||
+        !el("adminQuestionModal")?.classList.contains("hidden") ||
+        !el("adminDashboardModal")?.classList.contains("hidden") ||
+        !el("exportModal")?.classList.contains("hidden") ||
+        !el("backupModal")?.classList.contains("hidden") ||
+        !el("shortcutsModal")?.classList.contains("hidden")
+      );
+    }
+
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
       if (tourState.active) {
@@ -8735,18 +8773,8 @@
       }
       if (e.key === "Escape") {
         const hasOpenModal =
-          !el("lightboxModal").classList.contains("hidden") ||
-          !el("onlineUsersPopover")?.classList.contains("hidden") ||
-          !el("feedbackModal")?.classList.contains("hidden") ||
-          !el("supportModal")?.classList.contains("hidden") ||
-          !el("problemReportModal").classList.contains("hidden") ||
-          !el("syncModal")?.classList.contains("hidden") ||
-          !el("adminLoginModal").classList.contains("hidden") ||
-          !el("adminQuestionModal").classList.contains("hidden") ||
-          !el("adminDashboardModal").classList.contains("hidden") ||
-          !el("exportModal")?.classList.contains("hidden") ||
-          !el("backupModal").classList.contains("hidden") ||
-          !el("shortcutsModal").classList.contains("hidden");
+          hasBlockingShortcutModal() ||
+          !el("onlineUsersPopover")?.classList.contains("hidden");
         if (!hasOpenModal && window.MikbatzDrawBoard?.handleEscape()) {
           e.preventDefault();
           return;
@@ -8765,33 +8793,26 @@
         el("shortcutsModal").classList.add("hidden");
         return;
       }
-      if (
-        !el("feedbackModal")?.classList.contains("hidden") ||
-        !el("supportModal")?.classList.contains("hidden") ||
-        !el("problemReportModal").classList.contains("hidden") ||
-        !el("syncModal")?.classList.contains("hidden") ||
-        !el("adminLoginModal").classList.contains("hidden") ||
-        !el("adminQuestionModal").classList.contains("hidden") ||
-        !el("adminDashboardModal").classList.contains("hidden") ||
-        !el("exportModal")?.classList.contains("hidden")
-      ) {
-        return;
-      }
-      const tag = document.activeElement?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "d" || e.key === "D")) {
+      if (hasBlockingShortcutModal()) return;
+      const activeEl = document.activeElement;
+      const tag = activeEl?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || activeEl?.isContentEditable) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const lowerKey = e.key.toLowerCase();
+      if (lowerKey === "d") {
         if (isDrawBoardModeAvailable()) {
           e.preventDefault();
           window.MikbatzDrawBoard?.toggle();
         }
         return;
       }
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "h" || e.key === "H")) {
+      if (lowerKey === "h") {
         e.preventDefault();
         toggleTopbarHidden();
         return;
       }
-      if (e.key.toLowerCase() === "m") {
+      if (lowerKey === "m") {
         if (getActiveStemContext()) {
           e.preventDefault();
           toggleMarkerMode();
@@ -8799,6 +8820,32 @@
         return;
       }
       if (currentMode === "exam") {
+        if (simState.active && simState.questions.length > 0) {
+          const q = simState.questions[simState.currentIndex];
+          if (!q) return;
+          const order = getOptionOrder(q, simState.shuffleOpts);
+          const optIdx = getOptionShortcutIndex(e);
+
+          if (optIdx >= 0 && optIdx < order.length) {
+            e.preventDefault();
+            if (e.shiftKey) toggleSimStrike(q, order[optIdx]);
+            else selectSimOption(q, order[optIdx]);
+          } else if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            nextSimQuestion();
+          } else if (e.key === "ArrowRight") {
+            e.preventDefault();
+            prevSimQuestion();
+          } else if (e.key === " " || e.key === "Enter") {
+            if (activeEl?.closest(".exam-hud, .exam-grid-panel, .q-flags, #simPrevBtn")) return;
+            e.preventDefault();
+            nextSimQuestion();
+          } else if (lowerKey === "s" || lowerKey === "f") {
+            e.preventDefault();
+            toggleSimFlag(q);
+          }
+          return;
+        }
         if (simReviewState.active && simReviewState.items.length > 0) {
           if (e.key === "ArrowLeft" && simReviewState.currentIndex < simReviewState.items.length - 1) {
             e.preventDefault();
@@ -8812,6 +8859,13 @@
             simReviewState.notesExpanded = false;
             renderSimReviewGrid(computeSimEntryAnalysis(simReviewState.entry));
             renderSimReviewQuestion();
+          } else if (lowerKey === "s" || lowerKey === "f") {
+            const curQ = simReviewState.items[simReviewState.currentIndex]?.q;
+            if (curQ) {
+              e.preventDefault();
+              toggleQuestionFlag(curQ.id, "star");
+              renderSimReviewQuestion();
+            }
           }
         }
         return;
@@ -8821,17 +8875,14 @@
 
       const q = filteredList[currentIndex];
       const order = getOptionOrder(q);
+      const optIdx = getOptionShortcutIndex(e);
 
-      if (e.key >= "1" && e.key <= "5") {
-        const idx = parseInt(e.key, 10) - 1;
-        if (idx < order.length) {
-          if (e.shiftKey) toggleStrike(q.id, order[idx]);
-          else if (currentMode !== "flashcard") handleAnswer(q, order[idx]);
-        }
-      } else if (HEBREW_LETTERS.includes(e.key)) {
-        const idx = HEBREW_LETTERS.indexOf(e.key);
-        if (idx < order.length && currentMode !== "flashcard") {
-          handleAnswer(q, order[idx]);
+      if (optIdx >= 0 && optIdx < order.length) {
+        if (e.shiftKey) {
+          e.preventDefault();
+          toggleStrike(q.id, order[optIdx]);
+        } else if (currentMode !== "flashcard") {
+          handleAnswer(q, order[optIdx]);
         }
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
@@ -8843,12 +8894,12 @@
         e.preventDefault();
         if (currentMode === "flashcard" && !flashcardRevealed) revealFlashcard();
         else nextQuestion();
-      } else if (e.key.toLowerCase() === "s" || e.key.toLowerCase() === "f") {
+      } else if (lowerKey === "s" || lowerKey === "f") {
         toggleFlag("star");
-      } else if (e.key.toLowerCase() === "n") {
+      } else if (lowerKey === "n") {
         e.preventDefault();
         toggleNotesDrawer();
-      } else if (e.key.toLowerCase() === "r") {
+      } else if (lowerKey === "r") {
         shuffleFilteredQuestions();
       }
     });
