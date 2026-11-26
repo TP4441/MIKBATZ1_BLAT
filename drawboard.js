@@ -785,10 +785,12 @@
   // ============================================================
 
   function syncTopbarOffset() {
-    const isHidden = document.body.classList.contains("topbar-hidden");
+    const isCollapsedEmpty =
+      document.body.classList.contains("topbar-hidden") &&
+      document.body.classList.contains("exam-focus-mode");
     const topbar = document.querySelector(".topbar");
-    const h = isHidden ? 0 : (topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 64);
-    const topOffset = isHidden ? 38 : Math.max(56, h + 12);
+    const h = isCollapsedEmpty ? 0 : (topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 64);
+    const topOffset = isCollapsedEmpty ? 38 : Math.max(48, h + 12);
     document.documentElement.style.setProperty("--drawboard-top", `${topOffset}px`);
   }
 

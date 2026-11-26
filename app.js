@@ -3895,6 +3895,7 @@
       updateDrillBadge();
     }
     syncDrawBoardAvailability();
+    window.MikbatzDrawBoard?.refreshLayout?.();
   }
 
   function isStudyMode(mode = currentMode) {

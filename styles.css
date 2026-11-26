@@ -134,21 +134,59 @@ a:focus-visible {
   border-bottom: 1px solid var(--shell-border);
 }
 
-body.topbar-hidden .topbar {
-  display: none;
+body.topbar-hidden .topbar-brand-row {
+  display: none !important;
 }
 
-body.topbar-hidden .main-container {
+body.topbar-hidden .topbar-inner {
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  padding: 6px 18px;
+  gap: 10px;
+}
+
+body.topbar-hidden .mode-tabs {
+  order: 1;
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.topbar-restore-btn {
+  order: 2;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.topbar-restore-btn .ui-ico {
+  width: 15px;
+  height: 15px;
+}
+
+body.topbar-hidden.exam-focus-mode .topbar {
+  background: transparent;
+  border-bottom-color: transparent;
+  height: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+body.topbar-hidden.exam-focus-mode .topbar-inner {
+  padding: 0;
+}
+
+body.topbar-hidden.exam-focus-mode .main-container {
   margin-top: calc(36px + env(safe-area-inset-top));
 }
 
-.topbar-restore-tab {
+body.topbar-hidden.exam-focus-mode .topbar-restore-btn {
+  pointer-events: auto;
   position: fixed;
   top: 0;
   left: 16px;
   z-index: 40;
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
   padding: calc(4px + env(safe-area-inset-top)) 12px 5px;
   border: 1px solid var(--shell-border);
@@ -156,33 +194,20 @@ body.topbar-hidden .main-container {
   border-radius: 0 0 10px 10px;
   background: var(--shell-bg);
   color: var(--shell-text);
-  font-family: inherit;
   font-size: 0.76rem;
   font-weight: 700;
   line-height: 1.25;
-  cursor: pointer;
   box-shadow: var(--shadow);
-  transition: background-color 0.15s ease, padding-bottom 0.15s ease, box-shadow 0.15s ease;
 }
 
-.topbar-restore-tab:hover {
+body.topbar-hidden.exam-focus-mode .topbar-restore-btn:hover {
   background: var(--primary-hover);
   padding-bottom: 7px;
   box-shadow: var(--shadow-elevated);
 }
 
-[data-theme="dark"] .topbar-restore-tab:hover {
+[data-theme="dark"] body.topbar-hidden.exam-focus-mode .topbar-restore-btn:hover {
   background: #172E4A;
-}
-
-.topbar-restore-tab:focus-visible {
-  outline: 2px solid var(--primary-ink);
-  outline-offset: 2px;
-}
-
-.topbar-restore-tab .ui-ico {
-  width: 14px;
-  height: 14px;
 }
 
 .topbar-inner {
@@ -3367,14 +3392,31 @@ kbd {
     gap: 8px;
   }
 
-  body.topbar-hidden .main-container {
+  body.topbar-hidden .topbar-inner {
+    padding: 5px 10px;
+    gap: 6px;
+  }
+
+  body.topbar-hidden .mode-tabs {
+    padding-top: 0;
+  }
+
+  .topbar-restore-label {
+    display: none;
+  }
+
+  body.topbar-hidden.exam-focus-mode .main-container {
     margin-top: calc(32px + env(safe-area-inset-top));
   }
 
-  .topbar-restore-tab {
+  body.topbar-hidden.exam-focus-mode .topbar-restore-btn {
     left: 10px;
     padding: calc(3px + env(safe-area-inset-top)) 10px 4px;
     font-size: 0.72rem;
+  }
+
+  body.topbar-hidden.exam-focus-mode .topbar-restore-label {
+    display: inline;
   }
 
   .card {
