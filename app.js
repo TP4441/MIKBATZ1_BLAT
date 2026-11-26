@@ -1497,18 +1497,49 @@
     return created;
   }
 
+  function isSimReviewNotesActive() {
+    return currentMode === "exam" && simReviewState.active;
+  }
+
+  function getActiveSimReviewQuestion() {
+    return simReviewState.items[simReviewState.currentIndex]?.q || null;
+  }
+
+  function getActiveNotesDrawerEl() {
+    return isSimReviewNotesActive() ? el("simReviewNotesDrawer") : el("qNotesDrawer");
+  }
+
+  function getActiveNoteInputEl() {
+    return isSimReviewNotesActive() ? el("simReviewNoteInput") : el("qNoteInput");
+  }
+
+  function refreshActiveNotesUI(qId = null, preserveFocus = true) {
+    if (isSimReviewNotesActive()) {
+      const q = getActiveSimReviewQuestion();
+      if (q && (!qId || q.id === qId)) {
+        renderSimReviewNotesSection(preserveFocus);
+      }
+    } else if (currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
+      const q = filteredList[currentIndex];
+      if (q && (!qId || q.id === qId)) {
+        renderNotesSection(q, preserveFocus);
+      }
+    }
+  }
+
   function updateIdentityUI() {
     const label = `${userIdentity.emoji} ${userIdentity.name}`;
     const badge = el("userIdentityBadge");
     if (badge) badge.textContent = label;
-    const myLabel = el("myNoteLabel");
-    if (myLabel) {
-      const curQId = filteredList?.[currentIndex]?.id;
+    const setMyLabelText = (labelEl, curQId) => {
+      if (!labelEl) return;
       const isEditing = curQId && editingNoteQIds.has(curQId);
-      myLabel.textContent = isEditing
+      labelEl.textContent = isEditing
         ? `✏️ עריכת ההערה שלי בתור ${label}:`
         : `📝 ההערה שלי בתור ${label}:`;
-    }
+    };
+    setMyLabelText(el("myNoteLabel"), filteredList?.[currentIndex]?.id);
+    setMyLabelText(el("simReviewMyNoteLabel"), getActiveSimReviewQuestion()?.id);
   }
 
   function saveUserIdentity() {
@@ -1618,7 +1649,8 @@
 
   function openReplyComposer(qId, noteUserId, parentReplyId = null, replyToAuthor = "") {
     if (!qId || !noteUserId) return;
-    notesExpanded = true;
+    if (isSimReviewNotesActive()) simReviewState.notesExpanded = true;
+    else notesExpanded = true;
     activeReplyComposer = {
       qId,
       noteUserId,
@@ -1627,16 +1659,14 @@
       editReplyId: null,
       draft: "",
     };
-    const q = Q_MAP.get(qId);
-    if (q && filteredList[currentIndex]?.id === qId) {
-      renderNotesSection(q, true);
-      setTimeout(() => document.querySelector(".note-reply-textarea")?.focus(), 15);
-    }
+    refreshActiveNotesUI(qId, true);
+    setTimeout(() => (getActiveNotesDrawerEl() || document).querySelector(".note-reply-textarea")?.focus(), 15);
   }
 
   function openEditReplyComposer(qId, noteUserId, replyObj) {
     if (!qId || !noteUserId || !replyObj) return;
-    notesExpanded = true;
+    if (isSimReviewNotesActive()) simReviewState.notesExpanded = true;
+    else notesExpanded = true;
     activeReplyComposer = {
       qId,
       noteUserId,
@@ -1645,14 +1675,11 @@
       editReplyId: replyObj.replyId,
       draft: replyObj.text || "",
     };
-    const q = Q_MAP.get(qId);
-    if (q && filteredList[currentIndex]?.id === qId) {
-      renderNotesSection(q, true);
-      const ta = document.querySelector(".note-reply-textarea");
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(ta.value.length, ta.value.length);
-      }
+    refreshActiveNotesUI(qId, true);
+    const ta = (getActiveNotesDrawerEl() || document).querySelector(".note-reply-textarea");
+    if (ta) {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
     }
   }
 
@@ -1660,10 +1687,7 @@
     const qId = activeReplyComposer?.qId;
     activeReplyComposer = null;
     if (qId) {
-      const q = Q_MAP.get(qId);
-      if (q && filteredList[currentIndex]?.id === qId) {
-        renderNotesSection(q, true);
-      }
+      refreshActiveNotesUI(qId, true);
     }
   }
 
@@ -1700,7 +1724,7 @@
   async function submitNoteReply() {
     if (!activeReplyComposer) return;
     const { qId, noteUserId, parentReplyId, replyToAuthor, editReplyId, draft } = activeReplyComposer;
-    const ta = document.querySelector(".note-reply-textarea");
+    const ta = (getActiveNotesDrawerEl() || document).querySelector(".note-reply-textarea");
     const rawText = ta ? ta.value : draft;
     const trimmed = String(rawText || "").trim();
     if (!trimmed) {
@@ -1764,10 +1788,7 @@
     activeReplyComposer = null;
     lastNoteMutationAt = now;
     saveCommunityNoteRepliesCache();
-    const q = Q_MAP.get(qId);
-    if (q && filteredList[currentIndex]?.id === qId) {
-      renderNotesSection(q, true);
-    }
+    refreshActiveNotesUI(qId, true);
 
     const syncOk = await enqueueNoteReplyCloudSync();
     if (editReplyId) {
@@ -1793,10 +1814,7 @@
       pendingReplyDirtyOps.set(replyId, { action: "delete", qId, noteUserId, reply: null });
     }
     saveCommunityNoteRepliesCache();
-    const q = Q_MAP.get(qId);
-    if (q && filteredList[currentIndex]?.id === qId) {
-      renderNotesSection(q, true);
-    }
+    refreshActiveNotesUI(qId, true);
     const syncOk = await enqueueNoteReplyCloudSync();
     showToast(syncOk ? "🗑️ התגובה נמחקה." : "🗑️ התגובה נמחקה מקומית.");
   }
@@ -1815,10 +1833,8 @@
     }
   }
 
-  function updateNoteSyncBadge() {
-    const statusEl = el("noteSyncStatus");
+  function updateNoteSyncBadgeFor(statusEl, curQId) {
     if (!statusEl) return;
-    const curQId = filteredList?.[currentIndex]?.id;
     const hasDraft = Boolean(curQId && ((noteDrafts[curQId] || "").trim().length > 0 || editingNoteQIds.has(curQId)));
     if (noteSyncState === "saving") statusEl.textContent = "שומר לענן... ⏳";
     else if (hasDraft) statusEl.textContent = "טיוטה · לחץ Enter לשליחה";
@@ -1827,14 +1843,19 @@
     else statusEl.textContent = "מסונכרן ☁️";
   }
 
+  function updateNoteSyncBadge() {
+    updateNoteSyncBadgeFor(el("noteSyncStatus"), filteredList?.[currentIndex]?.id);
+    updateNoteSyncBadgeFor(el("simReviewNoteSyncStatus"), getActiveSimReviewQuestion()?.id);
+  }
+
   function startEditMyNote(qId) {
     const existing = communityNotes[qId]?.[userIdentity.userId]?.text || "";
     noteDrafts[qId] = existing;
     editingNoteQIds.add(qId);
-    notesExpanded = true;
-    const q = Q_MAP.get(qId);
-    if (q) renderNotesSection(q, false);
-    const inputEl = el("qNoteInput");
+    if (isSimReviewNotesActive()) simReviewState.notesExpanded = true;
+    else notesExpanded = true;
+    refreshActiveNotesUI(qId, false);
+    const inputEl = getActiveNoteInputEl();
     if (inputEl) {
       inputEl.focus();
       inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
@@ -1844,8 +1865,7 @@
   function cancelEditMyNote(qId) {
     editingNoteQIds.delete(qId);
     delete noteDrafts[qId];
-    const q = Q_MAP.get(qId);
-    if (q) renderNotesSection(q, false);
+    refreshActiveNotesUI(qId, false);
   }
 
   async function deleteMyNote(qId) {
@@ -1875,13 +1895,123 @@
     leaderboardLastFetchedAt = 0;
     saveCommunityNotesCache();
     noteSyncState = "saving";
-    const q = Q_MAP.get(qId);
-    if (q && filteredList[currentIndex]?.id === qId) {
-      renderNotesSection(q, false);
-    }
+    refreshActiveNotesUI(qId, false);
     await enqueueCloudSync();
     if (noteSyncState === "synced") {
       showToast("🗑️ ההערה שלך נמחקה.");
+    }
+  }
+
+  async function submitNoteFor(q, inputEl) {
+    if (!q || !inputEl) return;
+    const rawText = inputEl.value;
+    const trimmed = rawText.trim();
+    const isEditing = editingNoteQIds.has(q.id);
+
+    if (!trimmed) {
+      if (isEditing) {
+        await deleteMyNote(q.id);
+      } else {
+        showToast("✏️ כתוב הערה לפני השליחה.");
+        inputEl.focus();
+      }
+      return;
+    }
+
+    identityNeedsCloudCheck = false;
+    progress.notes[q.id] = rawText;
+    if (!progress.noteUpdatedAt) progress.noteUpdatedAt = {};
+    progress.noteUpdatedAt[q.id] = Date.now();
+    saveProgress();
+
+    if (!communityNotes[q.id] || typeof communityNotes[q.id] !== "object") {
+      communityNotes[q.id] = {};
+    }
+    communityNotes[q.id][userIdentity.userId] = {
+      author: userIdentity.name,
+      emoji: userIdentity.emoji,
+      category: userIdentity.category,
+      text: rawText,
+      updatedAt: Date.now(),
+    };
+
+    delete noteDrafts[q.id];
+    editingNoteQIds.delete(q.id);
+    inputEl.value = "";
+
+    pendingDirtyQIds.add(q.id);
+    lastNoteMutationAt = Date.now();
+    leaderboardLastFetchedAt = 0;
+    saveCommunityNotesCache();
+    noteSyncState = "saving";
+    refreshActiveNotesUI(q.id, false);
+
+    await enqueueCloudSync();
+    if (noteSyncState === "synced") {
+      showToast(isEditing ? "✏️ ההערה עודכנה בענן!" : "💬 ההערה נשלחה ונשמרה בענן!");
+    }
+  }
+
+  function bindNoteEditorEvents({ toggleBtn, refreshBtn, cancelBtn, inputEl, sendBtn, getQuestion, onToggle }) {
+    if (toggleBtn && onToggle) {
+      toggleBtn.onclick = onToggle;
+    }
+    if (refreshBtn) {
+      refreshBtn.onclick = () => {
+        bootstrapCloudState(true);
+      };
+    }
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        const q = getQuestion();
+        if (q) cancelEditMyNote(q.id);
+      };
+    }
+    if (!inputEl) return;
+
+    inputEl.addEventListener("input", (e) => {
+      const q = getQuestion();
+      if (!q) return;
+      noteDrafts[q.id] = e.target.value;
+      updateNoteSyncBadge();
+    });
+
+    let lastNoteShiftDown = false;
+    let lastNoteEnterSubmitAt = 0;
+
+    function triggerEnterSubmit() {
+      const now = Date.now();
+      if (now - lastNoteEnterSubmitAt < 100) return;
+      lastNoteEnterSubmitAt = now;
+      const q = getQuestion();
+      if (q) submitNoteFor(q, inputEl);
+    }
+
+    inputEl.addEventListener("keydown", (e) => {
+      lastNoteShiftDown = e.shiftKey;
+      const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter" || e.keyCode === 13;
+      if (isEnter && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        triggerEnterSubmit();
+      }
+    });
+
+    inputEl.addEventListener("keyup", (e) => {
+      lastNoteShiftDown = e.shiftKey;
+    });
+
+    inputEl.addEventListener("beforeinput", (e) => {
+      if ((e.inputType === "insertLineBreak" || (e.inputType === "insertText" && e.data === "\n")) && !lastNoteShiftDown) {
+        e.preventDefault();
+        triggerEnterSubmit();
+      }
+    });
+
+    if (sendBtn) {
+      sendBtn.onclick = () => {
+        const q = getQuestion();
+        if (q) submitNoteFor(q, inputEl);
+      };
     }
   }
 
@@ -1944,47 +2074,52 @@
     return editor;
   }
 
-  function renderNotesSection(q, preserveFocus = false) {
+  function renderNotesInto(q, refs, { expanded = false, preserveFocus = false, titlePrefix = "הערות לשאלה זו", emptyTitle = "אין הערות עדיין לשאלה זו" } = {}) {
+    if (!q || !refs?.toggleBtn || !refs?.drawerEl || !refs?.listEl || !refs?.inputEl) return;
     updateIdentityUI();
     const notesList = getQuestionCommunityNotesList(q.id);
     const totalReplies = getQuestionRepliesCount(q.id);
 
-    const toggleBtn = el("btnToggleNotes");
-    toggleBtn.setAttribute("aria-expanded", notesExpanded ? "true" : "false");
-    toggleBtn.classList.toggle("open", notesExpanded);
-    toggleBtn.classList.toggle("has-notes", notesList.length > 0);
+    refs.toggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    refs.toggleBtn.classList.toggle("open", expanded);
+    refs.toggleBtn.classList.toggle("has-notes", notesList.length > 0);
 
-    el("notesToggleTitle").textContent = notesList.length > 0
-      ? (totalReplies > 0
-        ? `הערות לשאלה זו (${notesList.length} · ${totalReplies} תגובות)`
-        : `הערות לשאלה זו (${notesList.length})`)
-      : "אין הערות עדיין לשאלה זו";
-
-    const previewEl = el("notesAuthorsPreview");
-    previewEl.innerHTML = "";
-    const maxPreview = 5;
-    notesList.slice(0, maxPreview).forEach((n) => {
-      const chip = document.createElement("span");
-      chip.className = "author-chip-mini" + (n.isMine ? " is-mine" : "");
-      chip.textContent = `${n.emoji} ${n.author}`;
-      previewEl.appendChild(chip);
-    });
-    if (notesList.length > maxPreview) {
-      const more = document.createElement("span");
-      more.className = "author-chip-mini";
-      more.textContent = `+${notesList.length - maxPreview}`;
-      previewEl.appendChild(more);
+    if (refs.titleEl) {
+      refs.titleEl.textContent = notesList.length > 0
+        ? (totalReplies > 0
+          ? `${titlePrefix} (${notesList.length} · ${totalReplies} תגובות)`
+          : `${titlePrefix} (${notesList.length})`)
+        : emptyTitle;
     }
 
-    el("notesToggleArrow").textContent = notesExpanded
-      ? "הסתר הערות 🔼"
-      : notesList.length > 0
-      ? "הצג הערות 🔽"
-      : "הוסף הערה 🔽";
+    if (refs.previewEl) {
+      refs.previewEl.innerHTML = "";
+      const maxPreview = 5;
+      notesList.slice(0, maxPreview).forEach((n) => {
+        const chip = document.createElement("span");
+        chip.className = "author-chip-mini" + (n.isMine ? " is-mine" : "");
+        chip.textContent = `${n.emoji} ${n.author}`;
+        refs.previewEl.appendChild(chip);
+      });
+      if (notesList.length > maxPreview) {
+        const more = document.createElement("span");
+        more.className = "author-chip-mini";
+        more.textContent = `+${notesList.length - maxPreview}`;
+        refs.previewEl.appendChild(more);
+      }
+    }
 
-    el("qNotesDrawer").classList.toggle("hidden", !notesExpanded);
+    if (refs.arrowEl) {
+      refs.arrowEl.textContent = expanded
+        ? "הסתר הערות 🔼"
+        : notesList.length > 0
+        ? "הצג הערות 🔽"
+        : "הוסף הערה 🔽";
+    }
 
-    const listEl = el("communityNotesList");
+    refs.drawerEl.classList.toggle("hidden", !expanded);
+
+    const listEl = refs.listEl;
     listEl.innerHTML = "";
     if (notesList.length === 0) {
       const emptyMsg = document.createElement("div");
@@ -2180,14 +2315,62 @@
       });
     }
 
-    const cancelBtn = el("btnCancelEditNote");
-    if (cancelBtn) cancelBtn.classList.toggle("hidden", !editingNoteQIds.has(q.id));
-
-    const inputEl = el("qNoteInput");
-    if (!(preserveFocus && document.activeElement === inputEl)) {
-      inputEl.value = noteDrafts[q.id] ?? "";
+    if (refs.cancelEditBtn) {
+      refs.cancelEditBtn.classList.toggle("hidden", !editingNoteQIds.has(q.id));
     }
-    updateNoteSyncBadge();
+
+    if (!(preserveFocus && document.activeElement === refs.inputEl)) {
+      refs.inputEl.value = noteDrafts[q.id] ?? "";
+    }
+    updateNoteSyncBadgeFor(refs.syncStatusEl, q.id);
+  }
+
+  function renderNotesSection(q, preserveFocus = false) {
+    renderNotesInto(
+      q,
+      {
+        toggleBtn: el("btnToggleNotes"),
+        titleEl: el("notesToggleTitle"),
+        previewEl: el("notesAuthorsPreview"),
+        arrowEl: el("notesToggleArrow"),
+        drawerEl: el("qNotesDrawer"),
+        listEl: el("communityNotesList"),
+        cancelEditBtn: el("btnCancelEditNote"),
+        syncStatusEl: el("noteSyncStatus"),
+        inputEl: el("qNoteInput"),
+      },
+      {
+        expanded: notesExpanded,
+        preserveFocus,
+        titlePrefix: "הערות לשאלה זו",
+        emptyTitle: "אין הערות עדיין לשאלה זו",
+      }
+    );
+  }
+
+  function renderSimReviewNotesSection(preserveFocus = false) {
+    const q = getActiveSimReviewQuestion();
+    if (!q) return;
+    renderNotesInto(
+      q,
+      {
+        toggleBtn: el("btnToggleSimReviewNotes"),
+        titleEl: el("simReviewNotesToggleTitle"),
+        previewEl: el("simReviewNotesAuthorsPreview"),
+        arrowEl: el("simReviewNotesToggleArrow"),
+        drawerEl: el("simReviewNotesDrawer"),
+        listEl: el("simReviewCommunityNotesList"),
+        cancelEditBtn: el("btnSimReviewCancelEditNote"),
+        syncStatusEl: el("simReviewNoteSyncStatus"),
+        inputEl: el("simReviewNoteInput"),
+      },
+      {
+        expanded: simReviewState.notesExpanded,
+        preserveFocus,
+        titlePrefix: "הערות ופנינים לשאלה זו",
+        emptyTitle: "הערות ופנינים לשאלה זו (אין עדיין)",
+      }
+    );
   }
 
   function toggleNotesDrawer(forceState = null) {
@@ -2744,9 +2927,7 @@
     if (prevOverridesJson !== nextOverridesJson) {
       rebuildEffectiveQuestions({ render: true });
     } else {
-      if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
-        renderNotesSection(filteredList[currentIndex], true);
-      }
+      refreshActiveNotesUI(null, true);
       refreshActiveQuestionProblemViews();
       updateProblemSyncBadge();
     }
@@ -3698,11 +3879,8 @@
           noteSyncState = "offline";
         }
 
-        if (filteredList.length > 0 && currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
-          renderNotesSection(filteredList[currentIndex], true);
-        } else {
-          updateNoteSyncBadge();
-        }
+        refreshActiveNotesUI(null, true);
+        updateNoteSyncBadge();
       })
       .catch(() => {
         noteSyncState = "error";
@@ -6408,7 +6586,7 @@
     });
   }
 
-  function openSimReview(entry, { filter = "all", subjectFilter = "all", index = 0, returnTo = "results" } = {}) {
+  function openSimReview(entry, { filter = "all", subjectFilter = "all", index = 0, returnTo = "results", notesExpanded: nextNotesExpanded = false } = {}) {
     if (!entry) return;
     const analysis = computeSimEntryAnalysis(entry);
     if (analysis.items.length === 0) {
@@ -6416,6 +6594,7 @@
       return;
     }
 
+    activeReplyComposer = null;
     const items = filterSimReviewItems(analysis, filter, subjectFilter);
     simReviewState = {
       active: true,
@@ -6425,7 +6604,7 @@
       items,
       currentIndex: Math.max(0, Math.min(Math.max(0, items.length - 1), index)),
       returnTo,
-      notesExpanded: false,
+      notesExpanded: Boolean(nextNotesExpanded),
     };
 
     el("examSetup")?.classList.add("hidden");
@@ -6573,51 +6752,38 @@
     });
   }
 
-  function buildSimReviewNotesHtml(q) {
-    const notesList = getQuestionCommunityNotesList(q.id);
-    const totalReplies = getQuestionRepliesCount(q.id);
-    const title = notesList.length > 0
-      ? (totalReplies > 0 ? `הערות ופנינים לשאלה זו (${notesList.length} · ${totalReplies} תגובות)` : `הערות ופנינים לשאלה זו (${notesList.length})`)
-      : "הערות ופנינים לשאלה זו (אין עדיין)";
-
-    const notesCardsHtml = notesList.length === 0
-      ? `<div class="community-notes-empty">אין עדיין הערות לשאלה זו. ניתן להוסיף הערה דרך כפתור "פתח בתרגול חופשי".</div>`
-      : notesList.map((n) => {
-          const repliesTree = getNoteRepliesTree(q.id, n.userId);
-          const repliesHtml = repliesTree.length > 0
-            ? `<div class="note-replies-list">${repliesTree.map((r) => `
-                <div class="note-reply-card${r.isMine ? " is-mine" : ""}">
-                  <div class="community-note-head">
-                    <span class="community-note-author">${escapeHtml(r.emoji)} ${escapeHtml(r.author)}</span>
-                    <span class="community-note-time">${escapeHtml(formatNoteTime(r.updatedAt))}</span>
-                  </div>
-                  <div class="community-note-text">${escapeHtml(r.text)}</div>
-                </div>`).join("")}</div>`
-            : "";
-          return `
-            <div class="community-note-card${n.isMine ? " is-mine" : ""}">
-              <div class="community-note-head">
-                <span class="community-note-author">${escapeHtml(n.emoji)} ${escapeHtml(n.author)}${n.isMine ? `<span class="community-note-mine-badge">שלי</span>` : ""}</span>
-                <span class="community-note-time">${escapeHtml(formatNoteTime(n.updatedAt))}</span>
-              </div>
-              <div class="community-note-text">${escapeHtml(n.text)}</div>
-              ${repliesHtml}
-            </div>`;
-        }).join("");
-
+  function buildSimReviewNotesHtml() {
     return `
-      <div class="q-notes-container sim-review-notes-wrap">
-        <button type="button" class="notes-toggle-btn${simReviewState.notesExpanded ? " open" : ""}${notesList.length > 0 ? " has-notes" : ""}" id="btnToggleSimReviewNotes" aria-expanded="${simReviewState.notesExpanded ? "true" : "false"}">
+      <div class="q-notes-container sim-review-notes-wrap" id="simReviewNotesContainer">
+        <button type="button" class="notes-toggle-btn" id="btnToggleSimReviewNotes" aria-expanded="false">
           <div class="notes-toggle-right">
             <span class="notes-toggle-icon" aria-hidden="true">💬</span>
-            <span>${escapeHtml(title)}</span>
+            <span id="simReviewNotesToggleTitle">הערות ופנינים לשאלה זו</span>
+            <div class="notes-authors-preview" id="simReviewNotesAuthorsPreview"></div>
           </div>
-          <span class="notes-toggle-arrow">${simReviewState.notesExpanded ? "הסתר הערות 🔼" : "הצג הערות 🔽"}</span>
+          <span class="notes-toggle-arrow" id="simReviewNotesToggleArrow">הצג הערות 🔽</span>
         </button>
-        <div class="notes-drawer${simReviewState.notesExpanded ? "" : " hidden"}" id="simReviewNotesDrawer">
-          <div class="community-notes-list">${notesCardsHtml}</div>
-          <div style="margin-top:8px;display:flex;justify-content:flex-end;">
-            <button type="button" class="btn-secondary btn-sm" id="btnSimReviewOpenInPracticeFromNotes">📝 פתח שאלה זו בתרגול להוספת הערה / פתרון מחדש</button>
+
+        <div class="notes-drawer hidden" id="simReviewNotesDrawer">
+          <div class="community-notes-list" id="simReviewCommunityNotesList"></div>
+          <div class="my-note-editor">
+            <div class="my-note-header">
+              <label for="simReviewNoteInput" id="simReviewMyNoteLabel">📝 ההערה שלי:</label>
+              <div class="my-note-actions">
+                <button type="button" class="link-btn hidden" id="btnSimReviewCancelEditNote">ביטול עריכה</button>
+                <span class="note-sync-status" id="simReviewNoteSyncStatus">☁️ מסונכרן</span>
+                <button type="button" class="link-btn" id="btnSimReviewRefreshNotes" title="רענן הערות מהענן">🔄 רענן</button>
+              </div>
+            </div>
+            <div class="my-note-input-row">
+              <textarea id="simReviewNoteInput" rows="2" placeholder="כתוב הסבר, אבחנה מבדלת או כלל אצבע... (Enter לשליחה, Shift+Enter לשורה חדשה)"></textarea>
+              <button type="button" class="btn-primary note-send-btn" id="btnSimReviewSendNote" title="שלח ושמור בענן (Enter)" aria-label="שלח הערה">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -6668,6 +6834,9 @@
 
     const item = simReviewState.items[simReviewState.currentIndex];
     const q = item.q;
+    if (activeReplyComposer && activeReplyComposer.qId !== q.id) {
+      activeReplyComposer = null;
+    }
     const fl = progress.flags[q.id] || {};
     const totalInExam = simReviewState.entry?.questionIds?.length || simReviewState.items.length;
 
@@ -6762,7 +6931,7 @@
 
         <div class="q-feedback ${feedbackCls}">${feedbackLead}${appealHtml}${explanationHtml}</div>
 
-        ${buildSimReviewNotesHtml(q)}
+        ${buildSimReviewNotesHtml()}
 
         <div class="q-nav-footer">
           <button type="button" class="btn-secondary nav-prev-btn" id="simReviewPrevBtn" ${simReviewState.currentIndex === 0 ? "disabled" : ""}>
@@ -6861,12 +7030,20 @@
       optWrap.appendChild(row);
     });
 
-    el("btnToggleSimReviewNotes")?.addEventListener("click", () => {
-      simReviewState.notesExpanded = !simReviewState.notesExpanded;
-      renderSimReviewQuestion();
+    bindNoteEditorEvents({
+      toggleBtn: el("btnToggleSimReviewNotes"),
+      refreshBtn: el("btnSimReviewRefreshNotes"),
+      cancelBtn: el("btnSimReviewCancelEditNote"),
+      inputEl: el("simReviewNoteInput"),
+      sendBtn: el("btnSimReviewSendNote"),
+      getQuestion: getActiveSimReviewQuestion,
+      onToggle: () => {
+        simReviewState.notesExpanded = !simReviewState.notesExpanded;
+        renderSimReviewNotesSection(true);
+      },
     });
+    renderSimReviewNotesSection(false);
     el("btnSimReviewOpenInPractice").onclick = () => openQuestionInPractice(q.id);
-    el("btnSimReviewOpenInPracticeFromNotes")?.addEventListener("click", () => openQuestionInPractice(q.id));
 
     el("simReviewPrevBtn").onclick = () => {
       if (simReviewState.currentIndex > 0) {
@@ -7853,6 +8030,7 @@
               subjectFilter: simReviewState.subjectFilter,
               index: simReviewState.currentIndex,
               returnTo: simReviewState.returnTo,
+              notesExpanded: simReviewState.notesExpanded,
             });
           } else {
             showExamSetupHome();
@@ -8324,10 +8502,15 @@
       renderQuestion();
     };
 
-    el("btnToggleNotes").onclick = () => toggleNotesDrawer();
-    el("btnRefreshNotes").onclick = () => {
-      bootstrapCloudState(true);
-    };
+    bindNoteEditorEvents({
+      toggleBtn: el("btnToggleNotes"),
+      refreshBtn: el("btnRefreshNotes"),
+      cancelBtn: el("btnCancelEditNote"),
+      inputEl: el("qNoteInput"),
+      sendBtn: el("btnSendNote"),
+      getQuestion: () => (filteredList.length > 0 ? filteredList[currentIndex] : null),
+      onToggle: () => toggleNotesDrawer(),
+    });
 
     // Discrete admin entry: 5 consecutive clicks within 2s OR 1.2s long-press on identity pill
     let pillClickTimestamps = [];
@@ -8365,101 +8548,6 @@
         showToast(`🔒 הכינוי שלך: ${userIdentity.emoji} ${userIdentity.name} · לחץ על כפתור הסנכרון למעבר בין מכשירים`);
       };
     }
-
-    el("btnCancelEditNote").onclick = () => {
-      if (filteredList.length === 0) return;
-      cancelEditMyNote(filteredList[currentIndex].id);
-    };
-
-    async function submitNoteNow() {
-      if (filteredList.length === 0) return;
-      const q = filteredList[currentIndex];
-      const rawText = el("qNoteInput").value;
-      const trimmed = rawText.trim();
-      const isEditing = editingNoteQIds.has(q.id);
-
-      if (!trimmed) {
-        if (isEditing) {
-          await deleteMyNote(q.id);
-        } else {
-          showToast("✏️ כתוב הערה לפני השליחה.");
-          el("qNoteInput").focus();
-        }
-        return;
-      }
-
-      identityNeedsCloudCheck = false;
-      progress.notes[q.id] = rawText;
-      if (!progress.noteUpdatedAt) progress.noteUpdatedAt = {};
-      progress.noteUpdatedAt[q.id] = Date.now();
-      saveProgress();
-
-      if (!communityNotes[q.id] || typeof communityNotes[q.id] !== "object") {
-        communityNotes[q.id] = {};
-      }
-      communityNotes[q.id][userIdentity.userId] = {
-        author: userIdentity.name,
-        emoji: userIdentity.emoji,
-        category: userIdentity.category,
-        text: rawText,
-        updatedAt: Date.now(),
-      };
-
-      delete noteDrafts[q.id];
-      editingNoteQIds.delete(q.id);
-      el("qNoteInput").value = "";
-
-      pendingDirtyQIds.add(q.id);
-      lastNoteMutationAt = Date.now();
-      leaderboardLastFetchedAt = 0;
-      saveCommunityNotesCache();
-      noteSyncState = "saving";
-      renderNotesSection(q, false);
-
-      await enqueueCloudSync();
-      if (noteSyncState === "synced") {
-        showToast(isEditing ? "✏️ ההערה עודכנה בענן!" : "💬 ההערה נשלחה ונשמרה בענן!");
-      }
-    }
-
-    el("qNoteInput").addEventListener("input", (e) => {
-      if (filteredList.length === 0) return;
-      const q = filteredList[currentIndex];
-      noteDrafts[q.id] = e.target.value;
-      updateNoteSyncBadge();
-    });
-
-    let lastNoteShiftDown = false;
-    let lastNoteEnterSubmitAt = 0;
-
-    function triggerEnterSubmit() {
-      const now = Date.now();
-      if (now - lastNoteEnterSubmitAt < 100) return;
-      lastNoteEnterSubmitAt = now;
-      submitNoteNow();
-    }
-
-    el("qNoteInput").addEventListener("keydown", (e) => {
-      lastNoteShiftDown = e.shiftKey;
-      const isEnter = e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter" || e.keyCode === 13;
-      if (isEnter && !e.shiftKey && !e.isComposing) {
-        e.preventDefault();
-        triggerEnterSubmit();
-      }
-    });
-
-    el("qNoteInput").addEventListener("keyup", (e) => {
-      lastNoteShiftDown = e.shiftKey;
-    });
-
-    el("qNoteInput").addEventListener("beforeinput", (e) => {
-      if ((e.inputType === "insertLineBreak" || (e.inputType === "insertText" && e.data === "\n")) && !lastNoteShiftDown) {
-        e.preventDefault();
-        triggerEnterSubmit();
-      }
-    });
-
-    el("btnSendNote").onclick = () => submitNoteNow();
 
     // Flashcard
     el("btnRevealCard").onclick = revealFlashcard;
@@ -8895,6 +8983,10 @@
               toggleQuestionFlag(curQ.id, "star");
               renderSimReviewQuestion();
             }
+          } else if (lowerKey === "n") {
+            e.preventDefault();
+            simReviewState.notesExpanded = !simReviewState.notesExpanded;
+            renderSimReviewNotesSection(true);
           }
         }
         return;
@@ -8991,7 +9083,10 @@
       if (simQ) renderProblemBanner(el("simProblemBanner"), simQ);
     } else if (currentMode === "exam" && simReviewState.active) {
       const revItem = simReviewState.items[simReviewState.currentIndex];
-      if (revItem?.q) renderProblemBanner(el("simReviewProblemBanner"), revItem.q);
+      if (revItem?.q) {
+        renderProblemBanner(el("simReviewProblemBanner"), revItem.q);
+        renderSimReviewNotesSection(true);
+      }
     }
   }
 
@@ -9398,9 +9493,7 @@
       lastNoteMutationAt = Date.now();
       leaderboardLastFetchedAt = 0;
       saveCommunityNotesCache();
-      if (filteredList.length > 0 && filteredList[currentIndex]?.id === qId) {
-        renderNotesSection(filteredList[currentIndex], true);
-      }
+      refreshActiveNotesUI(qId, true);
       if (!el("adminDashboardModal").classList.contains("hidden")) {
         renderAdminModerationTab();
       }
@@ -9418,9 +9511,7 @@
       });
       removeReplyLocallyWithDescendants(qId, noteUserId, replyId);
       saveCommunityNoteRepliesCache();
-      if (filteredList.length > 0 && filteredList[currentIndex]?.id === qId) {
-        renderNotesSection(filteredList[currentIndex], true);
-      }
+      refreshActiveNotesUI(qId, true);
       if (!el("adminDashboardModal").classList.contains("hidden")) {
         renderAdminModerationTab();
       }
@@ -10596,16 +10687,19 @@
 
     if (!handledSessionSwitch && rerender && !simState.active) {
       const activeTag = document.activeElement?.id;
+      const isTypingNoteOrReply =
+        activeTag === "qNoteInput" ||
+        activeTag === "simReviewNoteInput" ||
+        Boolean(document.activeElement?.classList?.contains("note-reply-textarea"));
       if (currentMode === "analytics") {
         renderAnalytics();
       } else if (currentMode === "leaderboard") {
         renderLeaderboard();
       } else if (currentMode === "exam") {
-        renderCurrentView();
+        if (!isTypingNoteOrReply) {
+          renderCurrentView();
+        }
       } else {
-        const isTypingNoteOrReply =
-          activeTag === "qNoteInput" ||
-          Boolean(document.activeElement?.classList?.contains("note-reply-textarea"));
         if (isTypingNoteOrReply) {
           // Avoid interrupting an active note/reply draft; refresh on next navigation
           updateDrillBadge();
