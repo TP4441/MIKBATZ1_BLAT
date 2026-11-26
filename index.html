@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261126c" />
+  <link rel="stylesheet" href="styles.css?v=20261126d" />
 </head>
 <body>
   <header class="topbar">
@@ -98,7 +98,7 @@
             <span class="sync-mobile-ico" aria-hidden="true">☁️</span>
             <span id="syncText" class="sync-text-label">שמירה בדפדפן</span>
           </button>
-          <button type="button" class="icon-btn" id="btnExportObsidian" title="ייצוא שאלות שטעית בהן והערות למחברת טעויות ב-Obsidian" aria-label="ייצוא טעויות ל-Obsidian">
+          <button type="button" class="icon-btn" id="btnExportObsidian" title="ייצוא שאלות והערות לפי פילטרים, נושאים ושנים" aria-label="ייצוא שאלות והערות">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19v20H6.5a2.5 2.5 0 0 1 0-5H19" />
               <path d="M9 7h6" /><path d="M9 11h6" />
@@ -902,6 +902,188 @@
     <div class="lightbox-stage" id="lightboxStage"></div>
   </div>
 
+  <!-- Export Questions & Notes Modal -->
+  <div class="modal-overlay hidden" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle">
+    <div class="modal-box card export-modal-box">
+      <div class="modal-header export-modal-header">
+        <div>
+          <h2 id="exportModalTitle">📤 ייצוא שאלות והערות</h2>
+          <p class="muted export-modal-subtitle">בחר אילו שאלות והערות לייצא, איך להפריד ביניהן (נושאים, שנים, פילטרים) ובאיזה פורמט להוריד.</p>
+        </div>
+        <button type="button" class="icon-btn icon-only" id="btnCloseExportModal" aria-label="סגור חלון">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="export-modal-body">
+        <!-- Quick Presets -->
+        <section class="export-section export-presets-section" aria-label="תבניות ייצוא מהירות">
+          <div class="export-section-head">
+            <span class="export-section-title">⚡ בחירה מהירה</span>
+          </div>
+          <div class="chips-wrap" id="exportPresetChips">
+            <button type="button" class="chip" data-export-preset="mistakes_classic">📓 טעויות והערות (קלאסי)</button>
+            <button type="button" class="chip" data-export-preset="wrong">❌ שאלות שטעיתי בהן</button>
+            <button type="button" class="chip" data-export-preset="correct">✅ שאלות שלא טעיתי בהן</button>
+            <button type="button" class="chip" data-export-preset="my_notes">📝 ההערות שלי בלבד</button>
+            <button type="button" class="chip" data-export-preset="all_notes">💬 כל ההערות באתר</button>
+            <button type="button" class="chip" data-export-preset="from_active">🔄 לפי הסינון הנוכחי</button>
+          </div>
+        </section>
+
+        <!-- 1. Attempt / Correctness Filter -->
+        <section class="export-section" aria-label="סינון לפי מענה">
+          <div class="export-section-head">
+            <span class="export-section-title">🎯 1. שאלות שטעיתי / לא טעיתי בהן</span>
+            <div class="filter-mini-links">
+              <button type="button" class="link-btn" id="btnExportAttemptAll">הכל</button>
+              <button type="button" class="link-btn" id="btnExportAttemptWrong">רק טעיתי</button>
+              <button type="button" class="link-btn" id="btnExportAttemptCorrect">צדקתי</button>
+              <button type="button" class="link-btn" id="btnExportAttemptNotWrong">לא טעיתי (כולל לא פתורות)</button>
+            </div>
+          </div>
+          <div class="chips-wrap" id="exportAttemptChips">
+            <button type="button" class="chip" data-export-attempt="wrong">❌ טעיתי בהן</button>
+            <button type="button" class="chip" data-export-attempt="correct">✅ לא טעיתי (צדקתי)</button>
+            <button type="button" class="chip" data-export-attempt="unsolved">⏳ לא נפתרו</button>
+          </div>
+        </section>
+
+        <!-- 2. Subjects -->
+        <section class="export-section" aria-label="סינון לפי נושאים">
+          <div class="export-section-head">
+            <span class="export-section-title">🏥 2. נושאים</span>
+            <div class="filter-mini-links">
+              <button type="button" class="link-btn" id="btnExportSubjectsAll">הכל</button>
+              <button type="button" class="link-btn" id="btnExportSubjectsClear">נקה</button>
+            </div>
+          </div>
+          <label class="toggle-switch export-merge-toggle" title="אחד את פתולוגיית ריאות ופתולוגיית קרדיולוגיה לתוך ריאות וקרדיולוגיה">
+            <input type="checkbox" id="exportMergePathologyToggle" checked />
+            <span class="slider"></span>
+            <span class="toggle-label">🔗 איחוד תתי-פתולוגיה (ריאות / קרדיולוגיה)</span>
+          </label>
+          <div class="chips-wrap" id="exportSubjectChips"></div>
+        </section>
+
+        <!-- 3. Years / Exams -->
+        <section class="export-section" aria-label="סינון לפי שנים במבחנים">
+          <div class="export-section-head">
+            <span class="export-section-title">📅 3. שנים ומבחנים</span>
+            <div class="filter-mini-links">
+              <button type="button" class="link-btn" id="btnExportYearsRecent">2017–2026</button>
+              <button type="button" class="link-btn" id="btnExportYearsPastOnly">מבחני עבר בלבד</button>
+              <button type="button" class="link-btn" id="btnExportYearsAll">הכל</button>
+              <button type="button" class="link-btn" id="btnExportYearsClear">נקה</button>
+            </div>
+          </div>
+          <div class="chips-wrap" id="exportExamChips"></div>
+        </section>
+
+        <!-- 4. Additional Existing Filters & Search -->
+        <section class="export-section" aria-label="פילטרים נוספים">
+          <div class="export-section-head">
+            <span class="export-section-title">🏷️ 4. פילטרים נוספים וחיפוש</span>
+            <div class="filter-mini-links">
+              <button type="button" class="link-btn" id="btnExportExtraClear">נקה</button>
+            </div>
+          </div>
+          <div class="chips-wrap" id="exportExtraChips">
+            <button type="button" class="chip" data-export-extra="starred">⭐ מועדפים</button>
+            <button type="button" class="chip" data-export-extra="unsure">🤔 התלבטתי</button>
+            <button type="button" class="chip" data-export-extra="problematic">⚠️ בעייתיות</button>
+            <button type="button" class="chip" data-export-extra="with_image">🖼️ עם תמונה</button>
+            <button type="button" class="chip" data-export-extra="with_note">📝 עם הערה שלי</button>
+            <button type="button" class="chip" data-export-extra="with_any_note">💬 עם הערות באתר</button>
+            <button type="button" class="chip" data-export-extra="appeal">⚖️ שאלות ערעור</button>
+            <button type="button" class="chip" data-export-extra="drill">🔄 לתיקון טעויות</button>
+            <button type="button" class="chip" data-export-extra="highlighted">🖍️ עם מרקור שלי</button>
+          </div>
+          <div class="export-extra-controls">
+            <div class="export-match-mode" id="exportExtraMatchWrap" role="group" aria-label="שילוב פילטרים נוספים">
+              <span class="muted">שילוב פילטרים:</span>
+              <button type="button" class="chip active" data-export-match="or">מספיק אחד (או)</button>
+              <button type="button" class="chip" data-export-match="and">חייב את כולם (וגם)</button>
+            </div>
+            <div class="search-box export-search-box">
+              <svg class="search-icon ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8" />
+                <path d="m21 21-4.3-4.3" />
+              </svg>
+              <input type="text" id="exportSearchInput" placeholder="סינון לפי מילה בשאלה, מסיח או הערה..." aria-label="חיפוש בייצוא" />
+              <button type="button" class="clear-search hidden" id="btnClearExportSearch" title="נקה חיפוש" aria-label="נקה חיפוש">
+                <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. Notes & Content Detail -->
+        <section class="export-section" aria-label="הגדרות הערות ופירוט">
+          <div class="export-section-head">
+            <span class="export-section-title">💬 5. הערות ורמת פירוט</span>
+          </div>
+          <div class="export-subblock">
+            <span class="export-sublabel">אילו הערות לכלול?</span>
+            <div class="chips-wrap" id="exportNotesScopeChips">
+              <button type="button" class="chip active" data-export-notes="all">💬 כל ההערות באתר (שלי + קהילה + תגובות)</button>
+              <button type="button" class="chip" data-export-notes="mine">📝 ההערות שלי בלבד</button>
+              <button type="button" class="chip" data-export-notes="none">🚫 ללא הערות</button>
+            </div>
+          </div>
+          <div class="export-subblock">
+            <span class="export-sublabel">תוכן כל שאלה:</span>
+            <div class="chips-wrap" id="exportDetailChips">
+              <button type="button" class="chip active" data-export-detail="full">📋 מלא (שאלה + מסיחים + תשובה + הערות)</button>
+              <button type="button" class="chip" data-export-detail="compact">🎯 תמציתי (שאלה + תשובה + הערות)</button>
+              <button type="button" class="chip" data-export-detail="notes_only">🗒️ הערות בלבד (מחברת הערות)</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 6. Separation / Grouping & File Format -->
+        <section class="export-section" aria-label="הפרדה ופורמט ייצוא">
+          <div class="export-section-head">
+            <span class="export-section-title">🗂️ 6. הפרדה ואופן הורדה</span>
+          </div>
+          <div class="export-subblock">
+            <span class="export-sublabel">הפרדה (חלוקה לסקציות או לקבצים נפרדים):</span>
+            <div class="chips-wrap" id="exportGroupByChips">
+              <button type="button" class="chip" data-export-group="none">📄 רצף אחד</button>
+              <button type="button" class="chip active" data-export-group="subject">🏥 לפי נושאים</button>
+              <button type="button" class="chip" data-export-group="year">📅 לפי שנים במבחנים</button>
+              <button type="button" class="chip" data-export-group="subject_year">🏥←📅 נושא ← שנה</button>
+              <button type="button" class="chip" data-export-group="year_subject">📅←🏥 שנה ← נושא</button>
+              <button type="button" class="chip" data-export-group="correctness">🎯 לפי טעיתי / לא טעיתי</button>
+            </div>
+          </div>
+          <div class="export-subblock">
+            <span class="export-sublabel">פורמט קובץ:</span>
+            <div class="chips-wrap" id="exportFormatChips">
+              <button type="button" class="chip active" data-export-format="md">📝 קובץ Markdown אחד (.md)</button>
+              <button type="button" class="chip" data-export-format="zip">🗂️ קבצים נפרדים בארכיון (.zip)</button>
+              <button type="button" class="chip" data-export-format="csv">📊 טבלת Excel (.csv)</button>
+              <button type="button" class="chip" data-export-format="json">🧾 נתונים מובנים (.json)</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="export-modal-footer">
+        <div class="export-summary-bar">
+          <strong class="tabular-text" id="exportMatchSummary">נמצאו 0 שאלות לייצוא</strong>
+          <span class="muted tabular-text" id="exportMatchMeta"></span>
+        </div>
+        <div class="export-footer-actions">
+          <button type="button" class="btn-primary" id="btnRunExport">📥 הורד ייצוא</button>
+          <button type="button" class="btn-secondary hidden" id="btnExportToObsidianLocal" title="ייצא ישירות לתיקיית Obsidian המקומית">📓 שמור ל-Obsidian</button>
+          <button type="button" class="btn-ghost btn-sm" id="btnResetExportFilters">איפוס הכל</button>
+          <button type="button" class="btn-secondary btn-sm" id="btnCancelExportModal">סגור</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Backup / Import Modal -->
   <div class="modal-overlay hidden" id="backupModal" role="dialog" aria-modal="true" aria-labelledby="backupModalTitle">
     <div class="modal-box card">
@@ -1364,6 +1546,7 @@
   <script src="questions_data.js?v=20261125j"></script>
   <script src="qr.js?v=20261124d"></script>
   <script src="drawboard.js?v=20261126b"></script>
-  <script src="app.js?v=20261126c"></script>
+  <script src="export.js?v=20261126d"></script>
+  <script src="app.js?v=20261126d"></script>
 </body>
 </html>

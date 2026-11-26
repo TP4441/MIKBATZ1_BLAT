@@ -7358,65 +7358,394 @@
     `;
   }
 
-  // Export to Obsidian Mistakes Notebook
-  async function exportToObsidian() {
-    const wrongOrNoted = QUESTIONS.filter((q) => {
-      const att = progress.attempts[q.id];
-      const note = getMyNoteText(q.id).trim();
-      const qComm = getQuestionCommunityNotesList(q.id);
-      const qProbs = getQuestionProblemsList(q.id);
-      const fl = progress.flags[q.id] || {};
-      return (att && !att.isCorrect) || note || qComm.length > 0 || qProbs.length > 0 || fl.star || (!cloudCommunityLoaded && !!fl.problem);
+  // Export Questions & Notes Modal
+  const exportState = {
+    initialized: false,
+    attempts: new Set(), // empty = all; "wrong" | "correct" | "unsolved"
+    exams: new Set(), // empty = all
+    subjects: new Set(), // empty = all
+    extraFilters: new Set(),
+    extraMatchMode: "or", // "or" | "and"
+    search: "",
+    mergePathology: true,
+    notesScope: "all", // "all" | "mine" | "none"
+    detailLevel: "full", // "full" | "compact" | "notes_only"
+    groupBy: "subject", // "none" | "subject" | "year" | "subject_year" | "year_subject" | "correctness"
+    format: "md", // "md" | "zip" | "csv" | "json"
+    activePreset: null,
+  };
+
+  function getExportCtx() {
+    return {
+      progress,
+      userIdentity,
+      cloudCommunityLoaded,
+      problemTypes: PROBLEM_TYPES,
+      getMyNoteText,
+      getQuestionCommunityNotesList,
+      getNoteRepliesTree,
+      getQuestionProblemsList,
+    };
+  }
+
+  function getExportUniqueSubjects() {
+    const set = new Set(
+      QUESTIONS.map((q) => (exportState.mergePathology ? (q.baseSubject || q.subject) : q.subject))
+    );
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "he"));
+  }
+
+  function getExportMatchedItems() {
+    const exporter = window.MikbatzExport;
+    if (!exporter) return [];
+    return exporter.filterQuestions(QUESTIONS, exportState, getExportCtx());
+  }
+
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  function buildExportFilenameBase() {
+    const dateStr = todayKey();
+    if (exportState.detailLevel === "notes_only") {
+      return exportState.notesScope === "mine"
+        ? `ההערות_שלי_מקבץ_1_${dateStr}`
+        : `כל_ההערות_מקבץ_1_${dateStr}`;
+    }
+    if (exportState.attempts.size === 1 && exportState.attempts.has("wrong")) {
+      return `שאלות_שטעיתי_מקבץ_1_${dateStr}`;
+    }
+    if (exportState.attempts.size === 1 && exportState.attempts.has("correct")) {
+      return `שאלות_שצדקתי_מקבץ_1_${dateStr}`;
+    }
+    return `ייצוא_שאלות_מקבץ_1_${dateStr}`;
+  }
+
+  function applyExportPreset(presetId) {
+    exportState.activePreset = presetId;
+    exportState.exams.clear();
+    exportState.subjects.clear();
+    exportState.search = "";
+
+    if (presetId === "mistakes_classic") {
+      exportState.attempts.clear();
+      exportState.extraFilters = new Set(["drill", "starred", "problematic", "with_any_note"]);
+      exportState.extraMatchMode = "or";
+      exportState.notesScope = "all";
+      exportState.detailLevel = "full";
+      exportState.groupBy = "subject";
+    } else if (presetId === "wrong") {
+      exportState.attempts = new Set(["wrong"]);
+      exportState.extraFilters.clear();
+      exportState.notesScope = "all";
+      exportState.detailLevel = "full";
+      exportState.groupBy = "subject";
+    } else if (presetId === "correct") {
+      exportState.attempts = new Set(["correct"]);
+      exportState.extraFilters.clear();
+      exportState.notesScope = "all";
+      exportState.detailLevel = "full";
+      exportState.groupBy = "subject";
+    } else if (presetId === "my_notes") {
+      exportState.attempts.clear();
+      exportState.extraFilters = new Set(["with_note"]);
+      exportState.extraMatchMode = "or";
+      exportState.notesScope = "mine";
+      exportState.detailLevel = "notes_only";
+      exportState.groupBy = "subject";
+    } else if (presetId === "all_notes") {
+      exportState.attempts.clear();
+      exportState.extraFilters = new Set(["with_any_note"]);
+      exportState.extraMatchMode = "or";
+      exportState.notesScope = "all";
+      exportState.detailLevel = "notes_only";
+      exportState.groupBy = "subject";
+    } else if (presetId === "from_active") {
+      const af = getActiveFilters();
+      exportState.exams = new Set(af.exams);
+      exportState.mergePathology = Boolean(filters.mergePathology);
+      exportState.subjects = new Set(af.subjects);
+      exportState.search = af.search || "";
+      exportState.attempts.clear();
+      exportState.extraFilters.clear();
+      exportState.extraMatchMode = "or";
+      if (currentMode === "drill") {
+        exportState.extraFilters.add("drill");
+      } else {
+        for (const st of filters.statuses) {
+          if (st === "wrong" || st === "unsolved") {
+            exportState.attempts.add(st);
+          } else {
+            exportState.extraFilters.add(st);
+          }
+        }
+      }
+    }
+    renderExportModalUI();
+  }
+
+  function resetExportFilters() {
+    exportState.activePreset = null;
+    exportState.attempts.clear();
+    exportState.exams.clear();
+    exportState.subjects.clear();
+    exportState.extraFilters.clear();
+    exportState.extraMatchMode = "or";
+    exportState.search = "";
+    exportState.mergePathology = Boolean(filters.mergePathology);
+    exportState.notesScope = "all";
+    exportState.detailLevel = "full";
+    exportState.groupBy = "subject";
+    exportState.format = "md";
+    renderExportModalUI();
+  }
+
+  function renderExportModalUI() {
+    if (!el("exportModal")) return;
+
+    if (exportState.detailLevel === "notes_only" && exportState.notesScope === "none") {
+      exportState.notesScope = "mine";
+    }
+    if (exportState.format === "zip" && exportState.groupBy === "none") {
+      exportState.groupBy = "subject";
+    }
+
+    el("exportPresetChips")?.querySelectorAll(".chip[data-export-preset]").forEach((c) => {
+      c.classList.toggle("active", exportState.activePreset === c.dataset.exportPreset);
     });
 
-    if (wrongOrNoted.length === 0) {
-      showToast("אין עדיין שאלות שטעית בהן, סימנת או הוספת להן הערה.");
+    el("exportAttemptChips")?.querySelectorAll(".chip[data-export-attempt]").forEach((c) => {
+      c.classList.toggle("active", exportState.attempts.has(c.dataset.exportAttempt));
+    });
+
+    const mergeToggle = el("exportMergePathologyToggle");
+    if (mergeToggle) mergeToggle.checked = exportState.mergePathology;
+
+    // Subject chips with counts
+    const subjCounts = new Map();
+    for (const q of QUESTIONS) {
+      const s = exportState.mergePathology ? (q.baseSubject || q.subject) : q.subject;
+      subjCounts.set(s, (subjCounts.get(s) || 0) + 1);
+    }
+    const subjWrap = el("exportSubjectChips");
+    if (subjWrap) {
+      subjWrap.innerHTML = "";
+      getExportUniqueSubjects().forEach((subj) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chip" + (exportState.subjects.has(subj) ? " active" : "");
+        btn.textContent = `${formatSubject(subj)} (${subjCounts.get(subj) || 0})`;
+        btn.onclick = () => {
+          exportState.activePreset = null;
+          if (exportState.subjects.has(subj)) exportState.subjects.delete(subj);
+          else exportState.subjects.add(subj);
+          renderExportModalUI();
+        };
+        subjWrap.appendChild(btn);
+      });
+    }
+
+    // Exam/Year chips with counts
+    const examWrap = el("exportExamChips");
+    if (examWrap) {
+      examWrap.innerHTML = "";
+      EXAMS.forEach((ex) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className =
+          "chip" +
+          (ex.name === PRACTICE_EXAM_NAME ? " chip-practice" : "") +
+          (exportState.exams.has(ex.name) ? " active" : "");
+        btn.textContent = `${ex.name} (${ex.expectedCount})`;
+        btn.onclick = () => {
+          exportState.activePreset = null;
+          if (exportState.exams.has(ex.name)) exportState.exams.delete(ex.name);
+          else exportState.exams.add(ex.name);
+          renderExportModalUI();
+        };
+        examWrap.appendChild(btn);
+      });
+    }
+
+    el("exportExtraChips")?.querySelectorAll(".chip[data-export-extra]").forEach((c) => {
+      c.classList.toggle("active", exportState.extraFilters.has(c.dataset.exportExtra));
+    });
+
+    el("exportExtraMatchWrap")?.querySelectorAll(".chip[data-export-match]").forEach((c) => {
+      c.classList.toggle("active", exportState.extraMatchMode === c.dataset.exportMatch);
+    });
+
+    const searchInput = el("exportSearchInput");
+    if (searchInput && searchInput.value !== exportState.search) {
+      searchInput.value = exportState.search;
+    }
+    el("btnClearExportSearch")?.classList.toggle("hidden", !exportState.search);
+
+    el("exportNotesScopeChips")?.querySelectorAll(".chip[data-export-notes]").forEach((c) => {
+      const val = c.dataset.exportNotes;
+      c.classList.toggle("active", exportState.notesScope === val);
+      c.disabled = exportState.detailLevel === "notes_only" && val === "none";
+    });
+
+    el("exportDetailChips")?.querySelectorAll(".chip[data-export-detail]").forEach((c) => {
+      c.classList.toggle("active", exportState.detailLevel === c.dataset.exportDetail);
+    });
+
+    el("exportGroupByChips")?.querySelectorAll(".chip[data-export-group]").forEach((c) => {
+      const val = c.dataset.exportGroup;
+      c.classList.toggle("active", exportState.groupBy === val);
+      c.disabled = exportState.format === "zip" && val === "none";
+    });
+
+    el("exportFormatChips")?.querySelectorAll(".chip[data-export-format]").forEach((c) => {
+      c.classList.toggle("active", exportState.format === c.dataset.exportFormat);
+    });
+
+    // Live match summary
+    const matched = getExportMatchedItems();
+    const summaryEl = el("exportMatchSummary");
+    const metaEl = el("exportMatchMeta");
+    const runBtn = el("btnRunExport");
+    const obsBtn = el("btnExportToObsidianLocal");
+
+    if (obsBtn) {
+      obsBtn.classList.toggle("hidden", !serverOnline);
+      obsBtn.disabled = matched.length === 0;
+    }
+    if (runBtn) {
+      runBtn.disabled = matched.length === 0;
+    }
+
+    if (matched.length === 0) {
+      if (summaryEl) summaryEl.textContent = "לא נמצאו שאלות התואמות לסינון שנבחר";
+      if (metaEl) metaEl.textContent = "נסה להרחיב את השנים, הנושאים או הפילטרים.";
+    } else {
+      let wrongN = 0;
+      let correctN = 0;
+      let notesQ = 0;
+      let totalNotes = 0;
+      for (const item of matched) {
+        if (item.attemptStatus === "wrong") wrongN++;
+        else if (item.attemptStatus === "correct") correctN++;
+        if (item.exportedNotes.length > 0) {
+          notesQ++;
+          totalNotes += item.exportedNotes.length;
+        }
+      }
+      if (summaryEl) summaryEl.textContent = `נמצאו ${matched.length} שאלות לייצוא`;
+      if (metaEl) {
+        metaEl.textContent = `${wrongN} טעיתי · ${correctN} צדקתי · ${notesQ} שאלות עם הערות (${totalNotes} הערות)`;
+      }
+    }
+  }
+
+  function openExportModal() {
+    if (simState.active) {
+      showToast("⏱️ לא ניתן לייצא בזמן סימולציית מבחן פעילה.");
+      return;
+    }
+    if (!exportState.initialized) {
+      exportState.mergePathology = Boolean(filters.mergePathology);
+      exportState.initialized = true;
+    }
+    renderExportModalUI();
+    el("exportModal")?.classList.remove("hidden");
+  }
+
+  function closeExportModal() {
+    el("exportModal")?.classList.add("hidden");
+  }
+
+  function runExportDownload() {
+    const exporter = window.MikbatzExport;
+    if (!exporter) return;
+    const items = getExportMatchedItems();
+    if (items.length === 0) {
+      showToast("אין שאלות תואמות לייצוא.");
+      return;
+    }
+    const ctx = getExportCtx();
+    const baseName = buildExportFilenameBase();
+
+    if (exportState.format === "zip") {
+      const files = exporter.buildSeparatedMarkdownFiles(items, exportState, ctx);
+      const zipBytes = exporter.buildZipArchive(files);
+      const blob = new Blob([zipBytes], { type: "application/zip" });
+      triggerBlobDownload(blob, `${baseName}.zip`);
+      showToast(`🗂️ הורד ארכיון ZIP עם ${files.length - 1} קבצים (${items.length} שאלות)!`);
       return;
     }
 
-    if (serverOnline) {
-      try {
-        const res = await fetch("/api/export-obsidian", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ progress, communityNotes, communityProblems, questionOverrides }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          showToast(`📓 יוצאו ${data.count} שאלות למחברת הטעויות ב-Obsidian!`);
-          return;
-        }
-      } catch {}
+    if (exportState.format === "csv") {
+      const csv = exporter.buildCsvOutput(items, exportState, ctx);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      triggerBlobDownload(blob, `${baseName}.csv`);
+      showToast(`📊 הורד קובץ CSV עם ${items.length} שאלות!`);
+      return;
     }
 
-    // Offline fallback: download Markdown
-    const lines = ["# מחברת טעויות והערות – מקבץ 1\n"];
-    wrongOrNoted.forEach((q) => {
-      const note = getMyNoteText(q.id).trim();
-      const qComm = getQuestionCommunityNotesList(q.id);
-      const qProbs = getQuestionProblemsList(q.id);
-      const corrText = q.correct.map((i) => `${q.options[i].letter}. ${q.options[i].text}`).join(" / ");
-      lines.push(`## ${q.exam} · שאלה ${q.num} (${q.subject})`);
-      lines.push(q.stem);
-      lines.push(`**תשובה נכונה:** ${corrText}`);
-      qProbs.forEach((p) => {
-        const info = PROBLEM_TYPES[p.type] || PROBLEM_TYPES.question_issue;
-        const body = p.text ? `: ${p.text}` : "";
-        lines.push(`> ⚠️ **${info.label} (${p.emoji} ${p.author})**${body}`);
-      });
-      if (note) lines.push(`> 📝 **הפנינה שלי (${userIdentity.emoji} ${userIdentity.name}):** ${note}`);
-      qComm.filter((n) => !n.isMine).forEach((n) => {
-        lines.push(`> 💬 **${n.emoji} ${n.author}:** ${n.text}`);
-      });
-      lines.push("");
-    });
+    if (exportState.format === "json") {
+      const jsonStr = exporter.buildJsonOutput(items, exportState, ctx);
+      const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" });
+      triggerBlobDownload(blob, `${baseName}.json`);
+      showToast(`🧾 הורד קובץ JSON עם ${items.length} שאלות!`);
+      return;
+    }
 
-    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "מחברת טעויות - מקבץ 1.md";
-    a.click();
-    showToast(`📥 הורד קובץ Markdown עם ${wrongOrNoted.length} שאלות!`);
+    // Default: single Markdown (.md)
+    const md = exporter.buildMarkdownDocument(items, exportState, ctx);
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
+    triggerBlobDownload(blob, `${baseName}.md`);
+    showToast(`📥 הורד קובץ Markdown עם ${items.length} שאלות!`);
+  }
+
+  async function runExportToObsidianLocal() {
+    const exporter = window.MikbatzExport;
+    if (!exporter || !serverOnline) return;
+    const items = getExportMatchedItems();
+    if (items.length === 0) {
+      showToast("אין שאלות תואמות לייצוא.");
+      return;
+    }
+    const ctx = getExportCtx();
+    const isSeparated = exportState.format === "zip";
+    const payload = {
+      count: items.length,
+      groupBy: exportState.groupBy,
+      progress,
+      communityNotes,
+      communityProblems,
+      questionOverrides,
+    };
+    if (isSeparated) {
+      payload.files = exporter.buildSeparatedMarkdownFiles(items, exportState, ctx);
+    } else {
+      payload.markdown = exporter.buildMarkdownDocument(items, exportState, ctx);
+    }
+    try {
+      const res = await fetch("/api/export-obsidian", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(
+          isSeparated
+            ? `📓 יוצאו ${data.filesCount || payload.files.length} קבצים (${items.length} שאלות) ל-Obsidian!`
+            : `📓 יוצאו ${data.count} שאלות למחברת ב-Obsidian!`
+        );
+        return;
+      }
+    } catch {}
+    showToast("❌ השמירה ל-Obsidian נכשלה, ניתן להוריד ישירות כקובץ.");
   }
 
   // Mode switching
@@ -7544,7 +7873,157 @@
     el("btnTheme").onclick = toggleTheme;
     el("btnToggleTopbar")?.addEventListener("click", () => toggleTopbarHidden({ manageFocus: true }));
     el("btnRestoreTopbar")?.addEventListener("click", () => setTopbarHidden(false, { persist: true, manageFocus: true }));
-    el("btnExportObsidian").onclick = exportToObsidian;
+    el("btnExportObsidian").onclick = openExportModal;
+
+    // Export Modal bindings
+    el("btnCloseExportModal")?.addEventListener("click", closeExportModal);
+    el("btnCancelExportModal")?.addEventListener("click", closeExportModal);
+    el("exportModal")?.addEventListener("click", (e) => {
+      if (e.target === el("exportModal")) closeExportModal();
+    });
+    el("btnRunExport")?.addEventListener("click", runExportDownload);
+    el("btnExportToObsidianLocal")?.addEventListener("click", runExportToObsidianLocal);
+    el("btnResetExportFilters")?.addEventListener("click", resetExportFilters);
+
+    el("exportPresetChips")?.querySelectorAll(".chip[data-export-preset]").forEach((c) => {
+      c.addEventListener("click", () => applyExportPreset(c.dataset.exportPreset));
+    });
+
+    el("exportAttemptChips")?.querySelectorAll(".chip[data-export-attempt]").forEach((c) => {
+      c.addEventListener("click", () => {
+        exportState.activePreset = null;
+        const k = c.dataset.exportAttempt;
+        if (exportState.attempts.has(k)) exportState.attempts.delete(k);
+        else exportState.attempts.add(k);
+        renderExportModalUI();
+      });
+    });
+    el("btnExportAttemptAll")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.attempts.clear();
+      renderExportModalUI();
+    });
+    el("btnExportAttemptWrong")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.attempts = new Set(["wrong"]);
+      renderExportModalUI();
+    });
+    el("btnExportAttemptCorrect")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.attempts = new Set(["correct"]);
+      renderExportModalUI();
+    });
+    el("btnExportAttemptNotWrong")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.attempts = new Set(["correct", "unsolved"]);
+      renderExportModalUI();
+    });
+
+    el("exportMergePathologyToggle")?.addEventListener("change", (e) => {
+      exportState.activePreset = null;
+      exportState.mergePathology = Boolean(e.target.checked);
+      exportState.subjects.clear();
+      renderExportModalUI();
+    });
+    el("btnExportSubjectsAll")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.subjects = new Set(getExportUniqueSubjects());
+      renderExportModalUI();
+    });
+    el("btnExportSubjectsClear")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.subjects.clear();
+      renderExportModalUI();
+    });
+
+    el("btnExportYearsRecent")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.exams = new Set(
+        EXAMS.map((ex) => ex.name).filter((name) => {
+          const m = String(name).match(/^(\d{4})/);
+          if (!m) return false;
+          const yr = Number(m[1]);
+          return yr >= 2017 && yr <= 2026;
+        })
+      );
+      renderExportModalUI();
+    });
+    el("btnExportYearsPastOnly")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.exams = new Set(EXAMS.map((ex) => ex.name).filter((n) => n !== PRACTICE_EXAM_NAME));
+      renderExportModalUI();
+    });
+    el("btnExportYearsAll")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.exams = new Set(EXAMS.map((ex) => ex.name));
+      renderExportModalUI();
+    });
+    el("btnExportYearsClear")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.exams.clear();
+      renderExportModalUI();
+    });
+
+    el("exportExtraChips")?.querySelectorAll(".chip[data-export-extra]").forEach((c) => {
+      c.addEventListener("click", () => {
+        exportState.activePreset = null;
+        const k = c.dataset.exportExtra;
+        if (exportState.extraFilters.has(k)) exportState.extraFilters.delete(k);
+        else exportState.extraFilters.add(k);
+        renderExportModalUI();
+      });
+    });
+    el("btnExportExtraClear")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.extraFilters.clear();
+      renderExportModalUI();
+    });
+    el("exportExtraMatchWrap")?.querySelectorAll(".chip[data-export-match]").forEach((c) => {
+      c.addEventListener("click", () => {
+        exportState.activePreset = null;
+        exportState.extraMatchMode = c.dataset.exportMatch === "and" ? "and" : "or";
+        renderExportModalUI();
+      });
+    });
+    el("exportSearchInput")?.addEventListener("input", (e) => {
+      exportState.activePreset = null;
+      exportState.search = e.target.value;
+      renderExportModalUI();
+    });
+    el("btnClearExportSearch")?.addEventListener("click", () => {
+      exportState.activePreset = null;
+      exportState.search = "";
+      renderExportModalUI();
+    });
+
+    el("exportNotesScopeChips")?.querySelectorAll(".chip[data-export-notes]").forEach((c) => {
+      c.addEventListener("click", () => {
+        exportState.activePreset = null;
+        exportState.notesScope = c.dataset.exportNotes;
+        renderExportModalUI();
+      });
+    });
+    el("exportDetailChips")?.querySelectorAll(".chip[data-export-detail]").forEach((c) => {
+      c.addEventListener("click", () => {
+        exportState.activePreset = null;
+        exportState.detailLevel = c.dataset.exportDetail;
+        renderExportModalUI();
+      });
+    });
+    el("exportGroupByChips")?.querySelectorAll(".chip[data-export-group]").forEach((c) => {
+      c.addEventListener("click", () => {
+        exportState.activePreset = null;
+        exportState.groupBy = c.dataset.exportGroup;
+        renderExportModalUI();
+      });
+    });
+    el("exportFormatChips")?.querySelectorAll(".chip[data-export-format]").forEach((c) => {
+      c.addEventListener("click", () => {
+        exportState.activePreset = null;
+        exportState.format = c.dataset.exportFormat;
+        renderExportModalUI();
+      });
+    });
 
     // Search
     el("searchInput").addEventListener("input", (e) => {
@@ -8265,6 +8744,7 @@
           !el("adminLoginModal").classList.contains("hidden") ||
           !el("adminQuestionModal").classList.contains("hidden") ||
           !el("adminDashboardModal").classList.contains("hidden") ||
+          !el("exportModal")?.classList.contains("hidden") ||
           !el("backupModal").classList.contains("hidden") ||
           !el("shortcutsModal").classList.contains("hidden");
         if (!hasOpenModal && window.MikbatzDrawBoard?.handleEscape()) {
@@ -8280,6 +8760,7 @@
         closeAdminLoginModal();
         closeAdminQuestionModal();
         closeAdminDashboardModal();
+        closeExportModal();
         el("backupModal").classList.add("hidden");
         el("shortcutsModal").classList.add("hidden");
         return;
@@ -8291,7 +8772,8 @@
         !el("syncModal")?.classList.contains("hidden") ||
         !el("adminLoginModal").classList.contains("hidden") ||
         !el("adminQuestionModal").classList.contains("hidden") ||
-        !el("adminDashboardModal").classList.contains("hidden")
+        !el("adminDashboardModal").classList.contains("hidden") ||
+        !el("exportModal")?.classList.contains("hidden")
       ) {
         return;
       }
@@ -10596,6 +11078,7 @@
   function isAnyBlockingModalOpen() {
     const modalIds = [
       "syncModal",
+      "exportModal",
       "backupModal",
       "shortcutsModal",
       "feedbackModal",
@@ -10654,7 +11137,7 @@
         html: `
           <ul class="tour-points">
             <li>הכינוי שלך (<span class="tour-tag">${identityLabel}</span>) וכפתור <strong>מחוברים עכשיו</strong> לראות מי מתרגל כרגע.</li>
-            <li><strong>ייצוא</strong> שגיאות והערות ל-Markdown/Obsidian ו<strong>גיבוי</strong> מלא לקובץ JSON.</li>
+            <li><strong>ייצוא</strong> שאלות והערות לפי נושא, שנה וסטטוס (Markdown/ZIP/CSV/JSON) ו<strong>גיבוי</strong> מלא לקובץ JSON.</li>
             <li>החלפת <strong>מצב כהה/בהיר</strong>, ובמחשב גם <strong>קיצורי מקלדת</strong>.</li>
           </ul>
         `,
