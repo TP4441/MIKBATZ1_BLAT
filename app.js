@@ -19,9 +19,6 @@
   const CUSTOM_IDENTITIES_CACHE_KEY = "med_exam_custom_identities_cache_v1";
   const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
   const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
-  const APP_VERSION = "2026.11.26.2";
-  const APP_BUILD_DATE = "2026-11-26";
-  const GITHUB_REPO_SLUG = "TP4441/MIKBATZ1_BLAT";
   const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
   const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
   const CLOUD_API_BASE = resolveCloudApiBase();
@@ -420,8 +417,6 @@
   let adminFeedbackCache = [];
   let adminMetricsCache = null;
   let adminMetricsLoading = false;
-  let adminVersionsCache = null;
-  let adminVersionsLoading = false;
   let activeRenameUserId = null;
   let activeBlockUserId = null;
   let adminActiveTab = "users";
@@ -8942,14 +8937,11 @@
     el("btnAdminRefreshUsers")?.addEventListener("click", () => loadAdminUsers(true));
     el("btnAdminRefreshFeedback")?.addEventListener("click", () => loadAdminFeedback(true));
     el("btnAdminRefreshTraffic")?.addEventListener("click", () => loadAdminMetrics(true, true));
-    el("btnAdminRefreshVersions")?.addEventListener("click", () => loadAdminVersions(true, true));
     el("btnAdminOpenAddName")?.addEventListener("click", openAdminAddNameModal);
-    el("btnAdminOpenAddRelease")?.addEventListener("click", openAdminAddReleaseModal);
     el("adminUsersSearch")?.addEventListener("input", renderAdminUsersTab);
     el("adminOverridesSearch")?.addEventListener("input", renderAdminOverridesTab);
     el("adminModerationSearch")?.addEventListener("input", renderAdminModerationTab);
     el("adminFeedbackSearch")?.addEventListener("input", renderAdminFeedbackTab);
-    el("adminVersionsSearch")?.addEventListener("input", renderAdminVersionsTab);
 
     el("adminUsersFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
       chip.addEventListener("click", () => {
@@ -8989,13 +8981,6 @@
     el("btnAdminCancelBlock")?.addEventListener("click", closeAdminBlockUserModal);
     el("adminBlockUserModal")?.addEventListener("click", (e) => {
       if (e.target === el("adminBlockUserModal")) closeAdminBlockUserModal();
-    });
-
-    el("adminAddReleaseForm")?.addEventListener("submit", handleAdminAddReleaseSubmit);
-    el("btnCloseAdminAddRelease")?.addEventListener("click", closeAdminAddReleaseModal);
-    el("btnAdminCancelAddRelease")?.addEventListener("click", closeAdminAddReleaseModal);
-    el("adminAddReleaseModal")?.addEventListener("click", (e) => {
-      if (e.target === el("adminAddReleaseModal")) closeAdminAddReleaseModal();
     });
 
     document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
@@ -9045,7 +9030,6 @@
         !el("adminRenameUserModal")?.classList.contains("hidden") ||
         !el("adminAddNameModal")?.classList.contains("hidden") ||
         !el("adminBlockUserModal")?.classList.contains("hidden") ||
-        !el("adminAddReleaseModal")?.classList.contains("hidden") ||
         !el("exportModal")?.classList.contains("hidden") ||
         !el("backupModal")?.classList.contains("hidden") ||
         !el("shortcutsModal")?.classList.contains("hidden")
@@ -9093,7 +9077,6 @@
         closeAdminRenameUserModal();
         closeAdminAddNameModal();
         closeAdminBlockUserModal();
-        closeAdminAddReleaseModal();
         closeAdminDashboardModal();
         closeExportModal();
         el("backupModal").classList.add("hidden");
@@ -9796,7 +9779,6 @@
     el("adminTabModeration").classList.toggle("hidden", adminActiveTab !== "moderation");
     el("adminTabFeedback")?.classList.toggle("hidden", adminActiveTab !== "feedback");
     el("adminTabTraffic")?.classList.toggle("hidden", adminActiveTab !== "traffic");
-    el("adminTabVersions")?.classList.toggle("hidden", adminActiveTab !== "versions");
 
     if (adminActiveTab === "users") renderAdminUsersTab();
     else if (adminActiveTab === "overrides") renderAdminOverridesTab();
@@ -9805,9 +9787,6 @@
     else if (adminActiveTab === "traffic") {
       renderAdminTrafficTab();
       if (!adminMetricsCache && !adminMetricsLoading) loadAdminMetrics(false, false);
-    } else if (adminActiveTab === "versions") {
-      renderAdminVersionsTab();
-      if (!adminVersionsCache && !adminVersionsLoading) loadAdminVersions(false, false);
     }
   }
 
@@ -10892,281 +10871,6 @@
         ${ghTrafficExtraHtml}
       </section>
     `;
-  }
-
-  // ============================================================
-  // Admin Version Tracking Tab
-  // ============================================================
-
-  function getLoadedAssetVersions() {
-    const assets = [];
-    document.querySelectorAll('link[rel="stylesheet"][href], script[src]').forEach((node) => {
-      const rawUrl = node.getAttribute("href") || node.getAttribute("src") || "";
-      if (!rawUrl || rawUrl.startsWith("http")) return;
-      const [filePart, queryPart] = rawUrl.split("?");
-      const params = new URLSearchParams(queryPart || "");
-      assets.push({
-        file: filePart,
-        version: params.get("v") || "—",
-      });
-    });
-    return assets;
-  }
-
-  async function loadAdminVersions(forceRefresh = false, showFeedback = false) {
-    if (!adminState.authenticated) return;
-    adminVersionsLoading = true;
-    renderAdminVersionsTab();
-    try {
-      const qs = forceRefresh ? "?refresh=1" : "";
-      const data = await adminFetch(`/api/admin/versions${qs}`);
-      adminVersionsCache = data;
-      if (showFeedback) showToast("🔄 מעקב הגרסאות רוענן.");
-    } catch (err) {
-      if (showFeedback) showToast(`❌ שגיאה בטעינת מעקב גרסאות: ${err.message}`);
-    } finally {
-      adminVersionsLoading = false;
-      renderAdminVersionsTab();
-    }
-  }
-
-  function openAdminAddReleaseModal() {
-    const latestSha = adminVersionsCache?.github?.commits?.[0]?.shortSha || "";
-    el("adminReleaseVersionInput").value = `v${APP_VERSION}`;
-    el("adminReleaseComponentSelect").value = "all";
-    el("adminReleaseTitleInput").value = "";
-    el("adminReleaseCommitInput").value = latestSha;
-    el("adminReleaseNotesInput").value = "";
-    const errEl = el("adminAddReleaseError");
-    if (errEl) {
-      errEl.textContent = "";
-      errEl.classList.add("hidden");
-    }
-    el("adminAddReleaseModal")?.classList.remove("hidden");
-    setTimeout(() => el("adminReleaseTitleInput")?.focus(), 30);
-  }
-
-  function closeAdminAddReleaseModal() {
-    el("adminAddReleaseModal")?.classList.add("hidden");
-  }
-
-  async function handleAdminAddReleaseSubmit(e) {
-    e.preventDefault();
-    const errEl = el("adminAddReleaseError");
-    const submitBtn = el("btnAdminSaveRelease");
-    const version = (el("adminReleaseVersionInput")?.value || "").trim();
-    const component = (el("adminReleaseComponentSelect")?.value || "all").trim();
-    const title = (el("adminReleaseTitleInput")?.value || "").trim();
-    const commitSha = (el("adminReleaseCommitInput")?.value || "").trim();
-    const notes = (el("adminReleaseNotesInput")?.value || "").trim();
-
-    if (errEl) {
-      errEl.textContent = "";
-      errEl.classList.add("hidden");
-    }
-    if (!version || !title) {
-      if (errEl) {
-        errEl.textContent = "יש להזין מספר גרסה וכותרת.";
-        errEl.classList.remove("hidden");
-      }
-      return;
-    }
-
-    submitBtn.disabled = true;
-    const origText = submitBtn.textContent;
-    submitBtn.textContent = "שומר...";
-    try {
-      await adminFetch("/api/admin/versions", {
-        method: "POST",
-        body: JSON.stringify({ version, component, title, commitSha, notes }),
-      });
-      closeAdminAddReleaseModal();
-      await loadAdminVersions(false, false);
-      showToast(`🏷️ תיעוד גרסה "${version}" נשמר.`);
-    } catch (err) {
-      if (errEl) {
-        errEl.textContent = err?.message || "שגיאה בשמירת תיעוד גרסה";
-        errEl.classList.remove("hidden");
-      }
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = origText;
-    }
-  }
-
-  async function adminDeleteVersionRelease(releaseId) {
-    if (!confirm("למחוק תיעוד גרסה זה?")) return;
-    try {
-      await adminFetch(`/api/admin/versions/${encodeURIComponent(releaseId)}`, {
-        method: "DELETE",
-      });
-      if (adminVersionsCache?.releases) {
-        adminVersionsCache.releases = adminVersionsCache.releases.filter((r) => r.releaseId !== releaseId);
-      }
-      renderAdminVersionsTab();
-      showToast("🗑️ תיעוד הגרסה נמחק.");
-    } catch (err) {
-      showToast(`❌ שגיאה במחיקת תיעוד גרסה: ${err.message}`);
-    }
-  }
-
-  function renderAdminVersionsTab() {
-    const contentEl = el("adminVersionsContent");
-    if (!contentEl) return;
-
-    if (adminVersionsLoading && !adminVersionsCache) {
-      contentEl.innerHTML = `<div class="community-notes-empty" style="padding:24px;">⏳ טוען נתוני גרסאות ופריסות...</div>`;
-      return;
-    }
-
-    const term = (el("adminVersionsSearch")?.value || "").trim().toLowerCase();
-    const workerInfo = adminVersionsCache?.worker || {};
-    const gh = adminVersionsCache?.github || {};
-    const commits = Array.isArray(gh.commits) ? gh.commits : [];
-    const deployments = Array.isArray(gh.deployments) ? gh.deployments : [];
-    const releases = Array.isArray(adminVersionsCache?.releases) ? adminVersionsCache.releases : [];
-    const assets = getLoadedAssetVersions();
-
-    const latestCommit = commits[0] || null;
-    const latestDeploy = deployments[0] || null;
-    const pagesSynced = Boolean(latestCommit && latestDeploy && latestCommit.sha === latestDeploy.sha);
-
-    const filteredReleases = releases.filter((r) => {
-      if (!term) return true;
-      const hay = `${r.version} ${r.component} ${r.title} ${r.notes} ${r.commitSha}`.toLowerCase();
-      return hay.includes(term);
-    });
-
-    const filteredCommits = commits.filter((c) => {
-      if (!term) return true;
-      const hay = `${c.sha} ${c.shortSha} ${c.message} ${c.author}`.toLowerCase();
-      return hay.includes(term);
-    });
-
-    const componentLabels = {
-      all: "🌐 מערכת מלאה",
-      frontend: "🖥️ אתר (Frontend)",
-      worker: "⚡ שרת (Worker + D1)",
-      questions: "📚 מאגר שאלות",
-    };
-
-    const releasesHtml = filteredReleases.length > 0
-      ? filteredReleases
-          .map(
-            (r) => `<div class="admin-feed-card">
-              <div class="admin-feed-head">
-                <div class="admin-feed-badges">
-                  <span class="admin-version-tag" dir="ltr">${escapeHtml(r.version)}</span>
-                  <span class="admin-status-badge">${escapeHtml(componentLabels[r.component] || r.component)}</span>
-                  <strong>${escapeHtml(r.title)}</strong>
-                  ${r.commitSha ? `<code class="admin-commit-sha" dir="ltr">${escapeHtml(r.commitSha)}</code>` : ""}
-                  <span class="muted tabular-text">${escapeHtml(formatNoteTime(r.createdAt))}</span>
-                </div>
-                <div class="admin-feed-actions">
-                  <button type="button" class="note-card-action-btn danger admin-del" data-del-release="${escapeHtml(r.releaseId)}">🗑️ מחק</button>
-                </div>
-              </div>
-              ${r.notes ? `<div class="admin-feed-text">${escapeHtml(r.notes)}</div>` : ""}
-            </div>`
-          )
-          .join("")
-      : `<div class="community-notes-empty" style="padding:12px;">${
-          releases.length === 0 ? "אין עדיין תיעודי גרסאות ידניים — ניתן להוסיף בלחיצה על \"➕ תעד גרסה\"." : "אין תיעודים תואמים לחיפוש."
-        }</div>`;
-
-    const commitsHtml = filteredCommits.length > 0
-      ? filteredCommits
-          .map((c) => {
-            const ts = c.date ? new Date(c.date).getTime() : 0;
-            return `<div class="admin-commit-row">
-              <div class="admin-commit-top">
-                <div class="admin-feed-badges">
-                  <a class="admin-commit-sha" dir="ltr" href="${escapeHtml(c.url)}" target="_blank" rel="noopener">${escapeHtml(c.shortSha)}</a>
-                  ${c.deployedToPages ? `<span class="admin-source-pill ok">🚀 GitHub Pages</span>` : ""}
-                  <span class="muted">${escapeHtml(c.author || "")}</span>
-                </div>
-                <span class="muted tabular-text">${escapeHtml(ts ? formatNoteTime(ts) : "")}</span>
-              </div>
-              <div class="admin-commit-msg">${escapeHtml(c.message)}</div>
-            </div>`;
-          })
-          .join("")
-      : `<div class="community-notes-empty" style="padding:12px;">${
-          gh.error ? `שגיאה בטעינת קומיטים מ-GitHub: ${escapeHtml(gh.error)}` : "לא נמצאו קומיטים תואמים."
-        }</div>`;
-
-    const assetsHtml = assets
-      .map(
-        (a) => `<div class="admin-table-stat">
-          <code dir="ltr">${escapeHtml(a.file)}</code>
-          <strong class="tabular-text" dir="ltr">v=${escapeHtml(a.version)}</strong>
-        </div>`
-      )
-      .join("");
-
-    contentEl.innerHTML = `
-      <section class="admin-section-card">
-        <div class="admin-section-head">
-          <h3>🧭 מצב גרסאות חי במערכת</h3>
-          <span class="admin-source-pill ${pagesSynced ? "ok" : "warn"}">
-            ${pagesSynced ? "✓ GitHub Pages מסונכרן עם main" : latestDeploy ? "⏳ קיימים קומיטים חדשים לאחר הפריסה האחרונה" : "ℹ️ מצב פריסה"}
-          </span>
-        </div>
-        <div class="admin-version-cards">
-          <div class="admin-version-card">
-            <div class="admin-version-card-head">
-              <strong>🖥️ Frontend (בדפדפן זה)</strong>
-              <span class="admin-version-tag" dir="ltr">v${escapeHtml(APP_VERSION)}</span>
-            </div>
-            <div class="muted tabular-text" style="font-size:0.78rem;">תאריך בנייה: ${escapeHtml(APP_BUILD_DATE)}</div>
-            <div class="muted tabular-text" style="font-size:0.78rem;">בנק שאלות: ${QUESTIONS.length} שאלות · ${EXAMS.length} מבחנים</div>
-            <div class="muted" style="font-size:0.74rem;word-break:break-all;" dir="ltr">${escapeHtml(CLOUD_API_BASE)}</div>
-          </div>
-          <div class="admin-version-card">
-            <div class="admin-version-card-head">
-              <strong>⚡ Backend (Cloudflare Worker)</strong>
-              <span class="admin-version-tag" dir="ltr">v${escapeHtml(workerInfo.version || "—")}</span>
-            </div>
-            <div class="muted tabular-text" style="font-size:0.78rem;">סכימת D1: מיגרציה #${escapeHtml(String(workerInfo.schemaVersion || "—"))}</div>
-            <div class="muted tabular-text" style="font-size:0.78rem;">גרסת תוכן קהילתי (sync_meta): #${escapeHtml(String(workerInfo.communityVersion || "—"))}</div>
-            <div class="muted tabular-text" style="font-size:0.74rem;">עדכון קהילה אחרון: ${escapeHtml(workerInfo.communityUpdatedAt ? formatNoteTime(workerInfo.communityUpdatedAt) : "—")}</div>
-          </div>
-          <div class="admin-version-card">
-            <div class="admin-version-card-head">
-              <strong>🚀 פריסת GitHub Pages</strong>
-              <span class="admin-version-tag" dir="ltr">${escapeHtml(latestDeploy ? latestDeploy.shortSha : "—")}</span>
-            </div>
-            <div class="muted tabular-text" style="font-size:0.78rem;">קומיט אחרון ב-main: <code dir="ltr">${escapeHtml(latestCommit ? latestCommit.shortSha : "—")}</code></div>
-            <div class="muted tabular-text" style="font-size:0.78rem;">פריסה אחרונה: ${escapeHtml(latestDeploy?.createdAt ? formatNoteTime(new Date(latestDeploy.createdAt).getTime()) : "—")}</div>
-            <div class="muted" style="font-size:0.74rem;"><a href="https://github.com/${GITHUB_REPO_SLUG}/deployments" target="_blank" rel="noopener">פתח היסטוריית פריסות ב-GitHub ↗</a></div>
-          </div>
-        </div>
-        <details class="admin-names-details">
-          <summary>📦 גרסאות קבצים טעונות (Cache Busters)</summary>
-          <div class="admin-tables-grid" style="margin-top:8px;">${assetsHtml}</div>
-        </details>
-      </section>
-
-      <section class="admin-section-card">
-        <div class="admin-section-head">
-          <h3>📝 יומן גרסאות מתועדות</h3>
-          <span class="muted tabular-text" style="font-size:0.78rem;">${filteredReleases.length} רשומות</span>
-        </div>
-        <div class="admin-feed-list">${releasesHtml}</div>
-      </section>
-
-      <section class="admin-section-card">
-        <div class="admin-section-head">
-          <h3>🔀 היסטוריית קומיטים אחרונה (<span dir="ltr">${GITHUB_REPO_SLUG}</span>)</h3>
-          <span class="muted tabular-text" style="font-size:0.78rem;">${filteredCommits.length} קומיטים</span>
-        </div>
-        <div class="admin-feed-list">${commitsHtml}</div>
-      </section>
-    `;
-
-    contentEl.querySelectorAll("[data-del-release]").forEach((btn) => {
-      btn.addEventListener("click", () => adminDeleteVersionRelease(btn.dataset.delRelease));
-    });
   }
 
   // ============================================================
@@ -12383,7 +12087,6 @@
       "adminRenameUserModal",
       "adminAddNameModal",
       "adminBlockUserModal",
-      "adminAddReleaseModal",
       "lightboxModal",
     ];
     return modalIds.some((id) => {

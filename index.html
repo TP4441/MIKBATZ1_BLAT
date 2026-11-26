@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261126e" />
+  <link rel="stylesheet" href="styles.css?v=20261126f" />
 </head>
 <body>
   <header class="topbar">
@@ -1452,7 +1452,6 @@
         <button type="button" class="admin-tab-btn" data-admin-tab="moderation" role="tab" aria-selected="false">💬 מודרציית תגובות ודיווחים</button>
         <button type="button" class="admin-tab-btn" data-admin-tab="feedback" role="tab" aria-selected="false">📬 הצעות ותלונות <span class="badge-pill hidden" id="adminFeedbackCountBadge">0</span></button>
         <button type="button" class="admin-tab-btn" data-admin-tab="traffic" role="tab" aria-selected="false">📊 טראפיק ומכסות</button>
-        <button type="button" class="admin-tab-btn" data-admin-tab="versions" role="tab" aria-selected="false">🏷️ מעקב גרסאות</button>
       </div>
 
       <!-- Users & Nicknames Tab -->
@@ -1520,18 +1519,6 @@
           <button type="button" class="btn-secondary btn-sm" id="btnAdminRefreshTraffic">🔄 רענן טראפיק ומכסות</button>
         </div>
         <div id="adminTrafficContent" class="admin-traffic-content"></div>
-      </div>
-
-      <!-- Version Tracking Tab -->
-      <div class="admin-tab-panel hidden" id="adminTabVersions">
-        <div class="admin-toolbar">
-          <input type="text" id="adminVersionsSearch" class="admin-search-input" placeholder="חיפוש לפי גרסה, קומיט או תיאור..." />
-          <div class="admin-toolbar-actions">
-            <button type="button" class="btn-primary btn-sm" id="btnAdminOpenAddRelease">➕ תעד גרסה</button>
-            <button type="button" class="btn-secondary btn-sm" id="btnAdminRefreshVersions">🔄 רענן גרסאות</button>
-          </div>
-        </div>
-        <div id="adminVersionsContent" class="admin-versions-content"></div>
       </div>
     </div>
   </div>
@@ -1641,52 +1628,6 @@
     </div>
   </div>
 
-  <!-- Admin Add Release Note Modal -->
-  <div class="modal-overlay hidden" id="adminAddReleaseModal" role="dialog" aria-modal="true" aria-labelledby="adminAddReleaseTitle">
-    <div class="modal-box card admin-submodal-box">
-      <div class="modal-header">
-        <h2 id="adminAddReleaseTitle">🏷️ תיעוד גרסה חדשה</h2>
-        <button type="button" class="icon-btn icon-only" id="btnCloseAdminAddRelease" aria-label="סגור חלון">
-          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-      <form id="adminAddReleaseForm" class="admin-question-form">
-        <div class="admin-inline-fields">
-          <div class="admin-field" style="flex:1;">
-            <label for="adminReleaseVersionInput">מספר גרסה</label>
-            <input type="text" id="adminReleaseVersionInput" maxlength="48" dir="ltr" placeholder="v2026.11.26.2" required />
-          </div>
-          <div class="admin-field" style="flex:1;">
-            <label for="adminReleaseComponentSelect">רכיב</label>
-            <select id="adminReleaseComponentSelect" class="form-select">
-              <option value="all">🌐 מערכת מלאה</option>
-              <option value="frontend">🖥️ אתר (Frontend)</option>
-              <option value="worker">⚡ שרת (Worker + D1)</option>
-              <option value="questions">📚 מאגר שאלות</option>
-            </select>
-          </div>
-        </div>
-        <div class="admin-field">
-          <label for="adminReleaseTitleInput">כותרת קצרה</label>
-          <input type="text" id="adminReleaseTitleInput" maxlength="140" placeholder="למשל: הוספת טאב טראפיק, גרסאות וחסימת משתמשים" required />
-        </div>
-        <div class="admin-field">
-          <label for="adminReleaseCommitInput">Commit SHA (רשות)</label>
-          <input type="text" id="adminReleaseCommitInput" maxlength="64" dir="ltr" placeholder="d00f365" />
-        </div>
-        <div class="admin-field">
-          <label for="adminReleaseNotesInput">פירוט שינויים (רשות)</label>
-          <textarea id="adminReleaseNotesInput" rows="4" maxlength="2000" placeholder="רשימת שינויים עיקריים..."></textarea>
-        </div>
-        <div class="admin-form-error hidden" id="adminAddReleaseError" role="alert"></div>
-        <div class="admin-modal-footer">
-          <button type="submit" class="btn-primary" id="btnAdminSaveRelease">💾 שמור תיעוד גרסה</button>
-          <button type="button" class="btn-secondary" id="btnAdminCancelAddRelease">ביטול</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
   <datalist id="adminCategorySuggestions">
     <option value="פירות"></option>
     <option value="ירקות"></option>
@@ -1741,6 +1682,6 @@
   <script src="qr.js?v=20261124d"></script>
   <script src="drawboard.js?v=20261126b"></script>
   <script src="export.js?v=20261126d"></script>
-  <script src="app.js?v=20261126g"></script>
+  <script src="app.js?v=20261126h"></script>
 </body>
 </html>

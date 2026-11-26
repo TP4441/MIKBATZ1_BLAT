@@ -4042,8 +4042,7 @@ kbd {
   padding: 0 2px;
 }
 
-.admin-traffic-content,
-.admin-versions-content {
+.admin-traffic-content {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -4216,76 +4215,6 @@ kbd {
 .admin-table-stat code {
   font-size: 0.74rem;
   color: var(--text-muted);
-}
-
-.admin-version-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 10px;
-}
-
-.admin-version-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.admin-version-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-}
-
-.admin-version-tag {
-  font-family: ui-monospace, monospace;
-  font-size: 0.82rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--primary-soft);
-  color: var(--primary-ink);
-}
-
-.admin-commit-row {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 11px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.admin-commit-top {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 0.8rem;
-}
-
-.admin-commit-sha {
-  font-family: ui-monospace, monospace;
-  font-size: 0.76rem;
-  font-weight: 700;
-  padding: 1px 7px;
-  border-radius: 5px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  text-decoration: none;
-}
-
-.admin-commit-msg {
-  font-size: 0.86rem;
-  font-weight: 600;
-  color: var(--text);
-  word-break: break-word;
 }
 
 @media (max-width: 720px) {
