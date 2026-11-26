@@ -2236,11 +2236,11 @@
           delBtn.onclick = () => deleteMyNote(q.id);
 
           headActions.append(editBtn, delBtn);
-        } else if (adminState.authenticated) {
+        } else if (canModerate()) {
           const adminDelBtn = document.createElement("button");
           adminDelBtn.type = "button";
           adminDelBtn.className = "note-card-action-btn danger admin-del";
-          adminDelBtn.title = "מחק הערה כמנהל";
+          adminDelBtn.title = isFullAdmin() ? "מחק הערה כמנהל" : "מחק הערה כמפקח";
           adminDelBtn.textContent = "🗑️ הסר";
           adminDelBtn.onclick = () => adminDeleteNote(q.id, n.userId);
           headActions.appendChild(adminDelBtn);
@@ -2334,11 +2334,11 @@
               rDelBtn.onclick = () => deleteMyNoteReply(q.id, n.userId, r.replyId);
 
               rActions.append(rEditBtn, rDelBtn);
-            } else if (adminState.authenticated) {
+            } else if (canModerate()) {
               const rAdminDel = document.createElement("button");
               rAdminDel.type = "button";
               rAdminDel.className = "note-card-action-btn danger admin-del";
-              rAdminDel.title = "מחק תגובה כמנהל";
+              rAdminDel.title = isFullAdmin() ? "מחק תגובה כמנהל" : "מחק תגובה כמפקח";
               rAdminDel.textContent = "🗑️ הסר";
               rAdminDel.onclick = () => adminDeleteNoteReply(q.id, n.userId, r.replyId);
               rActions.appendChild(rAdminDel);
@@ -2635,7 +2635,7 @@
       }
       showToast(
         nextRole === "supervisor"
-          ? "🎓 הוגדרת כמפקח! כעת באפשרותך לערוך ולהסיר שאלות."
+          ? "🎓 הוגדרת כמפקח! כעת פתוח בפניך דאשבורד למפקח (עריכת שאלות ומודרציה)."
           : "ℹ️ הרשאת המפקח שלך הוסרה."
       );
     }
@@ -3078,6 +3078,13 @@
       refreshActiveQuestionProblemViews();
       updateProblemSyncBadge();
     }
+    if (!el("adminDashboardModal")?.classList.contains("hidden")) {
+      if (adminActiveTab === "overrides" && canEditQuestions()) {
+        renderAdminOverridesTab();
+      } else if (adminActiveTab === "moderation" && canModerate()) {
+        renderAdminModerationTab();
+      }
+    }
   }
 
   async function bootstrapCloudState(showFeedback = false) {
@@ -3335,12 +3342,12 @@
         flagBtn.onclick = () => toggleProblemFlag(q.id, p.userId);
         meta.appendChild(flagBtn);
 
-        if (adminState.authenticated) {
+        if (canModerate()) {
           if (flagsList.length > 0) {
             const clearFlagsBtn = document.createElement("button");
             clearFlagsBtn.type = "button";
             clearFlagsBtn.className = "note-card-action-btn";
-            clearFlagsBtn.title = "נקה סימוני אי-דיוק מדיווח זה כמנהל";
+            clearFlagsBtn.title = isFullAdmin() ? "נקה סימוני אי-דיוק מדיווח זה כמנהל" : "נקה סימוני אי-דיוק מדיווח זה כמפקח";
             clearFlagsBtn.textContent = "✓ נקה סימונים";
             clearFlagsBtn.onclick = () => adminClearProblemFlags(q.id, p.userId);
             meta.appendChild(clearFlagsBtn);
@@ -3348,7 +3355,7 @@
           const adminDelBtn = document.createElement("button");
           adminDelBtn.type = "button";
           adminDelBtn.className = "note-card-action-btn danger admin-del";
-          adminDelBtn.title = "הסר דיווח כמנהל";
+          adminDelBtn.title = isFullAdmin() ? "הסר דיווח כמנהל" : "הסר דיווח כמפקח";
           adminDelBtn.textContent = "🗑️ הסר";
           adminDelBtn.onclick = () => adminDeleteProblem(q.id, p.userId);
           meta.appendChild(adminDelBtn);
@@ -9238,6 +9245,10 @@
     return isFullAdmin() || isSupervisor();
   }
 
+  function canModerate() {
+    return isFullAdmin() || isSupervisor();
+  }
+
   function saveAdminToken(token, expiresAt, rememberDevice, sessionId = null) {
     clearAdminTokens();
     adminState = {
@@ -9293,12 +9304,12 @@
     if (panelBtn) {
       panelBtn.classList.toggle("hidden", !hasPanel);
       panelBtn.classList.toggle("is-supervisor", supOnly);
-      const title = supOnly ? "לוח מפקח (עריכת והסרת שאלות)" : "לוח בקרה למנהל";
+      const title = supOnly ? "דאשבורד למפקח (שאלות ששונו/הוסרו ומודרציה)" : "לוח בקרה למנהל";
       panelBtn.title = title;
-      panelBtn.setAttribute("aria-label", title);
+      panelBtn.setAttribute("aria-label", supOnly ? "דאשבורד למפקח" : "לוח בקרה למנהל");
     }
     if (panelIcon) panelIcon.textContent = supOnly ? "🎓" : "🛡️";
-    if (panelLabel) panelLabel.textContent = supOnly ? "מפקח" : "מנהל";
+    if (panelLabel) panelLabel.textContent = supOnly ? "דאשבורד למפקח" : "מנהל";
 
     el("adminQuestionActions")?.classList.toggle("hidden", !hasPanel);
     if (currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard" && filteredList.length > 0) {
@@ -9319,7 +9330,7 @@
     }
   }
 
-  async function questionOverrideFetch(path, options = {}) {
+  async function moderatorFetch(path, options = {}) {
     if (isFullAdmin()) {
       return adminFetch(path, options);
     }
@@ -9357,6 +9368,10 @@
     return data;
   }
 
+  function questionOverrideFetch(path, options = {}) {
+    return moderatorFetch(path, options);
+  }
+
   async function adminFetch(path, options = {}) {
     if (!isCloudApiConfigured()) {
       throw new Error("כתובת ה-Worker טרם הוגדרה ב-app.js (CLOUD_API_BASE).");
@@ -9369,6 +9384,10 @@
     }
     if (adminState.token) {
       headers.Authorization = `Bearer ${adminState.token}`;
+    }
+    if (userIdentity?.userId && userIdentity?.clientSecret) {
+      if (!headers["X-User-Id"]) headers["X-User-Id"] = userIdentity.userId;
+      if (!headers["X-Client-Secret"]) headers["X-Client-Secret"] = userIdentity.clientSecret;
     }
     const res = await fetch(`${CLOUD_API_BASE}${path}`, {
       ...options,
@@ -9622,7 +9641,10 @@
     const ov = questionOverrides[qId];
     const effective = applyOverrideToQuestion(rawQ, ov);
 
-    el("adminEditQLabel").textContent = `${rawQ.exam} · שאלה ${rawQ.num} · ${rawQ.id}`;
+    const actorSuffix = ov?.updatedByName
+      ? ` · ${ov.hidden ? "הוסרה" : "שונתה"} ע״י ${ov.updatedByEmoji || (ov.updatedByRole === "supervisor" ? "🎓" : "🛡️")} ${ov.updatedByName}`
+      : "";
+    el("adminEditQLabel").textContent = `${rawQ.exam} · שאלה ${rawQ.num} · ${rawQ.id}${actorSuffix}`;
 
     const subjSelect = el("adminEditSubject");
     subjSelect.innerHTML = "";
@@ -9771,7 +9793,7 @@
   async function adminDeleteNote(qId, targetUserId) {
     if (!confirm("למחוק את הערת הקהילה של משתמש זה לצמיתות?")) return;
     try {
-      await adminFetch(`/api/admin/notes/${encodeURIComponent(qId)}/${encodeURIComponent(targetUserId)}`, {
+      await moderatorFetch(`/api/admin/notes/${encodeURIComponent(qId)}/${encodeURIComponent(targetUserId)}`, {
         method: "DELETE",
       });
       if (communityNotes[qId]) {
@@ -9805,9 +9827,9 @@
   }
 
   async function adminDeleteNoteReply(qId, noteUserId, replyId) {
-    if (!confirm("למחוק תגובה זו (ותגובות המשנה שלה) כמנהל?")) return;
+    if (!confirm(isFullAdmin() ? "למחוק תגובה זו (ותגובות המשנה שלה) כמנהל?" : "למחוק תגובה זו (ותגובות המשנה שלה) כמפקח?")) return;
     try {
-      await adminFetch(`/api/admin/note-replies/${encodeURIComponent(replyId)}`, {
+      await moderatorFetch(`/api/admin/note-replies/${encodeURIComponent(replyId)}`, {
         method: "DELETE",
       });
       removeReplyLocallyWithDescendants(qId, noteUserId, replyId);
@@ -9825,7 +9847,7 @@
   async function adminClearProblemFlags(qId, problemUserId) {
     if (!confirm("לנקות את כל סימוני האי-דיוק מדיווח בעיה זה?")) return;
     try {
-      await adminFetch(`/api/admin/problem-flags/${encodeURIComponent(qId)}/${encodeURIComponent(problemUserId)}`, {
+      await moderatorFetch(`/api/admin/problem-flags/${encodeURIComponent(qId)}/${encodeURIComponent(problemUserId)}`, {
         method: "DELETE",
       });
       if (communityProblemFlags[qId]?.[problemUserId]) {
@@ -9846,7 +9868,7 @@
   async function adminDeleteProblem(qId, targetUserId) {
     if (!confirm("להסיר את דיווח הבעיה של משתמש זה לצמיתות?")) return;
     try {
-      await adminFetch(`/api/admin/problems/${encodeURIComponent(qId)}/${encodeURIComponent(targetUserId)}`, {
+      await moderatorFetch(`/api/admin/problems/${encodeURIComponent(qId)}/${encodeURIComponent(targetUserId)}`, {
         method: "DELETE",
       });
       if (communityProblems[qId]) {
@@ -9879,7 +9901,7 @@
     }
   }
 
-  // Admin Dashboard Modal
+  // Admin / Supervisor Dashboard Modal
   function openAdminDashboardModal() {
     if (!canEditQuestions()) {
       openAdminLoginModal();
@@ -9888,15 +9910,16 @@
     const full = isFullAdmin();
     const titleEl = el("adminDashboardTitle");
     if (titleEl) {
-      titleEl.textContent = full ? "🛡️ לוח בקרה למנהל" : "🎓 לוח מפקח — עריכת והסרת שאלות";
+      titleEl.textContent = full ? "🛡️ לוח בקרה למנהל" : "🎓 דאשבורד למפקח";
     }
     el("btnAdminLogout")?.classList.toggle("hidden", !full);
     document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
       const tabKey = btn.dataset.adminTab;
-      btn.classList.toggle("hidden", !full && tabKey !== "overrides");
+      const allowedForSup = tabKey === "overrides" || tabKey === "moderation";
+      btn.classList.toggle("hidden", !full && !allowedForSup);
     });
 
-    if (!full) {
+    if (!full && adminActiveTab !== "overrides" && adminActiveTab !== "moderation") {
       adminActiveTab = "overrides";
     }
     el("adminDashboardModal").classList.remove("hidden");
@@ -9913,21 +9936,28 @@
 
   function switchAdminTab(tab) {
     const full = isFullAdmin();
-    adminActiveTab = full ? (tab || "users") : "overrides";
+    const canMod = canModerate();
+    if (full) {
+      adminActiveTab = tab || "users";
+    } else if (canMod) {
+      adminActiveTab = tab === "moderation" ? "moderation" : "overrides";
+    } else {
+      adminActiveTab = "overrides";
+    }
     document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
       const active = btn.dataset.adminTab === adminActiveTab;
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-selected", active ? "true" : "false");
     });
     el("adminTabUsers").classList.toggle("hidden", !full || adminActiveTab !== "users");
-    el("adminTabOverrides").classList.toggle("hidden", adminActiveTab !== "overrides");
-    el("adminTabModeration").classList.toggle("hidden", !full || adminActiveTab !== "moderation");
+    el("adminTabOverrides").classList.toggle("hidden", !canMod || adminActiveTab !== "overrides");
+    el("adminTabModeration").classList.toggle("hidden", !canMod || adminActiveTab !== "moderation");
     el("adminTabFeedback")?.classList.toggle("hidden", !full || adminActiveTab !== "feedback");
     el("adminTabTraffic")?.classList.toggle("hidden", !full || adminActiveTab !== "traffic");
 
     if (adminActiveTab === "users" && full) renderAdminUsersTab();
-    else if (adminActiveTab === "overrides") renderAdminOverridesTab();
-    else if (adminActiveTab === "moderation" && full) renderAdminModerationTab();
+    else if (adminActiveTab === "overrides" && canMod) renderAdminOverridesTab();
+    else if (adminActiveTab === "moderation" && canMod) renderAdminModerationTab();
     else if (adminActiveTab === "feedback" && full) renderAdminFeedbackTab();
     else if (adminActiveTab === "traffic" && full) {
       renderAdminTrafficTab();
@@ -9962,7 +9992,7 @@
   async function adminSetUserRole(userId, name, nextRole) {
     const isPromoting = nextRole === "supervisor";
     const confirmMsg = isPromoting
-      ? `למנות את "${name}" (${userId}) למפקח? מפקח יכול לערוך ולהסיר שאלות בבנק.`
+      ? `למנות את "${name}" (${userId}) למפקח? למפקח יש גישה לדאשבורד למפקח: עריכה והסרה של שאלות ומודרציית תגובות ודיווחים.`
       : `להסיר את הרשאת המפקח מ-"${name}" (${userId})?`;
     if (!confirm(confirmMsg)) return;
     try {
@@ -10474,7 +10504,7 @@
         ? `<span class="admin-user-badge admin-role" title="${u.adminOnline ? "מחובר כמנהל עכשיו" : "בעל סשן מנהל פעיל"}">🛡️ ${u.adminOnline ? "מנהל מחובר" : "סשן מנהל"}</span>`
         : "";
       const supervisorBadge = !u.blocked && u.role === "supervisor"
-        ? `<span class="admin-user-badge supervisor" title="מפקח — יכול לערוך ולהסיר שאלות">🎓 מפקח</span>`
+        ? `<span class="admin-user-badge supervisor" title="מפקח — גישה לדאשבורד למפקח (שאלות ומודרציה)">🎓 מפקח</span>`
         : "";
       const blockedBadge = u.blocked
         ? `<span class="admin-user-badge blocked" title="${escapeHtml(u.blockedReason || "חסום")}">🚫 חסום</span>`
@@ -10504,8 +10534,8 @@
         supBtn.className = "note-card-action-btn" + (isSup ? " is-supervisor-active" : "");
         supBtn.textContent = isSup ? "🎓 הסר מפקח" : "🎓 הפוך למפקח";
         supBtn.title = isSup
-          ? "הסר הרשאת מפקח (עריכת והסרת שאלות)"
-          : "מנה כמפקח — יוכל לערוך ולהסיר שאלות";
+          ? "הסר הרשאת מפקח"
+          : "מנה כמפקח — גישה לדאשבורד למפקח (שאלות ומודרציית תגובות ודיווחים)";
         supBtn.onclick = () => adminSetUserRole(u.userId, u.name, isSup ? "user" : "supervisor");
         actionWrap.appendChild(supBtn);
       }
@@ -10578,7 +10608,7 @@
         if (adminOverridesFilter === "edited" && ov.hidden) return false;
         if (!term) return true;
         const stem = ov.stem || rawQ?.stem || "";
-        const hay = `${qId} ${rawQ?.exam || ""} ${rawQ?.num || ""} ${ov.subject || rawQ?.subject || ""} ${stem}`.toLowerCase();
+        const hay = `${qId} ${rawQ?.exam || ""} ${rawQ?.num || ""} ${ov.subject || rawQ?.subject || ""} ${stem} ${ov.updatedByName || ""}`.toLowerCase();
         return hay.includes(term);
       })
       .sort((a, b) => (b.ov.updatedAt || 0) - (a.ov.updatedAt || 0));
@@ -10605,11 +10635,29 @@
       const refSpan = document.createElement("strong");
       refSpan.textContent = rawQ ? `${rawQ.exam} · שאלה ${rawQ.num}` : qId;
 
+      const actorName = String(ov.updatedByName || "").trim();
+      const actorRole = ov.updatedByRole === "supervisor" ? "supervisor" : "admin";
+      const actorEmoji = String(ov.updatedByEmoji || (actorRole === "supervisor" ? "🎓" : "🛡️")).trim();
+      const actorVerb = ov.hidden ? "הוסרה ע״י" : "שונתה ע״י";
+      const actorSpan = document.createElement("span");
+      if (actorName) {
+        actorSpan.className = `admin-user-badge ${actorRole === "supervisor" ? "supervisor" : "admin-role"}`;
+        if (actorName === "מנהל" && actorRole === "admin") {
+          actorSpan.textContent = `${actorVerb}: ${actorEmoji} מנהל`;
+        } else {
+          const roleLabel = actorRole === "supervisor" ? "מפקח" : "מנהל";
+          actorSpan.textContent = `${actorVerb}: ${actorEmoji} ${actorName} (${roleLabel})`;
+        }
+      } else {
+        actorSpan.className = "muted";
+        actorSpan.textContent = "· מבצע: לא תועד";
+      }
+
       const timeSpan = document.createElement("span");
       timeSpan.className = "muted";
       timeSpan.textContent = formatNoteTime(ov.updatedAt);
 
-      badges.append(badge, refSpan, timeSpan);
+      badges.append(badge, refSpan, actorSpan, timeSpan);
 
       const actions = document.createElement("div");
       actions.className = "admin-feed-actions";

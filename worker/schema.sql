@@ -164,7 +164,11 @@ CREATE TABLE IF NOT EXISTS question_overrides (
   all_accepted INTEGER,
   appeal_note TEXT,
   subject TEXT,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  updated_by_user_id TEXT NOT NULL DEFAULT '',
+  updated_by_name TEXT NOT NULL DEFAULT '',
+  updated_by_emoji TEXT NOT NULL DEFAULT '',
+  updated_by_role TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS admin_rate_limit (

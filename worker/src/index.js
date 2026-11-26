@@ -14,8 +14,8 @@ const ADMIN_SESSION_TOUCH_INTERVAL_MS = 60 * 1000; // Throttle admin session las
 const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
 const VALID_USER_ROLES = new Set(["user", "supervisor"]);
 
-const WORKER_VERSION = "2026.11.26.3";
-const WORKER_SCHEMA_VERSION = 8;
+const WORKER_VERSION = "2026.11.26.4";
+const WORKER_SCHEMA_VERSION = 9;
 const GITHUB_REPO_OWNER = "TP4441";
 const GITHUB_REPO_NAME = "MIKBATZ1_BLAT";
 const DEFAULT_CF_ACCOUNT_ID = "e612e80b92d2545210e838c4825c5ca0";
@@ -211,7 +211,13 @@ async function verifyAdminToken(request, env, options = {}) {
     const sid = typeof payload.sid === "string" && payload.sid.trim() ? payload.sid.trim() : null;
     if (sid) {
       const sess = await env.DB
-        .prepare("SELECT session_id, user_id, last_seen_at, expires_at, revoked_at FROM admin_sessions WHERE session_id = ?")
+        .prepare(
+          `SELECT s.session_id, s.user_id, s.user_name, s.user_emoji, s.last_seen_at, s.expires_at, s.revoked_at,
+                  i.name AS identity_name, i.emoji AS identity_emoji
+           FROM admin_sessions s
+           LEFT JOIN identities i ON i.user_id = s.user_id AND s.user_id != ''
+           WHERE s.session_id = ?`
+        )
         .bind(sid)
         .first();
       if (!sess || Number(sess.revoked_at) > 0 || Number(sess.expires_at) <= now) {
@@ -223,9 +229,16 @@ async function verifyAdminToken(request, env, options = {}) {
           .bind(now, sid)
           .run();
       }
-      return { valid: true, expiresAt: payload.exp, sessionId: sid, userId: sess.user_id || "" };
+      return {
+        valid: true,
+        expiresAt: payload.exp,
+        sessionId: sid,
+        userId: sess.user_id || "",
+        userName: sess.identity_name || sess.user_name || "",
+        userEmoji: sess.identity_emoji || sess.user_emoji || "",
+      };
     }
-    return { valid: true, expiresAt: payload.exp, sessionId: null, userId: "" };
+    return { valid: true, expiresAt: payload.exp, sessionId: null, userId: "", userName: "", userEmoji: "" };
   } catch {
     return { valid: false, status: 401, error: "Invalid token payload" };
   }
@@ -314,6 +327,18 @@ function formatOverrideRow(row) {
   }
   if (row.subject !== null && row.subject !== undefined) {
     obj.subject = row.subject;
+  }
+  if (row.updated_by_user_id) {
+    obj.updatedByUserId = String(row.updated_by_user_id);
+  }
+  if (row.updated_by_name) {
+    obj.updatedByName = String(row.updated_by_name);
+  }
+  if (row.updated_by_emoji) {
+    obj.updatedByEmoji = String(row.updated_by_emoji);
+  }
+  if (row.updated_by_role) {
+    obj.updatedByRole = String(row.updated_by_role);
   }
   return obj;
 }
@@ -1176,7 +1201,7 @@ async function fetchCommunityData(db) {
       .prepare("SELECT q_id, problem_user_id, flagger_user_id, author, emoji, category, created_at FROM problem_flags")
       .all(),
     db.prepare(
-      "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at FROM question_overrides"
+      "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at, updated_by_user_id, updated_by_name, updated_by_emoji, updated_by_role FROM question_overrides"
     ).all(),
   ]);
 
@@ -3354,9 +3379,55 @@ async function handleAdminFeedback(env) {
   return jsonResponse({ ok: true, feedback });
 }
 
-async function handleAdminPutOverride(request, env, qId) {
+async function resolveOverrideActor(request, env, actorAuth) {
+  if (actorAuth?.actorType === "supervisor") {
+    return {
+      userId: String(actorAuth.userId || "").trim(),
+      name: String(actorAuth.identity?.name || "מפקח").trim() || "מפקח",
+      emoji: String(actorAuth.identity?.emoji || "🎓").trim() || "🎓",
+      role: "supervisor",
+    };
+  }
+
+  const adminAuth = actorAuth?.adminAuth || {};
+  if (adminAuth.userName) {
+    return {
+      userId: String(adminAuth.userId || "").trim(),
+      name: String(adminAuth.userName).trim(),
+      emoji: String(adminAuth.userEmoji || "🛡️").trim() || "🛡️",
+      role: "admin",
+    };
+  }
+
+  const reqUserId = String(request.headers.get("X-User-Id") || "").trim();
+  const reqSecret = String(request.headers.get("X-Client-Secret") || "");
+  if (reqUserId && reqSecret) {
+    const identAuth = await verifyExistingClientSecret(env.DB, reqUserId, reqSecret, { touchPresence: false }).catch(
+      () => null
+    );
+    if (identAuth?.ok && identAuth.identity?.name) {
+      return {
+        userId: String(identAuth.identity.user_id || reqUserId).trim(),
+        name: String(identAuth.identity.name).trim(),
+        emoji: String(identAuth.identity.emoji || "🛡️").trim() || "🛡️",
+        role: "admin",
+      };
+    }
+  }
+
+  return {
+    userId: String(adminAuth.userId || "").trim(),
+    name: "מנהל",
+    emoji: "🛡️",
+    role: "admin",
+  };
+}
+
+async function handleAdminPutOverride(request, env, qId, actorAuth = null) {
   const body = await readJsonBody(request);
   if (!body) return errorResponse("Invalid JSON", 400);
+
+  const actor = await resolveOverrideActor(request, env, actorAuth);
 
   const existingRow = await env.DB
     .prepare(
@@ -3427,8 +3498,8 @@ async function handleAdminPutOverride(request, env, qId) {
   await env.DB
     .prepare(
       `INSERT INTO question_overrides
-         (q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at, updated_by_user_id, updated_by_name, updated_by_emoji, updated_by_role)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(q_id) DO UPDATE SET
          hidden = excluded.hidden,
          stem = excluded.stem,
@@ -3437,15 +3508,33 @@ async function handleAdminPutOverride(request, env, qId) {
          all_accepted = excluded.all_accepted,
          appeal_note = excluded.appeal_note,
          subject = excluded.subject,
-         updated_at = excluded.updated_at`
+         updated_at = excluded.updated_at,
+         updated_by_user_id = excluded.updated_by_user_id,
+         updated_by_name = excluded.updated_by_name,
+         updated_by_emoji = excluded.updated_by_emoji,
+         updated_by_role = excluded.updated_by_role`
     )
-    .bind(qId, hidden, stem, optionsJson, correctJson, allAccepted, appealNote, subject, updatedAt)
+    .bind(
+      qId,
+      hidden,
+      stem,
+      optionsJson,
+      correctJson,
+      allAccepted,
+      appealNote,
+      subject,
+      updatedAt,
+      actor.userId,
+      actor.name,
+      actor.emoji,
+      actor.role
+    )
     .run();
   await bumpCommunityVersion(env.DB, updatedAt);
 
   const savedRow = await env.DB
     .prepare(
-      "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at FROM question_overrides WHERE q_id = ?"
+      "SELECT q_id, hidden, stem, options_json, correct_json, all_accepted, appeal_note, subject, updated_at, updated_by_user_id, updated_by_name, updated_by_emoji, updated_by_role FROM question_overrides WHERE q_id = ?"
     )
     .bind(qId)
     .first();
@@ -4318,7 +4407,7 @@ export default {
         return finalize(await handleAdminLogin(request, trackedEnv));
       }
 
-      // Question overrides can be modified by either full Admin OR designated Supervisor ('מפקח')
+      // Question overrides & community moderation can be performed by either full Admin OR designated Supervisor ('מפקח')
       const adminOverrideMatch = path.match(/^\/api\/admin\/overrides\/([^/]+)$/);
       if (adminOverrideMatch && (method === "PUT" || method === "DELETE")) {
         const qId = decodeURIComponent(adminOverrideMatch[1]);
@@ -4327,13 +4416,98 @@ export default {
           return finalize(authFailureResponse(actorAuth));
         }
         if (method === "PUT") {
-          return finalize(await handleAdminPutOverride(request, trackedEnv, qId));
+          return finalize(await handleAdminPutOverride(request, trackedEnv, qId, actorAuth));
         }
         const delRes = await trackedEnv.DB.prepare("DELETE FROM question_overrides WHERE q_id = ?").bind(qId).run();
         if ((delRes?.meta?.changes ?? 1) > 0) {
           await bumpCommunityVersion(trackedEnv.DB);
         }
         return finalize(jsonResponse({ ok: true, reset: qId }));
+      }
+
+      const adminNoteMatch = path.match(/^\/api\/admin\/notes\/([^/]+)\/([^/]+)$/);
+      if (adminNoteMatch && method === "DELETE") {
+        const actorAuth = await verifyAdminOrSupervisor(request, trackedEnv);
+        if (!actorAuth.ok) {
+          return finalize(authFailureResponse(actorAuth));
+        }
+        const qId = decodeURIComponent(adminNoteMatch[1]);
+        const userId = decodeURIComponent(adminNoteMatch[2]);
+        const now = Date.now();
+        const [delRes, delRepliesRes] = await trackedEnv.DB.batch([
+          trackedEnv.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+          trackedEnv.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
+        ]);
+        if ((delRes?.meta?.changes ?? 0) > 0 || (delRepliesRes?.meta?.changes ?? 0) > 0) {
+          await bumpCommunityVersion(trackedEnv.DB, now);
+          await syncDeletionToUserProgress(trackedEnv.DB, userId, qId, "note", now);
+          invalidateLeaderboardCache();
+        }
+        return finalize(jsonResponse({ ok: true, qId, userId }));
+      }
+
+      const adminNoteReplyMatch = path.match(/^\/api\/admin\/note-replies\/([^/]+)$/);
+      if (adminNoteReplyMatch && method === "DELETE") {
+        const actorAuth = await verifyAdminOrSupervisor(request, trackedEnv);
+        if (!actorAuth.ok) {
+          return finalize(authFailureResponse(actorAuth));
+        }
+        const replyId = decodeURIComponent(adminNoteReplyMatch[1]);
+        const existing = await trackedEnv.DB
+          .prepare("SELECT reply_id, q_id, note_user_id FROM note_replies WHERE reply_id = ?")
+          .bind(replyId)
+          .first();
+        let deletedIds = [];
+        if (existing) {
+          deletedIds = await collectDescendantReplyIds(trackedEnv.DB, existing.q_id, existing.note_user_id, replyId);
+          const stmts = deletedIds.map((id) =>
+            trackedEnv.DB.prepare("DELETE FROM note_replies WHERE reply_id = ?").bind(id)
+          );
+          for (let idx = 0; idx < stmts.length; idx += 50) {
+            await trackedEnv.DB.batch(stmts.slice(idx, idx + 50));
+          }
+          await bumpCommunityVersion(trackedEnv.DB, Date.now());
+        }
+        return finalize(jsonResponse({ ok: true, replyId, deletedIds }));
+      }
+
+      const adminProblemMatch = path.match(/^\/api\/admin\/problems\/([^/]+)\/([^/]+)$/);
+      if (adminProblemMatch && method === "DELETE") {
+        const actorAuth = await verifyAdminOrSupervisor(request, trackedEnv);
+        if (!actorAuth.ok) {
+          return finalize(authFailureResponse(actorAuth));
+        }
+        const qId = decodeURIComponent(adminProblemMatch[1]);
+        const userId = decodeURIComponent(adminProblemMatch[2]);
+        const now = Date.now();
+        const [delRes, delFlagsRes] = await trackedEnv.DB.batch([
+          trackedEnv.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(qId, userId),
+          trackedEnv.DB.prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?").bind(qId, userId),
+        ]);
+        if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
+          await bumpCommunityVersion(trackedEnv.DB, now);
+          await syncDeletionToUserProgress(trackedEnv.DB, userId, qId, "problem", now);
+        }
+        return finalize(jsonResponse({ ok: true, qId, userId }));
+      }
+
+      const adminProblemFlagsMatch = path.match(/^\/api\/admin\/problem-flags\/([^/]+)\/([^/]+)$/);
+      if (adminProblemFlagsMatch && method === "DELETE") {
+        const actorAuth = await verifyAdminOrSupervisor(request, trackedEnv);
+        if (!actorAuth.ok) {
+          return finalize(authFailureResponse(actorAuth));
+        }
+        const qId = decodeURIComponent(adminProblemFlagsMatch[1]);
+        const problemUserId = decodeURIComponent(adminProblemFlagsMatch[2]);
+        const now = Date.now();
+        const delRes = await trackedEnv.DB
+          .prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?")
+          .bind(qId, problemUserId)
+          .run();
+        if ((delRes?.meta?.changes ?? 0) > 0) {
+          await bumpCommunityVersion(trackedEnv.DB, now);
+        }
+        return finalize(jsonResponse({ ok: true, qId, problemUserId }));
       }
 
       // All other /api/admin/* endpoints require valid Bearer HMAC token
@@ -4436,75 +4610,6 @@ export default {
             invalidateLeaderboardCache();
             return finalize(jsonResponse({ ok: true, releasedUserId: userId }));
           }
-        }
-
-        const adminNoteMatch = path.match(/^\/api\/admin\/notes\/([^/]+)\/([^/]+)$/);
-        if (adminNoteMatch && method === "DELETE") {
-          const qId = decodeURIComponent(adminNoteMatch[1]);
-          const userId = decodeURIComponent(adminNoteMatch[2]);
-          const now = Date.now();
-          const [delRes, delRepliesRes] = await trackedEnv.DB.batch([
-            trackedEnv.DB.prepare("DELETE FROM community_notes WHERE q_id = ? AND user_id = ?").bind(qId, userId),
-            trackedEnv.DB.prepare("DELETE FROM note_replies WHERE q_id = ? AND note_user_id = ?").bind(qId, userId),
-          ]);
-          if ((delRes?.meta?.changes ?? 0) > 0 || (delRepliesRes?.meta?.changes ?? 0) > 0) {
-            await bumpCommunityVersion(trackedEnv.DB, now);
-            await syncDeletionToUserProgress(trackedEnv.DB, userId, qId, "note", now);
-            invalidateLeaderboardCache();
-          }
-          return finalize(jsonResponse({ ok: true, qId, userId }));
-        }
-
-        const adminNoteReplyMatch = path.match(/^\/api\/admin\/note-replies\/([^/]+)$/);
-        if (adminNoteReplyMatch && method === "DELETE") {
-          const replyId = decodeURIComponent(adminNoteReplyMatch[1]);
-          const existing = await trackedEnv.DB
-            .prepare("SELECT reply_id, q_id, note_user_id FROM note_replies WHERE reply_id = ?")
-            .bind(replyId)
-            .first();
-          let deletedIds = [];
-          if (existing) {
-            deletedIds = await collectDescendantReplyIds(trackedEnv.DB, existing.q_id, existing.note_user_id, replyId);
-            const stmts = deletedIds.map((id) =>
-              trackedEnv.DB.prepare("DELETE FROM note_replies WHERE reply_id = ?").bind(id)
-            );
-            for (let idx = 0; idx < stmts.length; idx += 50) {
-              await trackedEnv.DB.batch(stmts.slice(idx, idx + 50));
-            }
-            await bumpCommunityVersion(trackedEnv.DB, Date.now());
-          }
-          return finalize(jsonResponse({ ok: true, replyId, deletedIds }));
-        }
-
-        const adminProblemMatch = path.match(/^\/api\/admin\/problems\/([^/]+)\/([^/]+)$/);
-        if (adminProblemMatch && method === "DELETE") {
-          const qId = decodeURIComponent(adminProblemMatch[1]);
-          const userId = decodeURIComponent(adminProblemMatch[2]);
-          const now = Date.now();
-          const [delRes, delFlagsRes] = await trackedEnv.DB.batch([
-            trackedEnv.DB.prepare("DELETE FROM community_problems WHERE q_id = ? AND user_id = ?").bind(qId, userId),
-            trackedEnv.DB.prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?").bind(qId, userId),
-          ]);
-          if ((delRes?.meta?.changes ?? 0) > 0 || (delFlagsRes?.meta?.changes ?? 0) > 0) {
-            await bumpCommunityVersion(trackedEnv.DB, now);
-            await syncDeletionToUserProgress(trackedEnv.DB, userId, qId, "problem", now);
-          }
-          return finalize(jsonResponse({ ok: true, qId, userId }));
-        }
-
-        const adminProblemFlagsMatch = path.match(/^\/api\/admin\/problem-flags\/([^/]+)\/([^/]+)$/);
-        if (adminProblemFlagsMatch && method === "DELETE") {
-          const qId = decodeURIComponent(adminProblemFlagsMatch[1]);
-          const problemUserId = decodeURIComponent(adminProblemFlagsMatch[2]);
-          const now = Date.now();
-          const delRes = await trackedEnv.DB
-            .prepare("DELETE FROM problem_flags WHERE q_id = ? AND problem_user_id = ?")
-            .bind(qId, problemUserId)
-            .run();
-          if ((delRes?.meta?.changes ?? 0) > 0) {
-            await bumpCommunityVersion(trackedEnv.DB, now);
-          }
-          return finalize(jsonResponse({ ok: true, qId, problemUserId }));
         }
 
         if (method === "POST" && path === "/api/admin/import-legacy") {

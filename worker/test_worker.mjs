@@ -31,7 +31,7 @@ async function run() {
     assert.equal(h.status, 200);
     assert.equal(h.data.ok, true);
     assert.ok(h.data.workerVersion, "Health should expose workerVersion");
-    assert.ok(Number(h.data.schemaVersion) >= 8, "Health should expose schemaVersion >= 8");
+    assert.ok(Number(h.data.schemaVersion) >= 9, "Health should expose schemaVersion >= 9");
 
     const b = await req("/api/bootstrap");
     assert.equal(b.status, 200);
@@ -1965,7 +1965,7 @@ async function run() {
     assert.equal(supPoll.status, 200);
     assert.equal(supPoll.data.identity?.role, "supervisor");
 
-    // Supervisor can edit and hide/remove questions
+    // Supervisor can edit and hide/remove questions, and actor name/role is recorded
     const supEditOk = await req("/api/admin/overrides/2026_q099", {
       method: "PUT",
       headers: supHeaders,
@@ -1973,6 +1973,10 @@ async function run() {
     });
     assert.equal(supEditOk.status, 200);
     assert.equal(supEditOk.data.override.stem, "שאלה ערוכה ע״י מפקח");
+    assert.equal(supEditOk.data.override.updatedByUserId, supUser.userId);
+    assert.equal(supEditOk.data.override.updatedByName, supUser.name);
+    assert.equal(supEditOk.data.override.updatedByEmoji, supUser.emoji);
+    assert.equal(supEditOk.data.override.updatedByRole, "supervisor");
 
     const supHideOk = await req("/api/admin/overrides/2026_q099", {
       method: "PUT",
@@ -1981,6 +1985,39 @@ async function run() {
     });
     assert.equal(supHideOk.status, 200);
     assert.equal(supHideOk.data.override.hidden, true);
+    assert.equal(supHideOk.data.override.updatedByName, supUser.name);
+    assert.equal(supHideOk.data.override.updatedByRole, "supervisor");
+
+    // Bootstrap exposes override actor fields too
+    const bootAfterSup = await req("/api/bootstrap");
+    assert.equal(bootAfterSup.status, 200);
+    assert.equal(bootAfterSup.data.overrides["2026_q099"]?.updatedByName, supUser.name);
+    assert.equal(bootAfterSup.data.overrides["2026_q099"]?.updatedByRole, "supervisor");
+
+    // Admin login with identity also records admin's nickname on overrides
+    const namedAdminLogin = await req("/api/admin/login", {
+      method: "POST",
+      body: {
+        password: ADMIN_PASSWORD,
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        name: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        deviceLabel: "Actor Check",
+      },
+    });
+    assert.equal(namedAdminLogin.status, 200);
+    const adminEditWithName = await req("/api/admin/overrides/2026_q099", {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${namedAdminLogin.data.token}` },
+      body: { hidden: false, stem: "שאלה ערוכה ע״י מנהל מזוהה" },
+    });
+    assert.equal(adminEditWithName.status, 200);
+    assert.equal(adminEditWithName.data.override.updatedByUserId, studentA.userId);
+    assert.equal(adminEditWithName.data.override.updatedByName, studentA.name);
+    assert.equal(adminEditWithName.data.override.updatedByEmoji, studentA.emoji);
+    assert.equal(adminEditWithName.data.override.updatedByRole, "admin");
 
     const supResetOk = await req("/api/admin/overrides/2026_q099", {
       method: "DELETE",
@@ -1988,18 +2025,87 @@ async function run() {
     });
     assert.equal(supResetOk.status, 200);
 
-    // Supervisor must NOT have access to admin-only endpoints (users, metrics, notes moderation)
+    // Supervisor CAN moderate notes, note replies, problem reports, and problem flags
+    await req("/api/notes/2026_q098", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "הערה לבדיקת מפקח",
+      },
+    });
+    const supReplyCreate = await req(`/api/note-replies/2026_q098/${studentA.userId}`, {
+      method: "POST",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        text: "תגובה לבדיקת מפקח",
+      },
+    });
+    assert.equal(supReplyCreate.status, 200);
+    const supTestReplyId = supReplyCreate.data.reply?.replyId;
+    assert.ok(supTestReplyId);
+
+    const supDelReply = await req(`/api/admin/note-replies/${supTestReplyId}`, {
+      method: "DELETE",
+      headers: supHeaders,
+    });
+    assert.equal(supDelReply.status, 200);
+
+    const supDelNote = await req(`/api/admin/notes/2026_q098/${studentA.userId}`, {
+      method: "DELETE",
+      headers: supHeaders,
+    });
+    assert.equal(supDelNote.status, 200);
+
+    await req("/api/problems/2026_q098", {
+      method: "PUT",
+      body: {
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        type: "question_issue",
+        text: "דיווח לבדיקת מפקח",
+        author: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+      },
+    });
+    await req(`/api/problem-flags/2026_q098/${studentA.userId}`, {
+      method: "PUT",
+      body: {
+        userId: supUser.userId,
+        clientSecret: supUser.clientSecret,
+        author: supUser.name,
+        emoji: supUser.emoji,
+        category: supUser.category,
+      },
+    });
+    const supClearFlags = await req(`/api/admin/problem-flags/2026_q098/${studentA.userId}`, {
+      method: "DELETE",
+      headers: supHeaders,
+    });
+    assert.equal(supClearFlags.status, 200);
+    const supDelProb = await req(`/api/admin/problems/2026_q098/${studentA.userId}`, {
+      method: "DELETE",
+      headers: supHeaders,
+    });
+    assert.equal(supDelProb.status, 200);
+
+    // Supervisor must NOT have access to admin-only endpoints (users, metrics, feedback)
     const supAdminUsers = await req("/api/admin/users", { headers: supHeaders });
     assert.equal(supAdminUsers.status, 401);
     const supAdminMetrics = await req("/api/admin/metrics", { headers: supHeaders });
     assert.equal(supAdminMetrics.status, 401);
-    const supDelNote = await req(`/api/admin/notes/2026_q001/${studentA.userId}`, {
-      method: "DELETE",
-      headers: supHeaders,
-    });
-    assert.equal(supDelNote.status, 401);
+    const supAdminFeedback = await req("/api/admin/feedback", { headers: supHeaders });
+    assert.equal(supAdminFeedback.status, 401);
 
-    // Admin demotes supUser back to regular user -> loses override access immediately
+    // Admin demotes supUser back to regular user -> loses override & moderation access immediately
     const demoteRes = await req(`/api/admin/users/${supUser.userId}/role`, {
       method: "POST",
       headers: authHeader,
@@ -2014,6 +2120,12 @@ async function run() {
       body: { stem: "לא אמור לעבור" },
     });
     assert.equal(afterDemoteEdit.status, 403);
+
+    const afterDemoteModNote = await req(`/api/admin/notes/2026_q098/${studentA.userId}`, {
+      method: "DELETE",
+      headers: supHeaders,
+    });
+    assert.equal(afterDemoteModNote.status, 403);
 
     console.log("✓ Admin session tracking, remote revoke & Supervisor ('מפקח') permissions OK");
   }
