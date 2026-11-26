@@ -327,8 +327,9 @@
   const CLOUD_POLL_INTERVAL_MS = 150000; // 2.5 minutes (was 90s)
   const USER_IDLE_TIMEOUT_MS = 180000;
   const VISIBILITY_POLL_COOLDOWN_MS = 30000; // 30 seconds on tab return (was 15s)
-  const CLOUD_PROGRESS_DEBOUNCE_MS = 8000; // 8 seconds debounce (was 2s)
-  const CLOUD_PROGRESS_MAX_WAIT_MS = 30000; // Guarantee cloud flush within 30s during continuous activity
+  const CLOUD_PROGRESS_DEBOUNCE_MS = 30000; // 30 seconds debounce (was 8s)
+  const CLOUD_PROGRESS_MAX_WAIT_MS = 120000; // Guarantee cloud flush within 2m during continuous activity
+  const KEEPALIVE_SAFE_BODY_BYTES = 60 * 1024; // Safety cap below browser 64 KB fetch keepalive limit
   let cloudProgressSyncState = isCloudApiConfigured() ? "synced" : "offline";
   let cloudProgressDirty = false;
   let cloudProgressPushTimer = null;
@@ -1403,17 +1404,45 @@
     return "cs_" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 
+  function resolveIdentityCatalogMatch(rawName) {
+    const trimmed = typeof rawName === "string" ? rawName.trim() : "";
+    if (!trimmed) return null;
+    const exact = IDENTITY_CATALOG.find((item) => item.name === trimmed);
+    if (exact) return { name: exact.name, emoji: exact.emoji, category: exact.category };
+    const suffixed = trimmed.match(/^(.+?)\s+(\d+)$/);
+    if (!suffixed) return null;
+    const suffixNum = Number(suffixed[2]);
+    if (!Number.isInteger(suffixNum) || suffixNum < 2) return null;
+    const baseName = suffixed[1].trim();
+    const baseItem = IDENTITY_CATALOG.find((item) => item.name === baseName);
+    if (!baseItem) return null;
+    return {
+      name: `${baseItem.name} ${suffixNum}`,
+      emoji: baseItem.emoji,
+      category: baseItem.category,
+    };
+  }
+
   function pickRandomIdentity(excludeCurrent = true) {
     const taken = getTakenAuthorNames();
-    let pool = IDENTITY_CATALOG.filter((item) => {
-      if (excludeCurrent && userIdentity && item.name === userIdentity.name) return false;
-      return !taken.has(item.name);
-    });
-    if (pool.length === 0) {
-      pool = IDENTITY_CATALOG.filter((item) => !(excludeCurrent && userIdentity && item.name === userIdentity.name));
+    const isUnavailable = (name) =>
+      taken.has(name) || Boolean(excludeCurrent && userIdentity && name === userIdentity.name);
+    const pool = IDENTITY_CATALOG.filter((item) => !isUnavailable(item.name));
+    if (pool.length > 0) {
+      return pool[Math.floor(Math.random() * pool.length)];
     }
-    if (pool.length === 0) pool = IDENTITY_CATALOG;
-    return pool[Math.floor(Math.random() * pool.length)];
+    const base = IDENTITY_CATALOG[Math.floor(Math.random() * IDENTITY_CATALOG.length)];
+    let suffix = 2;
+    let candidate = `${base.name} ${suffix}`;
+    while (isUnavailable(candidate)) {
+      suffix += 1;
+      candidate = `${base.name} ${suffix}`;
+    }
+    return {
+      name: candidate,
+      emoji: base.emoji,
+      category: base.category,
+    };
   }
 
   function loadOrInitIdentity() {
@@ -1421,7 +1450,7 @@
       const raw = localStorage.getItem(IDENTITY_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        const match = IDENTITY_CATALOG.find((item) => item.name === parsed?.name);
+        const match = resolveIdentityCatalogMatch(parsed?.name);
         if (parsed?.userId && match) {
           identityNeedsCloudCheck = false;
           const clientSecret =
@@ -9531,10 +9560,19 @@
     const now = Date.now();
     const active24h = adminUsersCache.filter((u) => now - (Number(u.lastSeenAt) || 0) <= 24 * 60 * 60 * 1000).length;
     const takenNamesSet = new Set(adminUsersCache.map((u) => u.name));
+    const baseNamesSet = new Set(IDENTITY_CATALOG.map((item) => item.name));
+    const takenBaseCount = IDENTITY_CATALOG.filter((item) => takenNamesSet.has(item.name)).length;
+    const extraUsers = adminUsersCache
+      .filter((u) => u && u.name && !baseNamesSet.has(u.name))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), "he"));
 
     el("adminUsersKpis").innerHTML = `
       <div class="kpi-card"><div class="kpi-label">👥 סה״כ משתמשים</div><div class="kpi-value">${adminUsersCache.length}</div></div>
-      <div class="kpi-card"><div class="kpi-label">🏷️ כינויים תפוסים</div><div class="kpi-value">${takenNamesSet.size} / ${IDENTITY_CATALOG.length}</div></div>
+      <div class="kpi-card">
+        <div class="kpi-label">🏷️ כינויים תפוסים</div>
+        <div class="kpi-value">${takenNamesSet.size}</div>
+        <div class="muted" style="font-size:0.75rem;margin-top:2px;">${takenBaseCount} / ${IDENTITY_CATALOG.length} בסיס${extraUsers.length ? ` · +${extraUsers.length} ממוספרים` : ""}</div>
+      </div>
       <div class="kpi-card"><div class="kpi-label">🟢 פעילים ב-24 ש׳</div><div class="kpi-value">${active24h}</div></div>
     `;
 
@@ -9548,6 +9586,13 @@
       chip.title = userObj
         ? `תפוס · פעילות אחרונה: ${formatNoteTime(userObj.lastSeenAt)}`
         : `פנוי (${item.category})`;
+      namesGrid.appendChild(chip);
+    });
+    extraUsers.forEach((u) => {
+      const chip = document.createElement("span");
+      chip.className = "admin-name-chip taken";
+      chip.textContent = `${u.emoji || "👤"} ${u.name}`;
+      chip.title = `תפוס (ממוספר) · פעילות אחרונה: ${formatNoteTime(u.lastSeenAt)}`;
       namesGrid.appendChild(chip);
     });
 
@@ -10601,6 +10646,15 @@
     }, delay);
   }
 
+  function getUtf8ByteLength(str) {
+    try {
+      if (typeof TextEncoder !== "undefined") {
+        return new TextEncoder().encode(str).length;
+      }
+    } catch {}
+    return str.length * 2;
+  }
+
   async function pushCloudProgress({ keepalive = false, replace = false, retried = false } = {}) {
     if (!isCloudApiConfigured()) return false;
     if (cloudProgressSyncPromise && !keepalive) {
@@ -10610,29 +10664,43 @@
 
     cloudProgressFirstDirtyAt = 0;
     const snapshotJson = JSON.stringify(progress);
+    const requestBody = JSON.stringify({
+      userId: userIdentity.userId,
+      clientSecret: userIdentity.clientSecret,
+      identity: {
+        name: userIdentity.name,
+        emoji: userIdentity.emoji,
+        category: userIdentity.category,
+      },
+      progress,
+      replace,
+    });
+    const useKeepalive = Boolean(keepalive) && getUtf8ByteLength(requestBody) <= KEEPALIVE_SAFE_BODY_BYTES;
+
+    const sendProgressRequest = (keepaliveFlag) =>
+      fetch(`${CLOUD_API_BASE}/api/progress`, {
+        method: "PUT",
+        keepalive: Boolean(keepaliveFlag),
+        headers: { "Content-Type": "application/json" },
+        body: requestBody,
+      });
 
     const runPush = async () => {
       try {
-        const res = await fetch(`${CLOUD_API_BASE}/api/progress`, {
-          method: "PUT",
-          keepalive: Boolean(keepalive),
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId: userIdentity.userId,
-            clientSecret: userIdentity.clientSecret,
-            identity: {
-              name: userIdentity.name,
-              emoji: userIdentity.emoji,
-              category: userIdentity.category,
-            },
-            progress,
-            replace,
-          }),
-        });
+        let res;
+        try {
+          res = await sendProgressRequest(useKeepalive);
+        } catch (err) {
+          if (useKeepalive) {
+            res = await sendProgressRequest(false);
+          } else {
+            throw err;
+          }
+        }
         const data = await res.json().catch(() => ({}));
         if (res.status === 409 && data.conflict && !retried) {
           await registerIdentityPing(false);
-          return await pushCloudProgress({ keepalive, replace, retried: true });
+          return await pushCloudProgress({ keepalive: useKeepalive, replace, retried: true });
         }
         if (!res.ok) {
           cloudProgressSyncState = "error";
@@ -10663,8 +10731,18 @@
       }
     };
 
-    if (keepalive) {
+    if (useKeepalive) {
       return runPush();
+    }
+    if (keepalive) {
+      // Exit flush downgraded from keepalive (>60 KB): dispatch immediately while page is still alive
+      const p = runPush();
+      if (!cloudProgressSyncPromise) {
+        cloudProgressSyncPromise = p.finally(() => {
+          cloudProgressSyncPromise = null;
+        });
+      }
+      return p;
     }
     cloudProgressSyncPromise = runPush().finally(() => {
       cloudProgressSyncPromise = null;

@@ -5,6 +5,8 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
 
 const BASE_URL = (process.argv[2] || process.env.TEST_WORKER_URL || "http://127.0.0.1:8799").replace(/\/+$/, "");
 const ADMIN_PASSWORD = process.env.TEST_ADMIN_PASSWORD || "test-admin-pass-123";
@@ -1441,6 +1443,197 @@ async function run() {
     assert.equal(lbWithoutTemp.data.entries.some((e) => e.userId === tempUser.userId), false);
 
     console.log("✓ Community cache & leaderboard cache + invalidation OK");
+  }
+
+  // 8e. User #201+ beyond the 200-nickname catalog (load, register, note/progress save, reload)
+  {
+    const authHeader = { Authorization: `Bearer ${adminToken}` };
+    const appSource = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
+    const catalogMatch = appSource.match(/const IDENTITY_CATALOG = (\[[\s\S]*?\n  \]);/);
+    assert.ok(catalogMatch, "IDENTITY_CATALOG must exist in app.js");
+    const catalog = vm.runInNewContext(catalogMatch[1]);
+    assert.equal(catalog.length, 200, "Expected 200 base identities in IDENTITY_CATALOG");
+    const bootBeforeFill = await req("/api/bootstrap");
+    assert.equal(bootBeforeFill.status, 200);
+    const existingTaken = bootBeforeFill.data.takenNames || {};
+
+    // Fill all remaining base names in IDENTITY_CATALOG so 200 base identities are occupied
+    const missingItems = catalog.filter((item) => !existingTaken[item.name]);
+    const batchSize = 25;
+    for (let i = 0; i < missingItems.length; i += batchSize) {
+      const chunk = missingItems.slice(i, i + batchSize);
+      const responses = await Promise.all(
+        chunk.map((item, idx) =>
+          req("/api/identities/ping", {
+            method: "POST",
+            body: {
+              userId: `u_fill_${i + idx}`,
+              name: item.name,
+              emoji: item.emoji,
+              category: item.category,
+              clientSecret: `secret_fill_${i + idx}_123456`,
+            },
+          })
+        )
+      );
+      for (const res of responses) {
+        assert.equal(res.status, 200, `Filling base identity failed with status ${res.status}`);
+      }
+    }
+
+    const bootFull = await req("/api/bootstrap");
+    assert.equal(bootFull.status, 200);
+    for (const item of catalog) {
+      assert.ok(bootFull.data.takenNames[item.name], `Base identity "${item.name}" should be marked taken`);
+    }
+
+    // User #201 tries claiming a taken base name -> 409 conflict with all 200+ takenNames
+    const user201 = {
+      userId: "u_student_201",
+      name: "תפוח 2",
+      emoji: "🍎",
+      category: "פירות",
+      clientSecret: "secret_201_abcdef1234",
+      syncCode: "2345-6789-ABCD",
+    };
+
+    const baseAttempt = await req("/api/identities/ping", {
+      method: "POST",
+      body: { ...user201, name: "תפוח" },
+    });
+    assert.equal(baseAttempt.status, 409);
+    assert.equal(baseAttempt.data.conflict, true);
+    assert.ok(Object.keys(baseAttempt.data.takenNames).length >= 200);
+
+    // User #201 registers with suffixed name "תפוח 2"
+    const reg201 = await req("/api/identities/ping", {
+      method: "POST",
+      body: {
+        userId: user201.userId,
+        name: user201.name,
+        emoji: user201.emoji,
+        category: user201.category,
+        clientSecret: user201.clientSecret,
+      },
+    });
+    assert.equal(reg201.status, 200);
+    assert.equal(reg201.data.conflict, false);
+
+    // Register sync code for user #201
+    const syncReg201 = await req("/api/sync/register-code", {
+      method: "POST",
+      body: {
+        userId: user201.userId,
+        clientSecret: user201.clientSecret,
+        syncCode: user201.syncCode,
+        name: user201.name,
+        emoji: user201.emoji,
+        category: user201.category,
+      },
+    });
+    assert.equal(syncReg201.status, 200);
+
+    // User #201 saves a note and progress
+    const note201 = await req("/api/notes/2026_q201", {
+      method: "PUT",
+      body: {
+        userId: user201.userId,
+        clientSecret: user201.clientSecret,
+        author: user201.name,
+        emoji: user201.emoji,
+        category: user201.category,
+        text: "הערה ממשתמש 201 עם סיומת מספרית",
+      },
+    });
+    assert.equal(note201.status, 200);
+
+    const prog201 = await req("/api/progress", {
+      method: "PUT",
+      body: {
+        userId: user201.userId,
+        clientSecret: user201.clientSecret,
+        identity: {
+          name: user201.name,
+          emoji: user201.emoji,
+          category: user201.category,
+        },
+        progress: {
+          attempts: {
+            "2026_q201": { selected: 2, isCorrect: true, ts: Date.now() },
+          },
+        },
+      },
+    });
+    assert.equal(prog201.status, 200);
+    assert.equal(prog201.data.progress.identity.name, "תפוח 2");
+
+    // Simulate reload: ping identity again, pull progress, check bootstrap & admin users list
+    const reloadPing = await req("/api/identities/ping", {
+      method: "POST",
+      body: {
+        userId: user201.userId,
+        name: user201.name,
+        emoji: user201.emoji,
+        category: user201.category,
+        clientSecret: user201.clientSecret,
+      },
+    });
+    assert.equal(reloadPing.status, 200);
+    assert.equal(reloadPing.data.conflict, false);
+
+    const reloadProg = await req("/api/progress", {
+      headers: {
+        "X-User-Id": user201.userId,
+        "X-Client-Secret": user201.clientSecret,
+      },
+    });
+    assert.equal(reloadProg.status, 200);
+    assert.equal(reloadProg.data.progress.identity.name, "תפוח 2");
+    assert.equal(reloadProg.data.progress.attempts["2026_q201"]?.selected, 2);
+
+    const bootAfter201 = await req("/api/bootstrap");
+    assert.equal(bootAfter201.status, 200);
+    assert.equal(bootAfter201.data.takenNames["תפוח 2"], user201.userId);
+    assert.equal(bootAfter201.data.notes["2026_q201"]?.[user201.userId]?.author, "תפוח 2");
+    assert.equal(bootAfter201.data.notes["2026_q201"]?.[user201.userId]?.text, "הערה ממשתמש 201 עם סיומת מספרית");
+
+    const adminUsersAfter201 = await req("/api/admin/users", { headers: authHeader });
+    assert.equal(adminUsersAfter201.status, 200);
+    assert.ok(adminUsersAfter201.data.users.length >= 201);
+    const adminRow201 = adminUsersAfter201.data.users.find((u) => u.userId === user201.userId);
+    assert.ok(adminRow201, "User #201 must appear in /api/admin/users");
+    assert.equal(adminRow201.name, "תפוח 2");
+    assert.equal(adminRow201.notesCount, 1);
+    assert.equal(adminRow201.solvedCount, 1);
+    assert.equal(adminRow201.hasSyncCode, true);
+
+    // User #202 colliding on "תפוח 2" gets 409, then registers "תפוח 3"
+    const conflict202 = await req("/api/identities/ping", {
+      method: "POST",
+      body: {
+        userId: "u_student_202",
+        name: "תפוח 2",
+        emoji: "🍎",
+        category: "פירות",
+        clientSecret: "secret_202_abcdef1234",
+      },
+    });
+    assert.equal(conflict202.status, 409);
+    assert.equal(conflict202.data.takenNames["תפוח 2"], user201.userId);
+
+    const reg202 = await req("/api/identities/ping", {
+      method: "POST",
+      body: {
+        userId: "u_student_202",
+        name: "תפוח 3",
+        emoji: "🍎",
+        category: "פירות",
+        clientSecret: "secret_202_abcdef1234",
+      },
+    });
+    assert.equal(reg202.status, 200);
+
+    console.log("✓ User #201+ suffixed identity, note/progress persistence & reload OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts
