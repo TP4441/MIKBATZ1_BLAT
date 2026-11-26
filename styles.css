@@ -1469,6 +1469,33 @@ button,
   border-radius: 999px;
   font-weight: 700;
   font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.q-header > .q-meta {
+  justify-self: start;
+}
+
+.q-header > .q-flags-wrap {
+  justify-self: end;
+}
+
+.q-header .drill-streak {
+  margin-inline: auto;
+  justify-self: center;
+}
+
+@media (min-width: 1040px) {
+  .q-header:has(> .drill-streak:not(.hidden)) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1419px) {
+  body.drawboard-open .q-header:has(> .drill-streak:not(.hidden)) {
+    display: flex;
+  }
 }
 
 /* Stem & Clinical Images Grid */
