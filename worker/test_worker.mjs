@@ -31,7 +31,7 @@ async function run() {
     assert.equal(h.status, 200);
     assert.equal(h.data.ok, true);
     assert.ok(h.data.workerVersion, "Health should expose workerVersion");
-    assert.ok(Number(h.data.schemaVersion) >= 7, "Health should expose schemaVersion >= 7");
+    assert.ok(Number(h.data.schemaVersion) >= 8, "Health should expose schemaVersion >= 8");
 
     const b = await req("/api/bootstrap");
     assert.equal(b.status, 200);
@@ -63,7 +63,10 @@ async function run() {
   {
     const routes = [
       ["GET", "/api/admin/verify"],
+      ["POST", "/api/admin/logout"],
+      ["POST", "/api/admin/sessions/adm_fake/revoke"],
       ["GET", "/api/admin/users"],
+      ["POST", "/api/admin/users/u_fake/role", { role: "supervisor" }],
       ["PUT", "/api/admin/users/u_fake", { name: "שם חדש" }],
       ["POST", "/api/admin/users/u_fake/block", { reason: "test" }],
       ["POST", "/api/admin/users/u_fake/unblock"],
@@ -1839,6 +1842,180 @@ async function run() {
     assert.equal(verDel.data.deleted, true);
 
     console.log("✓ Admin pool names, user rename, block/unblock, telemetry metrics & version tracking OK");
+  }
+
+  // 8c. Admin session tracking & Supervisor ('מפקח') role permissions
+  {
+    const authHeader = { Authorization: `Bearer ${adminToken}` };
+
+    // 1) Admin login bound to a user identity creates a tracked session
+    const adminUserLogin = await req("/api/admin/login", {
+      method: "POST",
+      body: {
+        password: ADMIN_PASSWORD,
+        userId: studentA.userId,
+        clientSecret: studentA.clientSecret,
+        name: studentA.name,
+        emoji: studentA.emoji,
+        category: studentA.category,
+        deviceLabel: "Windows Test",
+        rememberDevice: true,
+      },
+    });
+    assert.equal(adminUserLogin.status, 200);
+    assert.ok(adminUserLogin.data.token);
+    assert.ok(adminUserLogin.data.sessionId);
+
+    const trackedUsersRes = await req("/api/admin/users", {
+      headers: { Authorization: `Bearer ${adminUserLogin.data.token}` },
+    });
+    assert.equal(trackedUsersRes.status, 200);
+    assert.ok(Array.isArray(trackedUsersRes.data.adminSessions));
+    const trackedSess = trackedUsersRes.data.adminSessions.find(
+      (s) => s.sessionId === adminUserLogin.data.sessionId
+    );
+    assert.ok(trackedSess, "Logged-in admin session must appear in adminSessions");
+    assert.equal(trackedSess.userId, studentA.userId);
+    assert.equal(trackedSess.deviceLabel, "Windows Test");
+    assert.equal(trackedSess.isOnline, true);
+    assert.equal(trackedSess.isCurrent, true);
+
+    const trackedUserRow = trackedUsersRes.data.users.find((u) => u.userId === studentA.userId);
+    assert.ok(trackedUserRow);
+    assert.equal(trackedUserRow.adminConnected, true);
+    assert.equal(trackedUserRow.adminOnline, true);
+
+    // Poll with admin Bearer token confirms valid admin session
+    const adminPoll = await req("/api/poll?communityVersion=0&progressVersion=0", {
+      headers: {
+        "X-User-Id": studentA.userId,
+        "X-Client-Secret": studentA.clientSecret,
+        Authorization: `Bearer ${adminUserLogin.data.token}`,
+      },
+    });
+    assert.equal(adminPoll.status, 200);
+    assert.equal(adminPoll.data.adminSessionValid, true);
+
+    // Revoking that admin session remotely invalidates its token and removes it from active sessions
+    const revokeRes = await req(`/api/admin/sessions/${adminUserLogin.data.sessionId}/revoke`, {
+      method: "POST",
+      headers: authHeader,
+    });
+    assert.equal(revokeRes.status, 200);
+    assert.equal(revokeRes.data.revoked, true);
+
+    const revokedVerify = await req("/api/admin/verify", {
+      headers: { Authorization: `Bearer ${adminUserLogin.data.token}` },
+    });
+    assert.equal(revokedVerify.status, 401);
+
+    const revokedPoll = await req("/api/poll?communityVersion=0&progressVersion=0", {
+      headers: {
+        "X-User-Id": studentA.userId,
+        "X-Client-Secret": studentA.clientSecret,
+        Authorization: `Bearer ${adminUserLogin.data.token}`,
+      },
+    });
+    assert.equal(revokedPoll.status, 200);
+    assert.equal(revokedPoll.data.adminSessionValid, false);
+
+    // 2) Supervisor ('מפקח') role assignment & question override permissions
+    const supUser = {
+      userId: "u_supervisor_test",
+      name: "אננס 99",
+      emoji: "🍍",
+      category: "פירות",
+      clientSecret: "secret_sup_123456",
+    };
+    const supPingInit = await req("/api/identities/ping", { method: "POST", body: supUser });
+    assert.equal(supPingInit.status, 200);
+    assert.equal(supPingInit.data.identity?.role, "user");
+
+    const supHeaders = {
+      "X-User-Id": supUser.userId,
+      "X-Client-Secret": supUser.clientSecret,
+    };
+
+    // Regular user cannot edit or remove questions -> 403
+    const regularEditAttempt = await req("/api/admin/overrides/2026_q099", {
+      method: "PUT",
+      headers: supHeaders,
+      body: { stem: "ניסיון עריכה ללא הרשאה" },
+    });
+    assert.equal(regularEditAttempt.status, 403);
+
+    // Non-admin cannot promote themselves -> 401
+    const selfPromote = await req(`/api/admin/users/${supUser.userId}/role`, {
+      method: "POST",
+      headers: supHeaders,
+      body: { role: "supervisor" },
+    });
+    assert.equal(selfPromote.status, 401);
+
+    // Admin promotes supUser to supervisor
+    const promoteRes = await req(`/api/admin/users/${supUser.userId}/role`, {
+      method: "POST",
+      headers: authHeader,
+      body: { role: "supervisor" },
+    });
+    assert.equal(promoteRes.status, 200);
+    assert.equal(promoteRes.data.role, "supervisor");
+
+    const supPoll = await req("/api/poll?communityVersion=0&progressVersion=0", { headers: supHeaders });
+    assert.equal(supPoll.status, 200);
+    assert.equal(supPoll.data.identity?.role, "supervisor");
+
+    // Supervisor can edit and hide/remove questions
+    const supEditOk = await req("/api/admin/overrides/2026_q099", {
+      method: "PUT",
+      headers: supHeaders,
+      body: { stem: "שאלה ערוכה ע״י מפקח", hidden: false },
+    });
+    assert.equal(supEditOk.status, 200);
+    assert.equal(supEditOk.data.override.stem, "שאלה ערוכה ע״י מפקח");
+
+    const supHideOk = await req("/api/admin/overrides/2026_q099", {
+      method: "PUT",
+      headers: supHeaders,
+      body: { hidden: true },
+    });
+    assert.equal(supHideOk.status, 200);
+    assert.equal(supHideOk.data.override.hidden, true);
+
+    const supResetOk = await req("/api/admin/overrides/2026_q099", {
+      method: "DELETE",
+      headers: supHeaders,
+    });
+    assert.equal(supResetOk.status, 200);
+
+    // Supervisor must NOT have access to admin-only endpoints (users, metrics, notes moderation)
+    const supAdminUsers = await req("/api/admin/users", { headers: supHeaders });
+    assert.equal(supAdminUsers.status, 401);
+    const supAdminMetrics = await req("/api/admin/metrics", { headers: supHeaders });
+    assert.equal(supAdminMetrics.status, 401);
+    const supDelNote = await req(`/api/admin/notes/2026_q001/${studentA.userId}`, {
+      method: "DELETE",
+      headers: supHeaders,
+    });
+    assert.equal(supDelNote.status, 401);
+
+    // Admin demotes supUser back to regular user -> loses override access immediately
+    const demoteRes = await req(`/api/admin/users/${supUser.userId}/role`, {
+      method: "POST",
+      headers: authHeader,
+      body: { role: "user" },
+    });
+    assert.equal(demoteRes.status, 200);
+    assert.equal(demoteRes.data.role, "user");
+
+    const afterDemoteEdit = await req("/api/admin/overrides/2026_q099", {
+      method: "PUT",
+      headers: supHeaders,
+      body: { stem: "לא אמור לעבור" },
+    });
+    assert.equal(afterDemoteEdit.status, 403);
+
+    console.log("✓ Admin session tracking, remote revoke & Supervisor ('מפקח') permissions OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts

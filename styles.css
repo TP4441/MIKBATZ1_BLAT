@@ -3548,6 +3548,16 @@ kbd {
   background: rgba(245, 158, 11, 0.35) !important;
 }
 
+.admin-pill-btn.is-supervisor {
+  background: rgba(16, 185, 129, 0.22) !important;
+  border-color: rgba(52, 211, 153, 0.55) !important;
+  color: #D1FAE5 !important;
+}
+
+.admin-pill-btn.is-supervisor:hover {
+  background: rgba(16, 185, 129, 0.35) !important;
+}
+
 .q-flags-wrap {
   display: flex;
   flex-wrap: wrap;
@@ -4021,6 +4031,110 @@ kbd {
 .admin-user-badge.renamed {
   background: var(--warning-soft);
   color: var(--warning-ink);
+}
+
+.admin-user-badge.admin-role {
+  background: rgba(245, 158, 11, 0.18);
+  color: #B45309;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+[data-theme="dark"] .admin-user-badge.admin-role {
+  color: #FCD34D;
+}
+
+.admin-user-badge.supervisor {
+  background: rgba(16, 185, 129, 0.16);
+  color: #047857;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+[data-theme="dark"] .admin-user-badge.supervisor {
+  color: #6EE7B7;
+}
+
+.admin-user-badge.online {
+  background: var(--success-soft);
+  color: var(--success-ink);
+}
+
+.admin-sessions-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-sessions-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-session-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 4px;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.83rem;
+}
+
+.admin-session-row:last-child {
+  border-bottom: none;
+}
+
+.admin-session-row.is-online {
+  background: var(--success-soft);
+  border-radius: 6px;
+  padding: 7px 8px;
+}
+
+.admin-session-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.admin-session-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.admin-session-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.admin-session-status.is-online {
+  background: var(--success-soft);
+  color: var(--success-ink);
+}
+
+.note-card-action-btn.is-supervisor-active {
+  background: rgba(16, 185, 129, 0.16);
+  border-color: rgba(16, 185, 129, 0.45);
+  color: #047857;
+  font-weight: 700;
+}
+
+[data-theme="dark"] .note-card-action-btn.is-supervisor-active {
+  color: #6EE7B7;
 }
 
 .admin-name-chip.custom {

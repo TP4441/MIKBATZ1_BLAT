@@ -410,10 +410,13 @@
     token: null,
     rememberDevice: false,
     expiresAt: 0,
+    sessionId: null,
   };
   let adminUsersCache = [];
+  let adminSessionsCache = [];
+  let currentAdminSessionId = null;
   let adminCustomIdentitiesCache = [];
-  let adminUsersFilter = "all"; // "all" | "active" | "blocked"
+  let adminUsersFilter = "all"; // "all" | "active" | "admins" | "supervisors" | "blocked"
   let adminFeedbackCache = [];
   let adminMetricsCache = null;
   let adminMetricsLoading = false;
@@ -1520,6 +1523,7 @@
             emoji: match ? match.emoji : parsed.emoji.trim(),
             category: match ? match.category : String(parsed.category || "").trim(),
             adminAssigned: isAdminAssigned,
+            role: parsed.role === "supervisor" ? "supervisor" : "user",
             clientSecret,
             syncCode,
             syncCodeRegistered,
@@ -2571,6 +2575,9 @@
     const wasBlocked = userBlockedInfo.blocked;
     const cleanReason = String(reason || "").trim();
     userBlockedInfo = { blocked: Boolean(blocked), reason: cleanReason };
+    if (Boolean(blocked) !== wasBlocked) {
+      updateAdminUI();
+    }
     if (blocked) {
       cloudProgressSyncState = "error";
       updateSyncStatusUI();
@@ -2597,7 +2604,10 @@
       nextCategory !== String(userIdentity.category || "");
 
     const isAdminRenamed = Boolean(Number(serverIdentity.adminRenamedAt) > 0);
-    if (!changed && (!isAdminRenamed || userIdentity.adminAssigned)) return false;
+    const prevRole = userIdentity.role === "supervisor" ? "supervisor" : "user";
+    const nextRole = serverIdentity.role === "supervisor" ? "supervisor" : "user";
+    const roleChanged = serverIdentity.role !== undefined && nextRole !== prevRole;
+    if (!changed && !roleChanged && (!isAdminRenamed || userIdentity.adminAssigned)) return false;
 
     const oldName = userIdentity.name;
     userIdentity = {
@@ -2606,6 +2616,7 @@
       emoji: nextEmoji,
       category: nextCategory,
       adminAssigned: isAdminRenamed || userIdentity.adminAssigned,
+      role: serverIdentity.role !== undefined ? nextRole : prevRole,
     };
     if (oldName && oldName !== nextName && takenNamesMap[oldName] === userIdentity.userId) {
       delete takenNamesMap[oldName];
@@ -2616,10 +2627,22 @@
     if (!el("syncModal")?.classList.contains("hidden")) {
       renderSyncModal();
     }
+    if (roleChanged) {
+      updateAdminUI();
+      if (nextRole !== "supervisor" && !isFullAdmin()) {
+        closeAdminQuestionModal();
+        closeAdminDashboardModal();
+      }
+      showToast(
+        nextRole === "supervisor"
+          ? "🎓 הוגדרת כמפקח! כעת באפשרותך לערוך ולהסיר שאלות."
+          : "ℹ️ הרשאת המפקח שלך הוסרה."
+      );
+    }
     if (changed) {
       showToast(`✏️ שם המשתמש שלך עודכן ל־${nextEmoji} ${nextName}`);
     }
-    return changed;
+    return changed || roleChanged;
   }
 
   async function registerIdentityPing(retried = false) {
@@ -4848,7 +4871,7 @@
     el("btnFlagStar").classList.toggle("active", !!fl.star);
     el("btnFlagUnsure").classList.toggle("active", !!fl.unsure);
     updateProblemFlagButton(el("btnFlagProblem"), el("btnFlagProblemCount"), q);
-    el("adminQuestionActions")?.classList.toggle("hidden", !adminState.authenticated);
+    el("adminQuestionActions")?.classList.toggle("hidden", !canEditQuestions());
 
     el("qPositionText").textContent = `שאלה ${currentIndex + 1} מתוך ${filteredList.length}`;
     el("jumpInput").value = currentIndex + 1;
@@ -9203,23 +9226,40 @@
   // Admin Auth, Question Overrides & Moderation Dashboard
   // ============================================================
 
-  function saveAdminToken(token, expiresAt, rememberDevice) {
+  function isFullAdmin() {
+    return Boolean(adminState.authenticated);
+  }
+
+  function isSupervisor() {
+    return Boolean(userIdentity?.role === "supervisor" && !userBlockedInfo.blocked);
+  }
+
+  function canEditQuestions() {
+    return isFullAdmin() || isSupervisor();
+  }
+
+  function saveAdminToken(token, expiresAt, rememberDevice, sessionId = null) {
     clearAdminTokens();
     adminState = {
       authenticated: true,
       token,
       rememberDevice: Boolean(rememberDevice),
       expiresAt: Number(expiresAt) || 0,
+      sessionId: sessionId || null,
     };
     try {
-      const payload = JSON.stringify({ token, expiresAt: adminState.expiresAt });
+      const payload = JSON.stringify({
+        token,
+        expiresAt: adminState.expiresAt,
+        sessionId: adminState.sessionId,
+      });
       if (rememberDevice) localStorage.setItem(ADMIN_TOKEN_LOCAL_KEY, payload);
       else sessionStorage.setItem(ADMIN_TOKEN_SESSION_KEY, payload);
     } catch {}
   }
 
   function clearAdminTokens() {
-    adminState = { authenticated: false, token: null, rememberDevice: false, expiresAt: 0 };
+    adminState = { authenticated: false, token: null, rememberDevice: false, expiresAt: 0, sessionId: null };
     try {
       localStorage.removeItem(ADMIN_TOKEN_LOCAL_KEY);
       sessionStorage.removeItem(ADMIN_TOKEN_SESSION_KEY);
@@ -9231,20 +9271,36 @@
       const sessRaw = sessionStorage.getItem(ADMIN_TOKEN_SESSION_KEY);
       if (sessRaw) {
         const parsed = JSON.parse(sessRaw);
-        if (parsed?.token) return { token: parsed.token, rememberDevice: false };
+        if (parsed?.token) return { token: parsed.token, rememberDevice: false, sessionId: parsed.sessionId || null };
       }
       const localRaw = localStorage.getItem(ADMIN_TOKEN_LOCAL_KEY);
       if (localRaw) {
         const parsed = JSON.parse(localRaw);
-        if (parsed?.token) return { token: parsed.token, rememberDevice: true };
+        if (parsed?.token) return { token: parsed.token, rememberDevice: true, sessionId: parsed.sessionId || null };
       }
     } catch {}
     return null;
   }
 
   function updateAdminUI() {
-    el("btnAdminPanel")?.classList.toggle("hidden", !adminState.authenticated);
-    el("adminQuestionActions")?.classList.toggle("hidden", !adminState.authenticated);
+    const panelBtn = el("btnAdminPanel");
+    const panelIcon = el("btnAdminPanelIcon");
+    const panelLabel = el("btnAdminPanelLabel");
+    const hasPanel = canEditQuestions();
+    const full = isFullAdmin();
+    const supOnly = !full && isSupervisor();
+
+    if (panelBtn) {
+      panelBtn.classList.toggle("hidden", !hasPanel);
+      panelBtn.classList.toggle("is-supervisor", supOnly);
+      const title = supOnly ? "לוח מפקח (עריכת והסרת שאלות)" : "לוח בקרה למנהל";
+      panelBtn.title = title;
+      panelBtn.setAttribute("aria-label", title);
+    }
+    if (panelIcon) panelIcon.textContent = supOnly ? "🎓" : "🛡️";
+    if (panelLabel) panelLabel.textContent = supOnly ? "מפקח" : "מנהל";
+
+    el("adminQuestionActions")?.classList.toggle("hidden", !hasPanel);
     if (currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard" && filteredList.length > 0) {
       const q = filteredList[currentIndex];
       if (q) {
@@ -9261,6 +9317,44 @@
         renderSimReviewNotesSection(true);
       }
     }
+  }
+
+  async function questionOverrideFetch(path, options = {}) {
+    if (isFullAdmin()) {
+      return adminFetch(path, options);
+    }
+    if (!isSupervisor()) {
+      throw new Error("נדרשת הרשאת מפקח או מנהל.");
+    }
+    if (!isCloudApiConfigured()) {
+      throw new Error("כתובת ה-Worker טרם הוגדרה ב-app.js (CLOUD_API_BASE).");
+    }
+    const headers = {
+      ...(options.headers || {}),
+      "X-User-Id": userIdentity.userId,
+      "X-Client-Secret": userIdentity.clientSecret,
+    };
+    if (options.body && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    const res = await fetch(`${CLOUD_API_BASE}${path}`, {
+      ...options,
+      headers,
+      cache: "no-store",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 403) {
+      userIdentity = { ...userIdentity, role: "user" };
+      saveUserIdentity();
+      updateAdminUI();
+      closeAdminQuestionModal();
+      closeAdminDashboardModal();
+      throw new Error(data.error || "אין לך יותר הרשאת מפקח.");
+    }
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
   }
 
   async function adminFetch(path, options = {}) {
@@ -9313,27 +9407,42 @@
     const stored = loadStoredAdminToken();
     if (stored && isCloudApiConfigured()) {
       try {
+        const verifyHeaders = { Authorization: `Bearer ${stored.token}` };
+        if (userIdentity?.userId && userIdentity?.clientSecret) {
+          verifyHeaders["X-User-Id"] = userIdentity.userId;
+          verifyHeaders["X-Client-Secret"] = userIdentity.clientSecret;
+        }
         const res = await fetch(`${CLOUD_API_BASE}/api/admin/verify`, {
-          headers: { Authorization: `Bearer ${stored.token}` },
+          headers: verifyHeaders,
           cache: "no-store",
         });
         if (res.ok) {
           const data = await res.json().catch(() => ({}));
-          adminState = {
-            authenticated: true,
-            token: stored.token,
-            rememberDevice: stored.rememberDevice,
-            expiresAt: Number(data.expiresAt) || 0,
-          };
+          if (data.upgradedToken) {
+            saveAdminToken(data.upgradedToken, data.expiresAt, stored.rememberDevice, data.sessionId || null);
+          } else {
+            adminState = {
+              authenticated: true,
+              token: stored.token,
+              rememberDevice: stored.rememberDevice,
+              expiresAt: Number(data.expiresAt) || 0,
+              sessionId: data.sessionId || stored.sessionId || null,
+            };
+          }
           updateAdminUI();
         } else {
           clearAdminTokens();
+          updateAdminUI();
         }
       } catch {
         // Network issue: keep token for retry when online, don't unlock admin UI silently
+        updateAdminUI();
       }
     } else if (stored && !isCloudApiConfigured()) {
       clearAdminTokens();
+      updateAdminUI();
+    } else {
+      updateAdminUI();
     }
 
     if (shouldOpenAdmin) {
@@ -9342,7 +9451,7 @@
   }
 
   function openAdminEntry() {
-    if (adminState.authenticated) openAdminDashboardModal();
+    if (canEditQuestions()) openAdminDashboardModal();
     else openAdminLoginModal();
   }
 
@@ -9384,13 +9493,22 @@
       const res = await fetch(`${CLOUD_API_BASE}/api/admin/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({
+          password,
+          userId: userIdentity?.userId || "",
+          clientSecret: userIdentity?.clientSecret || "",
+          name: userIdentity?.name || "",
+          emoji: userIdentity?.emoji || "",
+          category: userIdentity?.category || "",
+          deviceLabel: getDeviceLabel(),
+          rememberDevice,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.token) {
         throw new Error(data.error || "התחברות נכשלה");
       }
-      saveAdminToken(data.token, data.expiresAt, rememberDevice);
+      saveAdminToken(data.token, data.expiresAt, rememberDevice, data.sessionId || null);
       closeAdminLoginModal();
       updateAdminUI();
       showToast("🛡️ התחברת בהצלחה כמנהל!");
@@ -9404,6 +9522,16 @@
   }
 
   function adminLogout() {
+    const tokenToRevoke = adminState.token;
+    if (tokenToRevoke && isCloudApiConfigured()) {
+      try {
+        fetch(`${CLOUD_API_BASE}/api/admin/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${tokenToRevoke}` },
+          keepalive: true,
+        }).catch(() => {});
+      } catch {}
+    }
     clearAdminTokens();
     closeAdminDashboardModal();
     closeAdminQuestionModal();
@@ -9483,7 +9611,7 @@
   }
 
   function openAdminQuestionModal(qId) {
-    if (!adminState.authenticated) {
+    if (!canEditQuestions()) {
       openAdminLoginModal();
       return;
     }
@@ -9566,7 +9694,7 @@
     saveBtn.disabled = true;
     try {
       const existingHidden = Boolean(questionOverrides[qId]?.hidden);
-      const data = await adminFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
+      const data = await questionOverrideFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
         method: "PUT",
         body: JSON.stringify({
           hidden: existingHidden,
@@ -9602,7 +9730,7 @@
       return;
     }
     try {
-      const data = await adminFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
+      const data = await questionOverrideFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
         method: "PUT",
         body: JSON.stringify({ hidden: Boolean(shouldHide) }),
       });
@@ -9624,7 +9752,7 @@
   async function resetAdminQuestionOverride(qId) {
     if (!confirm("לאפס שאלה זו חזרה לנוסח המקורי מ-questions_data.js?")) return;
     try {
-      await adminFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
+      await questionOverrideFetch(`/api/admin/overrides/${encodeURIComponent(qId)}`, {
         method: "DELETE",
       });
       delete questionOverrides[qId];
@@ -9753,14 +9881,30 @@
 
   // Admin Dashboard Modal
   function openAdminDashboardModal() {
-    if (!adminState.authenticated) {
+    if (!canEditQuestions()) {
       openAdminLoginModal();
       return;
     }
+    const full = isFullAdmin();
+    const titleEl = el("adminDashboardTitle");
+    if (titleEl) {
+      titleEl.textContent = full ? "🛡️ לוח בקרה למנהל" : "🎓 לוח מפקח — עריכת והסרת שאלות";
+    }
+    el("btnAdminLogout")?.classList.toggle("hidden", !full);
+    document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
+      const tabKey = btn.dataset.adminTab;
+      btn.classList.toggle("hidden", !full && tabKey !== "overrides");
+    });
+
+    if (!full) {
+      adminActiveTab = "overrides";
+    }
     el("adminDashboardModal").classList.remove("hidden");
     switchAdminTab(adminActiveTab);
-    loadAdminUsers(false);
-    loadAdminFeedback(false);
+    if (full) {
+      loadAdminUsers(false);
+      loadAdminFeedback(false);
+    }
   }
 
   function closeAdminDashboardModal() {
@@ -9768,23 +9912,24 @@
   }
 
   function switchAdminTab(tab) {
-    adminActiveTab = tab || "users";
+    const full = isFullAdmin();
+    adminActiveTab = full ? (tab || "users") : "overrides";
     document.querySelectorAll(".admin-tab-btn").forEach((btn) => {
       const active = btn.dataset.adminTab === adminActiveTab;
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-selected", active ? "true" : "false");
     });
-    el("adminTabUsers").classList.toggle("hidden", adminActiveTab !== "users");
+    el("adminTabUsers").classList.toggle("hidden", !full || adminActiveTab !== "users");
     el("adminTabOverrides").classList.toggle("hidden", adminActiveTab !== "overrides");
-    el("adminTabModeration").classList.toggle("hidden", adminActiveTab !== "moderation");
-    el("adminTabFeedback")?.classList.toggle("hidden", adminActiveTab !== "feedback");
-    el("adminTabTraffic")?.classList.toggle("hidden", adminActiveTab !== "traffic");
+    el("adminTabModeration").classList.toggle("hidden", !full || adminActiveTab !== "moderation");
+    el("adminTabFeedback")?.classList.toggle("hidden", !full || adminActiveTab !== "feedback");
+    el("adminTabTraffic")?.classList.toggle("hidden", !full || adminActiveTab !== "traffic");
 
-    if (adminActiveTab === "users") renderAdminUsersTab();
+    if (adminActiveTab === "users" && full) renderAdminUsersTab();
     else if (adminActiveTab === "overrides") renderAdminOverridesTab();
-    else if (adminActiveTab === "moderation") renderAdminModerationTab();
-    else if (adminActiveTab === "feedback") renderAdminFeedbackTab();
-    else if (adminActiveTab === "traffic") {
+    else if (adminActiveTab === "moderation" && full) renderAdminModerationTab();
+    else if (adminActiveTab === "feedback" && full) renderAdminFeedbackTab();
+    else if (adminActiveTab === "traffic" && full) {
       renderAdminTrafficTab();
       if (!adminMetricsCache && !adminMetricsLoading) loadAdminMetrics(false, false);
     }
@@ -9795,6 +9940,8 @@
     try {
       const data = await adminFetch("/api/admin/users");
       adminUsersCache = Array.isArray(data.users) ? data.users : [];
+      adminSessionsCache = Array.isArray(data.adminSessions) ? data.adminSessions : [];
+      currentAdminSessionId = data.currentAdminSessionId || adminState.sessionId || null;
       if (Array.isArray(data.customIdentities)) {
         adminCustomIdentitiesCache = data.customIdentities;
         customIdentitiesList = data.customIdentities;
@@ -9809,6 +9956,56 @@
       if (showFeedback) showToast("🔄 רשימת המשתמשים רועננה.");
     } catch (err) {
       if (showFeedback) showToast(`❌ שגיאה בטעינת משתמשים: ${err.message}`);
+    }
+  }
+
+  async function adminSetUserRole(userId, name, nextRole) {
+    const isPromoting = nextRole === "supervisor";
+    const confirmMsg = isPromoting
+      ? `למנות את "${name}" (${userId}) למפקח? מפקח יכול לערוך ולהסיר שאלות בבנק.`
+      : `להסיר את הרשאת המפקח מ-"${name}" (${userId})?`;
+    if (!confirm(confirmMsg)) return;
+    try {
+      await adminFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+        method: "POST",
+        body: JSON.stringify({ role: nextRole }),
+      });
+      const target = adminUsersCache.find((u) => u.userId === userId);
+      if (target) target.role = nextRole;
+      if (userId === userIdentity.userId) {
+        userIdentity = { ...userIdentity, role: nextRole };
+        saveUserIdentity();
+        updateAdminUI();
+      }
+      renderAdminUsersTab();
+      showToast(isPromoting ? `🎓 "${name}" מונה למפקח!` : `ℹ️ הרשאת המפקח הוסרה מ-"${name}".`);
+    } catch (err) {
+      showToast(`❌ שגיאה בעדכון תפקיד: ${err.message}`);
+    }
+  }
+
+  async function adminRevokeSession(sessionId, label) {
+    const isSelf = Boolean(currentAdminSessionId && sessionId === currentAdminSessionId);
+    const confirmMsg = isSelf
+      ? "לנתק את סשן המנהל הנוכחי שלך?"
+      : `לנתק את חיבור המנהל של ${label || sessionId}?`;
+    if (!confirm(confirmMsg)) return;
+    try {
+      await adminFetch(`/api/admin/sessions/${encodeURIComponent(sessionId)}/revoke`, {
+        method: "POST",
+      });
+      if (isSelf) {
+        clearAdminTokens();
+        closeAdminDashboardModal();
+        closeAdminQuestionModal();
+        updateAdminUI();
+        showToast("🚪 הסשן הנוכחי נותק.");
+        return;
+      }
+      await loadAdminUsers(false);
+      showToast(`🚪 חיבור המנהל של ${label || sessionId} נותק.`);
+    } catch (err) {
+      showToast(`❌ שגיאה בניתוק סשן: ${err.message}`);
     }
   }
 
@@ -10067,10 +10264,90 @@
     }
   }
 
+  function renderAdminSessionsSection() {
+    const listEl = el("adminSessionsList");
+    const pillEl = el("adminSessionsSummaryPill");
+    if (!listEl) return;
+
+    const onlineCount = adminSessionsCache.filter((s) => s.isOnline).length;
+    const totalCount = adminSessionsCache.length;
+    if (pillEl) {
+      pillEl.textContent = `${onlineCount} מחוברים עכשיו · ${totalCount} סשנים פעילים`;
+      pillEl.classList.toggle("ok", onlineCount > 0);
+    }
+
+    if (totalCount === 0) {
+      listEl.innerHTML = `<div class="muted" style="font-size:0.83rem;">אין כרגע סשנים פעילים של מנהלים (סשנים נוצרים בעת התחברות או אימות מנהל).</div>`;
+      return;
+    }
+
+    listEl.innerHTML = "";
+    adminSessionsCache.forEach((s) => {
+      const row = document.createElement("div");
+      row.className = "admin-session-row" + (s.isOnline ? " is-online" : "");
+
+      const main = document.createElement("div");
+      main.className = "admin-session-main";
+
+      const statusBadge = document.createElement("span");
+      statusBadge.className = "admin-session-status" + (s.isOnline ? " is-online" : "");
+      statusBadge.textContent = s.isOnline ? "🟢 מחובר עכשיו" : "⚪ לא פעיל כעת";
+
+      const identityLabel = s.name
+        ? `${s.emoji || "🛡️"} ${s.name}`
+        : "🔑 כניסת מנהל ללא פרופיל";
+      const nameStrong = document.createElement("strong");
+      nameStrong.textContent = identityLabel;
+
+      main.append(statusBadge, nameStrong);
+
+      if (s.userId) {
+        const idSpan = document.createElement("span");
+        idSpan.className = "muted tabular-text";
+        idSpan.style.fontSize = "0.75rem";
+        idSpan.textContent = s.userId;
+        main.appendChild(idSpan);
+      }
+
+      if (s.isCurrent || (currentAdminSessionId && s.sessionId === currentAdminSessionId)) {
+        const selfBadge = document.createElement("span");
+        selfBadge.className = "admin-user-badge admin-role";
+        selfBadge.textContent = "הסשן שלך";
+        main.appendChild(selfBadge);
+      }
+
+      const meta = document.createElement("div");
+      meta.className = "admin-session-meta";
+
+      const details = [];
+      if (s.deviceLabel) details.push(`💻 ${s.deviceLabel}`);
+      details.push(s.rememberDevice ? "שמור במכשיר" : "סשן זמני");
+      details.push(`פעילות: ${formatOnlineRelativeTime(s.lastSeenAt)} (${formatNoteTime(s.lastSeenAt)})`);
+      details.push(`התחברות: ${formatNoteTime(s.createdAt)}`);
+      const detailsSpan = document.createElement("span");
+      detailsSpan.textContent = details.join(" · ");
+      meta.appendChild(detailsSpan);
+
+      const revokeBtn = document.createElement("button");
+      revokeBtn.type = "button";
+      revokeBtn.className = "note-card-action-btn danger";
+      revokeBtn.textContent = "🚪 נתק";
+      revokeBtn.title = "נתק סשן מנהל זה";
+      revokeBtn.onclick = () => adminRevokeSession(s.sessionId, s.name || s.userId || s.sessionId);
+      meta.appendChild(revokeBtn);
+
+      row.append(main, meta);
+      listEl.appendChild(row);
+    });
+  }
+
   function renderAdminUsersTab() {
     const now = Date.now();
     const active24h = adminUsersCache.filter((u) => !u.blocked && now - (Number(u.lastSeenAt) || 0) <= 24 * 60 * 60 * 1000).length;
     const blockedCount = adminUsersCache.filter((u) => u.blocked).length;
+    const supervisorsList = adminUsersCache.filter((u) => !u.blocked && u.role === "supervisor");
+    const supervisorsOnlineCount = supervisorsList.filter((u) => u.isOnline).length;
+    const adminsOnlineCount = adminSessionsCache.filter((s) => s.isOnline).length;
     const takenNamesSet = new Set(adminUsersCache.filter((u) => !u.orphanBlocked).map((u) => u.name));
     const fullCatalog = getFullIdentityCatalog();
     const fullNamesSet = new Set(fullCatalog.map((item) => item.name));
@@ -10088,8 +10365,20 @@
         <div class="muted tabular-text" style="font-size:0.75rem;margin-top:2px;">${takenBaseCount}/${IDENTITY_CATALOG.length} בסיס · ${customPoolList.length} מותאמים${extraUsers.length ? ` · +${extraUsers.length} מיוחדים/ממוספרים` : ""}</div>
       </div>
       <div class="kpi-card"><div class="kpi-label">🟢 פעילים ב-24 ש׳</div><div class="kpi-value tabular-text">${active24h}</div></div>
+      <div class="kpi-card">
+        <div class="kpi-label">🛡️ מחוברים כמנהל</div>
+        <div class="kpi-value tabular-text">${adminsOnlineCount}</div>
+        <div class="muted tabular-text" style="font-size:0.75rem;margin-top:2px;">${adminSessionsCache.length} סשנים פעילים</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">🎓 מפקחים</div>
+        <div class="kpi-value tabular-text">${supervisorsList.length}</div>
+        <div class="muted tabular-text" style="font-size:0.75rem;margin-top:2px;">${supervisorsOnlineCount} מחוברים עכשיו</div>
+      </div>
       <div class="kpi-card"><div class="kpi-label">🚫 חסומים</div><div class="kpi-value tabular-text">${blockedCount}</div></div>
     `;
+
+    renderAdminSessionsSection();
 
     const summaryEl = el("adminNamesSummary");
     if (summaryEl) {
@@ -10140,6 +10429,8 @@
     const term = (el("adminUsersSearch")?.value || "").trim().toLowerCase();
     const filteredUsers = adminUsersCache.filter((u) => {
       if (adminUsersFilter === "active" && u.blocked) return false;
+      if (adminUsersFilter === "admins" && !u.adminConnected) return false;
+      if (adminUsersFilter === "supervisors" && (u.blocked || u.role !== "supervisor")) return false;
       if (adminUsersFilter === "blocked" && !u.blocked) return false;
       if (!term) return true;
       return (
@@ -10176,6 +10467,15 @@
       const tr = document.createElement("tr");
       if (u.blocked) tr.className = "is-blocked-user";
       const syncTag = u.hasSyncCode ? " · ☁️ מסונכרן" : "";
+      const onlineBadge = u.isOnline
+        ? `<span class="admin-user-badge online" title="פעיל ב-5 הדקות האחרונות">🟢 מחובר</span>`
+        : "";
+      const adminBadge = u.adminConnected
+        ? `<span class="admin-user-badge admin-role" title="${u.adminOnline ? "מחובר כמנהל עכשיו" : "בעל סשן מנהל פעיל"}">🛡️ ${u.adminOnline ? "מנהל מחובר" : "סשן מנהל"}</span>`
+        : "";
+      const supervisorBadge = !u.blocked && u.role === "supervisor"
+        ? `<span class="admin-user-badge supervisor" title="מפקח — יכול לערוך ולהסיר שאלות">🎓 מפקח</span>`
+        : "";
       const blockedBadge = u.blocked
         ? `<span class="admin-user-badge blocked" title="${escapeHtml(u.blockedReason || "חסום")}">🚫 חסום</span>`
         : "";
@@ -10186,7 +10486,7 @@
         ? `<br/><span class="muted" style="font-size:0.72rem;color:var(--danger-ink);">סיבה: ${escapeHtml(u.blockedReason)}</span>`
         : "";
       tr.innerHTML = `
-        <td><strong>${escapeHtml(u.emoji)} ${escapeHtml(u.name)}</strong>${blockedBadge}${renamedBadge}<br/><span class="muted" style="font-size:0.72rem;">${escapeHtml(u.userId)}${syncTag}</span>${reasonLine}</td>
+        <td><strong>${escapeHtml(u.emoji)} ${escapeHtml(u.name)}</strong>${onlineBadge}${adminBadge}${supervisorBadge}${blockedBadge}${renamedBadge}<br/><span class="muted" style="font-size:0.72rem;">${escapeHtml(u.userId)}${syncTag}</span>${reasonLine}</td>
         <td>${escapeHtml(u.category || "—")}</td>
         <td>${escapeHtml(formatNoteTime(u.firstSeenAt) || "—")}</td>
         <td>${escapeHtml(formatNoteTime(u.lastSeenAt) || "—")}</td>
@@ -10196,6 +10496,19 @@
       const actionTd = tr.lastElementChild;
       const actionWrap = document.createElement("div");
       actionWrap.className = "admin-user-actions-cell";
+
+      if (!u.orphanBlocked && !u.blocked) {
+        const isSup = u.role === "supervisor";
+        const supBtn = document.createElement("button");
+        supBtn.type = "button";
+        supBtn.className = "note-card-action-btn" + (isSup ? " is-supervisor-active" : "");
+        supBtn.textContent = isSup ? "🎓 הסר מפקח" : "🎓 הפוך למפקח";
+        supBtn.title = isSup
+          ? "הסר הרשאת מפקח (עריכת והסרת שאלות)"
+          : "מנה כמפקח — יוכל לערוך ולהסיר שאלות";
+        supBtn.onclick = () => adminSetUserRole(u.userId, u.name, isSup ? "user" : "supervisor");
+        actionWrap.appendChild(supBtn);
+      }
 
       if (!u.orphanBlocked) {
         const renameBtn = document.createElement("button");
@@ -11675,12 +11988,16 @@
           progressVersion: String(lastSyncedProgressVersion || 0),
           touchPresence: touchPresence ? "1" : "0",
         });
+        const pollHeaders = {
+          "X-User-Id": userIdentity.userId,
+          "X-Client-Secret": userIdentity.clientSecret,
+        };
+        if (adminState.authenticated && adminState.token) {
+          pollHeaders.Authorization = `Bearer ${adminState.token}`;
+        }
         const res = await fetch(`${CLOUD_API_BASE}/api/poll?${params.toString()}`, {
           method: "GET",
-          headers: {
-            "X-User-Id": userIdentity.userId,
-            "X-Client-Secret": userIdentity.clientSecret,
-          },
+          headers: pollHeaders,
           cache: "no-store",
         });
 
@@ -11699,6 +12016,14 @@
 
         const data = await res.json().catch(() => ({}));
         lastCloudPollAt = Date.now();
+
+        if (adminState.authenticated && data.adminSessionValid === false) {
+          clearAdminTokens();
+          updateAdminUI();
+          closeAdminDashboardModal();
+          closeAdminQuestionModal();
+          showToast("🔒 חיבור המנהל פג או נותק מרחוק.");
+        }
 
         if (Array.isArray(data.onlineUsers)) {
           updateOnlineUsersState(data.onlineUsers, {
@@ -11958,6 +12283,7 @@
         name: data.identity.name,
         emoji: data.identity.emoji,
         category: data.identity.category,
+        role: data.identity.role === "supervisor" ? "supervisor" : "user",
         clientSecret: newClientSecret,
         syncCode: formatSyncCode(syncCode),
         syncCodeRegistered: true,
@@ -11966,6 +12292,7 @@
       identityNeedsCloudCheck = false;
       identityRegisteredInCloud = true;
       saveUserIdentity();
+      updateAdminUI();
 
       const nextProgress = mergeProgressPayloads({}, data.progress || {});
       nextProgress.identity = {

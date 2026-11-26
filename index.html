@@ -90,8 +90,8 @@
             </div>
           </div>
           <button type="button" class="icon-btn admin-pill-btn hidden" id="btnAdminPanel" title="לוח בקרה למנהל" aria-label="לוח בקרה למנהל">
-            <span aria-hidden="true">🛡️</span>
-            <span class="btn-label-desktop">מנהל</span>
+            <span id="btnAdminPanelIcon" aria-hidden="true">🛡️</span>
+            <span class="btn-label-desktop" id="btnAdminPanelLabel">מנהל</span>
           </button>
           <button type="button" class="sync-pill offline" id="btnSyncModal" title="סנכרון אוטומטי והעברה בין מכשירים" aria-label="סנכרון בין מכשירים">
             <span class="dot" aria-hidden="true"></span>
@@ -1457,10 +1457,19 @@
       <!-- Users & Nicknames Tab -->
       <div class="admin-tab-panel" id="adminTabUsers">
         <div class="kpi-grid admin-kpis" id="adminUsersKpis"></div>
+        <section class="admin-sessions-section" id="adminSessionsPanel">
+          <div class="admin-section-head">
+            <h3>🛡️ מעקב מחוברים כמנהל</h3>
+            <span class="admin-source-pill" id="adminSessionsSummaryPill">טוען...</span>
+          </div>
+          <div id="adminSessionsList" class="admin-sessions-list"></div>
+        </section>
         <div class="admin-toolbar">
           <div class="chips-wrap" id="adminUsersFilterChips">
             <button type="button" class="chip active" data-user-filter="all">הכל</button>
             <button type="button" class="chip" data-user-filter="active">פעילים</button>
+            <button type="button" class="chip" data-user-filter="admins">🛡️ מנהלים</button>
+            <button type="button" class="chip" data-user-filter="supervisors">🎓 מפקחים</button>
             <button type="button" class="chip" data-user-filter="blocked">🚫 חסומים</button>
           </div>
           <input type="text" id="adminUsersSearch" class="admin-search-input" placeholder="חיפוש לפי כינוי, קטגוריה או מזהה..." />

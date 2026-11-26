@@ -10,10 +10,12 @@ const MAX_FEEDBACK_CHARS = 500;
 const VALID_PROBLEM_TYPES = new Set(["question_issue", "distractor_issue", "out_of_material"]);
 const ONLINE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes active presence window (was 3m)
 const PRESENCE_TOUCH_INTERVAL_MS = 3 * 60 * 1000; // Throttle last_seen_at writes to once per 3 minutes (was 1m)
+const ADMIN_SESSION_TOUCH_INTERVAL_MS = 60 * 1000; // Throttle admin session last_seen_at writes to once per minute
 const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
+const VALID_USER_ROLES = new Set(["user", "supervisor"]);
 
-const WORKER_VERSION = "2026.11.26.2";
-const WORKER_SCHEMA_VERSION = 7;
+const WORKER_VERSION = "2026.11.26.3";
+const WORKER_SCHEMA_VERSION = 8;
 const GITHUB_REPO_OWNER = "TP4441";
 const GITHUB_REPO_NAME = "MIKBATZ1_BLAT";
 const DEFAULT_CF_ACCOUNT_ID = "e612e80b92d2545210e838c4825c5ca0";
@@ -149,11 +151,17 @@ async function getHmacKey(env) {
   );
 }
 
-async function issueAdminToken(env) {
+function normalizeUserRole(raw) {
+  return raw === "supervisor" ? "supervisor" : "user";
+}
+
+async function issueAdminToken(env, sessionId = null) {
   const now = Date.now();
   const expiresAt = now + TOKEN_TTL_MS;
   const headerB64 = toBase64Url(textEncoder.encode(JSON.stringify({ alg: "HS256", typ: "JWT" })));
-  const payloadB64 = toBase64Url(textEncoder.encode(JSON.stringify({ sub: "admin", iat: now, exp: expiresAt })));
+  const payloadObj = { sub: "admin", iat: now, exp: expiresAt };
+  if (sessionId) payloadObj.sid = sessionId;
+  const payloadB64 = toBase64Url(textEncoder.encode(JSON.stringify(payloadObj)));
   const signingInput = `${headerB64}.${payloadB64}`;
   const key = await getHmacKey(env);
   const sig = await crypto.subtle.sign("HMAC", key, textEncoder.encode(signingInput));
@@ -163,7 +171,8 @@ async function issueAdminToken(env) {
   };
 }
 
-async function verifyAdminToken(request, env) {
+async function verifyAdminToken(request, env, options = {}) {
+  const { touchPresence = true } = options || {};
   if (!env.ADMIN_PASSWORD || !String(env.ADMIN_PASSWORD).trim()) {
     return { valid: false, status: 503, error: "ADMIN_PASSWORD is not configured on server" };
   }
@@ -195,13 +204,63 @@ async function verifyAdminToken(request, env) {
   }
   try {
     const payload = JSON.parse(textDecoder.decode(fromBase64Url(payloadB64)));
-    if (payload?.sub !== "admin" || typeof payload.exp !== "number" || payload.exp <= Date.now()) {
+    const now = Date.now();
+    if (payload?.sub !== "admin" || typeof payload.exp !== "number" || payload.exp <= now) {
       return { valid: false, status: 401, error: "Token expired" };
     }
-    return { valid: true, expiresAt: payload.exp };
+    const sid = typeof payload.sid === "string" && payload.sid.trim() ? payload.sid.trim() : null;
+    if (sid) {
+      const sess = await env.DB
+        .prepare("SELECT session_id, user_id, last_seen_at, expires_at, revoked_at FROM admin_sessions WHERE session_id = ?")
+        .bind(sid)
+        .first();
+      if (!sess || Number(sess.revoked_at) > 0 || Number(sess.expires_at) <= now) {
+        return { valid: false, status: 401, error: "Admin session expired or revoked" };
+      }
+      if (touchPresence && now - Number(sess.last_seen_at || 0) >= ADMIN_SESSION_TOUCH_INTERVAL_MS) {
+        await env.DB
+          .prepare("UPDATE admin_sessions SET last_seen_at = ? WHERE session_id = ?")
+          .bind(now, sid)
+          .run();
+      }
+      return { valid: true, expiresAt: payload.exp, sessionId: sid, userId: sess.user_id || "" };
+    }
+    return { valid: true, expiresAt: payload.exp, sessionId: null, userId: "" };
   } catch {
     return { valid: false, status: 401, error: "Invalid token payload" };
   }
+}
+
+async function verifyAdminOrSupervisor(request, env) {
+  const authHeader = request.headers.get("Authorization") || "";
+  if (authHeader.trim()) {
+    const adminAuth = await verifyAdminToken(request, env);
+    if (!adminAuth.valid) {
+      return { ok: false, status: adminAuth.status, error: adminAuth.error };
+    }
+    return { ok: true, actorType: "admin", adminAuth };
+  }
+
+  const userId = String(request.headers.get("X-User-Id") || "").trim();
+  const clientSecret = String(request.headers.get("X-Client-Secret") || "");
+  if (userId || clientSecret) {
+    const auth = await verifyExistingClientSecret(env.DB, userId, clientSecret, { touchPresence: true });
+    if (!auth.ok) {
+      return {
+        ok: false,
+        status: auth.status === 404 ? 401 : auth.status,
+        error: auth.error,
+        blocked: auth.blocked,
+        blockedReason: auth.blockedReason,
+      };
+    }
+    if (normalizeUserRole(auth.identity?.role) !== "supervisor") {
+      return { ok: false, status: 403, error: "Forbidden: supervisor role required" };
+    }
+    return { ok: true, actorType: "supervisor", userId, identity: auth.identity };
+  }
+
+  return { ok: false, status: 401, error: "Missing Authorization token" };
 }
 
 async function readJsonBody(request) {
@@ -948,7 +1007,7 @@ async function verifyExistingClientSecret(db, userId, clientSecret, options = {}
   const existing = await db
     .prepare(
       `SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at,
-              blocked, blocked_at, blocked_reason, admin_renamed_at
+              blocked, blocked_at, blocked_reason, admin_renamed_at, COALESCE(role, 'user') AS role
        FROM identities WHERE user_id = ?`
     )
     .bind(userId)
@@ -979,7 +1038,7 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
   const existing = await db
     .prepare(
       `SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at,
-              blocked, blocked_at, blocked_reason, admin_renamed_at
+              blocked, blocked_at, blocked_reason, admin_renamed_at, COALESCE(role, 'user') AS role
        FROM identities WHERE user_id = ?`
     )
     .bind(userId)
@@ -1017,7 +1076,7 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
     const created = await db
       .prepare(
         `SELECT user_id, name, emoji, category, client_secret_hash, sync_code_hash, last_seen_at,
-                blocked, blocked_at, blocked_reason, admin_renamed_at
+                blocked, blocked_at, blocked_reason, admin_renamed_at, COALESCE(role, 'user') AS role
          FROM identities WHERE user_id = ?`
       )
       .bind(userId)
@@ -1244,10 +1303,12 @@ async function handlePoll(request, env) {
   const userId = String(request.headers.get("X-User-Id") || "").trim();
   const clientSecret = String(request.headers.get("X-Client-Secret") || "");
   const hasAuthHeaders = Boolean(userId && clientSecret);
+  const hasAdminAuthHeader = Boolean((request.headers.get("Authorization") || "").trim());
 
-  const [serverCommunityVersion, auth] = await Promise.all([
+  const [serverCommunityVersion, auth, adminAuth] = await Promise.all([
     getCommunityVersion(env.DB),
     hasAuthHeaders ? verifyExistingClientSecret(env.DB, userId, clientSecret, { touchPresence }) : Promise.resolve(null),
+    hasAdminAuthHeader ? verifyAdminToken(request, env, { touchPresence }) : Promise.resolve(null),
   ]);
 
   const now = Date.now();
@@ -1278,6 +1339,14 @@ async function handlePoll(request, env) {
     communityChanged,
     onlineUsers,
   };
+
+  if (hasAdminAuthHeader && adminAuth) {
+    payload.adminSessionValid = Boolean(adminAuth.valid);
+    if (adminAuth.valid) {
+      payload.adminSessionId = adminAuth.sessionId || null;
+      payload.adminExpiresAt = adminAuth.expiresAt || 0;
+    }
+  }
 
   if (communityChanged && communityData) {
     payload.notes = communityData.notes;
@@ -1314,6 +1383,7 @@ async function handlePoll(request, env) {
           emoji: auth.identity.emoji,
           category: auth.identity.category,
           adminRenamedAt: Number(auth.identity.admin_renamed_at) || 0,
+          role: normalizeUserRole(auth.identity.role),
         };
       }
       if (!progressRow) {
@@ -1482,7 +1552,7 @@ async function handleIdentityPing(request, env) {
   const existing = await env.DB
     .prepare(
       `SELECT user_id, name, emoji, category, client_secret_hash,
-              blocked, blocked_at, blocked_reason, admin_renamed_at
+              blocked, blocked_at, blocked_reason, admin_renamed_at, COALESCE(role, 'user') AS role
        FROM identities WHERE user_id = ?`
     )
     .bind(userId)
@@ -1511,7 +1581,8 @@ async function handleIdentityPing(request, env) {
 
   const now = Date.now();
   const isAdminRenamed = Boolean(existing && Number(existing.admin_renamed_at) > 0);
-  let effectiveIdentity = { userId, name, emoji, category, adminRenamedAt: 0 };
+  const effectiveRole = normalizeUserRole(existing?.role);
+  let effectiveIdentity = { userId, name, emoji, category, adminRenamedAt: 0, role: effectiveRole };
 
   if (isAdminRenamed) {
     await env.DB
@@ -1534,6 +1605,7 @@ async function handleIdentityPing(request, env) {
       emoji: existing.emoji,
       category: existing.category || "",
       adminRenamedAt: Number(existing.admin_renamed_at) || 0,
+      role: effectiveRole,
     };
   } else {
     const conflictRow = await env.DB
@@ -2312,7 +2384,7 @@ async function handleSyncPreview(request, env) {
 
   const syncCodeHash = await sha256Hex(normalizedCode);
   const target = await env.DB
-    .prepare("SELECT user_id, name, emoji, category, blocked, blocked_at, blocked_reason FROM identities WHERE sync_code_hash = ?")
+    .prepare("SELECT user_id, name, emoji, category, blocked, blocked_at, blocked_reason, COALESCE(role, 'user') AS role FROM identities WHERE sync_code_hash = ?")
     .bind(syncCodeHash)
     .first();
 
@@ -2392,7 +2464,7 @@ async function handleSyncLink(request, env) {
 
   const syncCodeHash = await sha256Hex(normalizedCode);
   const target = await env.DB
-    .prepare("SELECT user_id, name, emoji, category, blocked, blocked_at, blocked_reason FROM identities WHERE sync_code_hash = ?")
+    .prepare("SELECT user_id, name, emoji, category, blocked, blocked_at, blocked_reason, COALESCE(role, 'user') AS role FROM identities WHERE sync_code_hash = ?")
     .bind(syncCodeHash)
     .first();
 
@@ -2622,6 +2694,7 @@ async function handleSyncLink(request, env) {
       name: target.name,
       emoji: target.emoji,
       category: target.category,
+      role: normalizeUserRole(target.role),
     },
     progress: finalProgress,
     updatedAt: finalUpdatedAt,
@@ -2682,12 +2755,118 @@ async function handleAdminLogin(request, env) {
   }
 
   await env.DB.prepare("DELETE FROM admin_rate_limit WHERE ip_hash = ?").bind(ipHash).run();
-  const { token, expiresAt } = await issueAdminToken(env);
-  return jsonResponse({ ok: true, token, expiresAt });
+
+  let sessionUserId = "";
+  let sessionUserName = "";
+  let sessionUserEmoji = "";
+  const claimedUserId = String(body.userId || "").trim();
+  const claimedSecret = typeof body.clientSecret === "string" ? body.clientSecret : "";
+  if (claimedUserId && claimedSecret) {
+    const identAuth = await verifyOrBindClientSecret(
+      env.DB,
+      claimedUserId,
+      claimedSecret,
+      {
+        name: body.name,
+        emoji: body.emoji,
+        category: body.category,
+      },
+      { touchPresence: true }
+    );
+    if (identAuth.ok && identAuth.identity) {
+      sessionUserId = identAuth.identity.user_id || claimedUserId;
+      sessionUserName = identAuth.identity.name || String(body.name || "").trim();
+      sessionUserEmoji = identAuth.identity.emoji || String(body.emoji || "").trim();
+    }
+  }
+
+  const deviceLabel = String(body.deviceLabel || "").trim().slice(0, 64);
+  const rememberDevice = body.rememberDevice ? 1 : 0;
+  const sessionId = `adm_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const { token, expiresAt } = await issueAdminToken(env, sessionId);
+
+  await env.DB
+    .prepare(
+      `INSERT INTO admin_sessions
+         (session_id, user_id, user_name, user_emoji, device_label, remember_device, created_at, last_seen_at, expires_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`
+    )
+    .bind(sessionId, sessionUserId, sessionUserName, sessionUserEmoji, deviceLabel, rememberDevice, now, now, expiresAt)
+    .run();
+
+  return jsonResponse({ ok: true, token, expiresAt, sessionId });
 }
 
-async function handleAdminUsers(env) {
-  const [{ results }, customIdentities, blockedOrphansRes] = await Promise.all([
+async function handleAdminVerify(request, env, auth) {
+  let sessionId = auth.sessionId || null;
+  let upgradedToken = null;
+  let expiresAt = auth.expiresAt;
+
+  if (!sessionId) {
+    const userId = String(request.headers.get("X-User-Id") || "").trim();
+    const clientSecret = String(request.headers.get("X-Client-Secret") || "");
+    if (userId && clientSecret) {
+      const identAuth = await verifyExistingClientSecret(env.DB, userId, clientSecret, { touchPresence: true });
+      if (identAuth.ok && identAuth.identity) {
+        const now = Date.now();
+        sessionId = `adm_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        const issued = await issueAdminToken(env, sessionId);
+        upgradedToken = issued.token;
+        expiresAt = issued.expiresAt;
+        await env.DB
+          .prepare(
+            `INSERT INTO admin_sessions
+               (session_id, user_id, user_name, user_emoji, device_label, remember_device, created_at, last_seen_at, expires_at, revoked_at)
+             VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0)`
+          )
+          .bind(
+            sessionId,
+            identAuth.identity.user_id,
+            identAuth.identity.name || "",
+            identAuth.identity.emoji || "",
+            "",
+            now,
+            now,
+            expiresAt
+          )
+          .run();
+      }
+    }
+  }
+
+  return jsonResponse({
+    ok: true,
+    admin: true,
+    expiresAt,
+    sessionId,
+    ...(upgradedToken ? { upgradedToken } : {}),
+  });
+}
+
+async function handleAdminLogout(env, auth) {
+  if (auth.sessionId) {
+    const now = Date.now();
+    await env.DB
+      .prepare("UPDATE admin_sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at = 0")
+      .bind(now, auth.sessionId)
+      .run();
+  }
+  return jsonResponse({ ok: true, revoked: Boolean(auth.sessionId) });
+}
+
+async function handleAdminRevokeSession(env, sessionId) {
+  const now = Date.now();
+  const res = await env.DB
+    .prepare("UPDATE admin_sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at = 0")
+    .bind(now, sessionId)
+    .run();
+  const revoked = (res?.meta?.changes ?? 0) > 0;
+  return jsonResponse({ ok: true, sessionId, revoked });
+}
+
+async function handleAdminUsers(env, currentAdminSessionId = null) {
+  const now = Date.now();
+  const [{ results }, customIdentities, blockedOrphansRes, adminSessionsRes] = await Promise.all([
     env.DB
       .prepare(
         `SELECT
@@ -2701,6 +2880,7 @@ async function handleAdminUsers(env) {
            COALESCE(i.blocked_at, 0) AS blockedAt,
            COALESCE(i.blocked_reason, '') AS blockedReason,
            COALESCE(i.admin_renamed_at, 0) AS adminRenamedAt,
+           COALESCE(i.role, 'user') AS role,
            CASE WHEN i.sync_code_hash IS NOT NULL AND i.sync_code_hash != '' THEN 1 ELSE 0 END AS hasSyncCode,
            up.progress_json AS progressJson,
            COALESCE(n.cnt, 0) AS notesCount,
@@ -2726,24 +2906,83 @@ async function handleAdminUsers(env) {
       )
       .all()
       .catch(() => ({ results: [] })),
+    env.DB
+      .prepare(
+        `SELECT
+           s.session_id AS sessionId,
+           s.user_id AS userId,
+           COALESCE(NULLIF(i.name, ''), s.user_name, '') AS name,
+           COALESCE(NULLIF(i.emoji, ''), s.user_emoji, '🛡️') AS emoji,
+           COALESCE(i.category, '') AS category,
+           s.device_label AS deviceLabel,
+           COALESCE(s.remember_device, 0) AS rememberDevice,
+           s.created_at AS createdAt,
+           s.last_seen_at AS lastSeenAt,
+           s.expires_at AS expiresAt,
+           COALESCE(i.blocked, 0) AS blocked
+         FROM admin_sessions s
+         LEFT JOIN identities i ON s.user_id = i.user_id
+         WHERE s.revoked_at = 0 AND s.expires_at > ?
+         ORDER BY s.last_seen_at DESC`
+      )
+      .bind(now)
+      .all()
+      .catch(() => ({ results: [] })),
   ]);
+
+  const adminSessions = (adminSessionsRes?.results || []).map((s) => {
+    const lastSeenAt = Number(s.lastSeenAt) || 0;
+    return {
+      sessionId: s.sessionId,
+      userId: s.userId || "",
+      name: s.name || "",
+      emoji: s.emoji || "🛡️",
+      category: s.category || "",
+      deviceLabel: s.deviceLabel || "",
+      rememberDevice: Boolean(s.rememberDevice),
+      createdAt: Number(s.createdAt) || 0,
+      lastSeenAt,
+      expiresAt: Number(s.expiresAt) || 0,
+      blocked: Boolean(s.blocked),
+      isOnline: now - lastSeenAt <= ONLINE_WINDOW_MS,
+      isCurrent: Boolean(currentAdminSessionId && s.sessionId === currentAdminSessionId),
+    };
+  });
+
+  const adminUserSessionMap = new Map();
+  for (const s of adminSessions) {
+    if (!s.userId) continue;
+    const prev = adminUserSessionMap.get(s.userId) || { connected: false, online: false, sessionCount: 0 };
+    adminUserSessionMap.set(s.userId, {
+      connected: true,
+      online: prev.online || s.isOnline,
+      sessionCount: prev.sessionCount + 1,
+    });
+  }
 
   const users = (results || []).map((r) => {
     const parsed = r.progressJson ? parseJsonSafe(r.progressJson, null) : null;
     const solvedCount = parsed?.attempts && typeof parsed.attempts === "object"
       ? Object.keys(parsed.attempts).length
       : 0;
+    const admInfo = adminUserSessionMap.get(r.userId);
+    const blocked = Boolean(r.blocked);
+    const lastSeenAt = Number(r.lastSeenAt) || 0;
     return {
       userId: r.userId,
       name: r.name,
       emoji: r.emoji,
       category: r.category,
       firstSeenAt: r.firstSeenAt,
-      lastSeenAt: r.lastSeenAt,
-      blocked: Boolean(r.blocked),
+      lastSeenAt,
+      isOnline: !blocked && now - lastSeenAt <= ONLINE_WINDOW_MS,
+      blocked,
       blockedAt: Number(r.blockedAt) || 0,
       blockedReason: r.blockedReason || "",
       adminRenamedAt: Number(r.adminRenamedAt) || 0,
+      role: normalizeUserRole(r.role),
+      adminConnected: Boolean(admInfo?.connected),
+      adminOnline: Boolean(admInfo?.online),
       notesCount: Number(r.notesCount) || 0,
       problemsCount: Number(r.problemsCount) || 0,
       hasSyncCode: Boolean(r.hasSyncCode),
@@ -2759,10 +2998,14 @@ async function handleAdminUsers(env) {
       category: "חסום",
       firstSeenAt: 0,
       lastSeenAt: Number(b.blockedAt) || 0,
+      isOnline: false,
       blocked: true,
       blockedAt: Number(b.blockedAt) || 0,
       blockedReason: b.reason || "",
       adminRenamedAt: 0,
+      role: "user",
+      adminConnected: false,
+      adminOnline: false,
       notesCount: 0,
       problemsCount: 0,
       hasSyncCode: false,
@@ -2771,7 +3014,46 @@ async function handleAdminUsers(env) {
     });
   }
 
-  return jsonResponse({ ok: true, users, customIdentities });
+  return jsonResponse({
+    ok: true,
+    users,
+    customIdentities,
+    adminSessions,
+    currentAdminSessionId: currentAdminSessionId || null,
+    serverTime: now,
+  });
+}
+
+async function handleAdminSetUserRole(request, env, userId) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const role = String(body.role || "").trim();
+  if (!VALID_USER_ROLES.has(role)) {
+    return errorResponse("תפקיד לא תקין (user או supervisor)", 400);
+  }
+
+  const existing = await env.DB
+    .prepare("SELECT user_id, name, blocked FROM identities WHERE user_id = ?")
+    .bind(userId)
+    .first();
+  if (!existing) {
+    return errorResponse("המשתמש לא נמצא", 404);
+  }
+
+  if (role === "supervisor") {
+    const blockInfo = await getBlockedStatus(env.DB, userId, existing);
+    if (blockInfo.blocked) {
+      return errorResponse("לא ניתן למנות משתמש חסום כמפקח", 400);
+    }
+  }
+
+  await env.DB
+    .prepare("UPDATE identities SET role = ? WHERE user_id = ?")
+    .bind(role, userId)
+    .run();
+
+  return jsonResponse({ ok: true, userId, role });
 }
 
 async function handleAdminRenameUser(request, env, userId) {
@@ -2832,6 +3114,9 @@ async function handleAdminRenameUser(request, env, userId) {
     env.DB
       .prepare("UPDATE user_feedback SET author = ?, emoji = ?, category = ? WHERE user_id = ?")
       .bind(newName, newEmoji, newCategory, userId),
+    env.DB
+      .prepare("UPDATE admin_sessions SET user_name = ?, user_emoji = ? WHERE user_id = ?")
+      .bind(newName, newEmoji, userId),
   ]);
 
   const communityChanges =
@@ -2911,8 +3196,11 @@ async function handleAdminBlockUser(request, env, userId) {
   if (existing) {
     stmts.push(
       env.DB
-        .prepare("UPDATE identities SET blocked = 1, blocked_at = ?, blocked_reason = ? WHERE user_id = ?")
-        .bind(now, reason, userId)
+        .prepare("UPDATE identities SET blocked = 1, blocked_at = ?, blocked_reason = ?, role = 'user' WHERE user_id = ?")
+        .bind(now, reason, userId),
+      env.DB
+        .prepare("UPDATE admin_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at = 0")
+        .bind(now, userId)
     );
   }
 
@@ -2928,7 +3216,7 @@ async function handleAdminBlockUser(request, env, userId) {
 
   const res = await env.DB.batch(stmts);
   if (purgeContent) {
-    const contentChanged = res.slice(existing ? 2 : 1).some((r) => (r?.meta?.changes ?? 0) > 0);
+    const contentChanged = res.slice(existing ? 3 : 1).some((r) => (r?.meta?.changes ?? 0) > 0);
     if (contentChanged) {
       await bumpCommunityVersion(env.DB, now);
     }
@@ -3660,6 +3948,7 @@ async function getD1StorageAndCounts(rawDb) {
     "user_device_secrets",
     "custom_identities",
     "blocked_users",
+    "admin_sessions",
     "version_releases",
     "telemetry_daily",
   ];
@@ -4029,6 +4318,24 @@ export default {
         return finalize(await handleAdminLogin(request, trackedEnv));
       }
 
+      // Question overrides can be modified by either full Admin OR designated Supervisor ('מפקח')
+      const adminOverrideMatch = path.match(/^\/api\/admin\/overrides\/([^/]+)$/);
+      if (adminOverrideMatch && (method === "PUT" || method === "DELETE")) {
+        const qId = decodeURIComponent(adminOverrideMatch[1]);
+        const actorAuth = await verifyAdminOrSupervisor(request, trackedEnv);
+        if (!actorAuth.ok) {
+          return finalize(authFailureResponse(actorAuth));
+        }
+        if (method === "PUT") {
+          return finalize(await handleAdminPutOverride(request, trackedEnv, qId));
+        }
+        const delRes = await trackedEnv.DB.prepare("DELETE FROM question_overrides WHERE q_id = ?").bind(qId).run();
+        if ((delRes?.meta?.changes ?? 1) > 0) {
+          await bumpCommunityVersion(trackedEnv.DB);
+        }
+        return finalize(jsonResponse({ ok: true, reset: qId }));
+      }
+
       // All other /api/admin/* endpoints require valid Bearer HMAC token
       if (path.startsWith("/api/admin/")) {
         const auth = await verifyAdminToken(request, trackedEnv);
@@ -4037,11 +4344,27 @@ export default {
         }
 
         if (method === "GET" && path === "/api/admin/verify") {
-          return finalize(jsonResponse({ ok: true, admin: true, expiresAt: auth.expiresAt }));
+          return finalize(await handleAdminVerify(request, trackedEnv, auth));
+        }
+
+        if (method === "POST" && path === "/api/admin/logout") {
+          return finalize(await handleAdminLogout(trackedEnv, auth));
+        }
+
+        const adminSessionRevokeMatch = path.match(/^\/api\/admin\/sessions\/([^/]+)\/revoke$/);
+        if (adminSessionRevokeMatch && method === "POST") {
+          const sessionId = decodeURIComponent(adminSessionRevokeMatch[1]);
+          return finalize(await handleAdminRevokeSession(trackedEnv, sessionId));
         }
 
         if (method === "GET" && path === "/api/admin/users") {
-          return finalize(await handleAdminUsers(trackedEnv));
+          return finalize(await handleAdminUsers(trackedEnv, auth.sessionId));
+        }
+
+        const adminUserRoleMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/role$/);
+        if (adminUserRoleMatch && method === "POST") {
+          const userId = decodeURIComponent(adminUserRoleMatch[1]);
+          return finalize(await handleAdminSetUserRole(request, trackedEnv, userId));
         }
 
         if (method === "POST" && path === "/api/admin/identities/pool") {
@@ -4102,11 +4425,13 @@ export default {
             return finalize(await handleAdminRenameUser(request, trackedEnv, userId));
           }
           if (method === "DELETE") {
+            const now = Date.now();
             await trackedEnv.DB.batch([
               trackedEnv.DB.prepare("DELETE FROM identities WHERE user_id = ?").bind(userId),
               trackedEnv.DB.prepare("DELETE FROM user_device_secrets WHERE user_id = ?").bind(userId),
               trackedEnv.DB.prepare("DELETE FROM user_progress WHERE user_id = ?").bind(userId),
               trackedEnv.DB.prepare("DELETE FROM blocked_users WHERE user_id = ?").bind(userId),
+              trackedEnv.DB.prepare("UPDATE admin_sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at = 0").bind(now, userId),
             ]);
             invalidateLeaderboardCache();
             return finalize(jsonResponse({ ok: true, releasedUserId: userId }));
@@ -4180,19 +4505,6 @@ export default {
             await bumpCommunityVersion(trackedEnv.DB, now);
           }
           return finalize(jsonResponse({ ok: true, qId, problemUserId }));
-        }
-
-        const adminOverrideMatch = path.match(/^\/api\/admin\/overrides\/([^/]+)$/);
-        if (adminOverrideMatch) {
-          const qId = decodeURIComponent(adminOverrideMatch[1]);
-          if (method === "PUT") return finalize(await handleAdminPutOverride(request, trackedEnv, qId));
-          if (method === "DELETE") {
-            const delRes = await trackedEnv.DB.prepare("DELETE FROM question_overrides WHERE q_id = ?").bind(qId).run();
-            if ((delRes?.meta?.changes ?? 1) > 0) {
-              await bumpCommunityVersion(trackedEnv.DB);
-            }
-            return finalize(jsonResponse({ ok: true, reset: qId }));
-          }
         }
 
         if (method === "POST" && path === "/api/admin/import-legacy") {
