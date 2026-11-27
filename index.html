@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261127b" />
+  <link rel="stylesheet" href="styles.css?v=20261127c" />
 </head>
 <body>
   <header class="topbar">
@@ -517,7 +517,24 @@
                 <input type="number" id="simCustomCount" min="5" max="200" value="30" />
               </div>
               <div class="inline-field">
-                <label>מקצועות:</label>
+                <div class="sim-field-head">
+                  <label>שנים / מועדים:</label>
+                  <div class="filter-mini-links">
+                    <button type="button" class="link-btn" id="btnSimRecentYears">2017–2026</button>
+                    <button type="button" class="link-btn" id="btnSimAllYears">הכל</button>
+                    <button type="button" class="link-btn" id="btnSimClearYears">נקה</button>
+                  </div>
+                </div>
+                <div class="chips-wrap" id="simExamChips"></div>
+              </div>
+              <div class="inline-field">
+                <div class="sim-field-head">
+                  <label>מקצועות:</label>
+                  <div class="filter-mini-links">
+                    <button type="button" class="link-btn" id="btnSimAllSubjects">הכל</button>
+                    <button type="button" class="link-btn" id="btnSimClearSubjects">נקה</button>
+                  </div>
+                </div>
                 <div class="chips-wrap" id="simSubjectChips"></div>
               </div>
               <p class="muted sim-ratio-hint" id="simRatioHint"></p>
@@ -1707,6 +1724,6 @@
   <script src="drawboard.js?v=20261126b"></script>
   <script src="export.js?v=20261127a"></script>
   <script src="dialog-controls.js?v=20261127a"></script>
-  <script src="app.js?v=20261127b"></script>
+  <script src="app.js?v=20261127c"></script>
 </body>
 </html>

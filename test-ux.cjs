@@ -101,3 +101,71 @@ assert.deepEqual(Array.from(run(`filterSimReviewItems(${JSON.stringify(simAnalys
 assert.deepEqual(Array.from(run(`Array.from(normalizeSimReviewFilters(new Set(["wrong", "unsure"])))`)), ["wrong", "unsure"]);
 assert.deepEqual(Array.from(run(`Array.from(normalizeSimReviewFilters("all"))`)), []);
 console.log("PASS multi-select sim review filters");
+
+// Custom exam simulation year filtering (single + multi-year + fallback)
+const customSimStart = app.indexOf("  const CUSTOM_SIM_SUBJECT_WEIGHTS");
+const customSimEnd = app.indexOf("  // Exam Simulation");
+assert.ok(customSimStart >= 0 && customSimEnd > customSimStart, "custom sim helpers found");
+const simDocs = new Map();
+const makeChip = (attrs = {}, active = true) => ({
+  dataset: { ...attrs },
+  classList: {
+    _set: new Set(active ? ["chip", "active"] : ["chip"]),
+    toggle(c, force) {
+      if (force === undefined) { if (this._set.has(c)) this._set.delete(c); else this._set.add(c); }
+      else if (force) this._set.add(c); else this._set.delete(c);
+    },
+    contains(c) { return this._set.has(c); }
+  }
+});
+const simExamWrap = {
+  _chips: [makeChip({ exam: "2026" }, true), makeChip({ exam: "2025" }, true), makeChip({ exam: "2016" }, false)],
+  querySelectorAll(sel) {
+    if (sel === ".chip.active") return this._chips.filter((c) => c.classList.contains("active"));
+    if (sel === ".chip[data-exam]") return this._chips;
+    return [];
+  }
+};
+const simSubjWrap = {
+  _chips: [makeChip({ subj: "ריאות" }, true), makeChip({ subj: "קרדיולוגיה" }, true)],
+  querySelectorAll(sel) {
+    if (sel === ".chip.active") return this._chips.filter((c) => c.classList.contains("active"));
+    if (sel === ".chip[data-subj]") return this._chips;
+    return [];
+  }
+};
+const simRatioHintEl = { textContent: "" };
+const simCountEl = { value: "10" };
+const customSimCtx = vm.createContext({
+  EXAMS: [{ name: "2026" }, { name: "2025" }, { name: "2016" }],
+  QUESTIONS: [
+    { id: "q1", exam: "2026", subject: "ריאות" },
+    { id: "q2", exam: "2026", subject: "קרדיולוגיה" },
+    { id: "q3", exam: "2025", subject: "ריאות" },
+    { id: "q4", exam: "2016", subject: "ריאות" },
+  ],
+  SIM_HIDE_TIMER_KEY: "sim_hide_timer",
+  getSubject: (q) => q.subject,
+  getUniqueSubjects: () => ["ריאות", "קרדיולוגיה"],
+  document: { querySelector: () => null },
+  el: (id) => ({
+    simExamChips: simExamWrap,
+    simSubjectChips: simSubjWrap,
+    simRatioHint: simRatioHintEl,
+    simCustomCount: simCountEl,
+  }[id] || null),
+});
+vm.runInContext(app.slice(customSimStart, customSimEnd), customSimCtx);
+assert.equal(vm.runInContext(`isRecentExamName("2018 מועד ב׳")`, customSimCtx), true);
+assert.equal(vm.runInContext(`isRecentExamName("2016")`, customSimCtx), false);
+assert.equal(vm.runInContext(`isRecentExamName("תרגוליישן")`, customSimCtx), false);
+const singlePool = vm.runInContext(`buildWeightedCustomSimPool(new Set(["ריאות", "קרדיולוגיה"]), 10, new Set(["2026"]))`, customSimCtx);
+assert.deepEqual(Array.from(singlePool.map((q) => q.id)).sort(), ["q1", "q2"]);
+const multiPool = vm.runInContext(`buildWeightedCustomSimPool(new Set(["ריאות"]), 10, new Set(["2026", "2025"]))`, customSimCtx);
+assert.deepEqual(Array.from(multiPool.map((q) => q.id)).sort(), ["q1", "q3"]);
+const emptyExamsPool = vm.runInContext(`buildWeightedCustomSimPool(new Set(["ריאות"]), 10, new Set())`, customSimCtx);
+assert.deepEqual(Array.from(emptyExamsPool.map((q) => q.id)).sort(), ["q1", "q3", "q4"]);
+vm.runInContext(`updateCustomSimRatioHint()`, customSimCtx);
+assert.match(simRatioHintEl.textContent, /2026, 2025/);
+assert.match(simRatioHintEl.textContent, /3 שאלות/);
+console.log("PASS custom simulation single and multi-year filtering");

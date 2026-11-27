@@ -5645,14 +5645,70 @@
     return alloc;
   }
 
-  function buildWeightedCustomSimPool(chosenSubjs, count) {
-    const effectiveSubjs = chosenSubjs.size > 0 ? Array.from(chosenSubjs) : getUniqueSubjects();
+  function isRecentExamName(name) {
+    const m = String(name).match(/^(\d{4})/);
+    if (!m) return false;
+    const yr = Number(m[1]);
+    return yr >= 2017 && yr <= 2026;
+  }
+
+  function getSelectedSimExams() {
+    const wrap = el("simExamChips");
+    if (!wrap) return new Set();
+    return new Set(
+      Array.from(wrap.querySelectorAll(".chip.active"))
+        .map((b) => b.dataset.exam)
+        .filter(Boolean)
+    );
+  }
+
+  function getSelectedSimSubjects() {
+    const wrap = el("simSubjectChips");
+    if (!wrap) return new Set();
+    return new Set(
+      Array.from(wrap.querySelectorAll(".chip.active"))
+        .map((b) => b.dataset.subj)
+        .filter(Boolean)
+    );
+  }
+
+  function selectSimTypeRadio(typeValue) {
+    const radio = document.querySelector(`input[name="simType"][value="${typeValue}"]`);
+    if (radio && !radio.checked) radio.checked = true;
+  }
+
+  function setSimExamChipsFilter(predicate) {
+    const wrap = el("simExamChips");
+    if (!wrap) return;
+    wrap.querySelectorAll(".chip[data-exam]").forEach((btn) => {
+      btn.classList.toggle("active", Boolean(predicate(btn.dataset.exam)));
+    });
+    selectSimTypeRadio("custom");
+    updateCustomSimRatioHint();
+  }
+
+  function setSimSubjectChipsActive(active) {
+    const wrap = el("simSubjectChips");
+    if (!wrap) return;
+    wrap.querySelectorAll(".chip[data-subj]").forEach((btn) => {
+      btn.classList.toggle("active", Boolean(active));
+    });
+    selectSimTypeRadio("custom");
+    updateCustomSimRatioHint();
+  }
+
+  function buildWeightedCustomSimPool(chosenSubjs, count, chosenExams = null) {
+    const subjsSet = chosenSubjs instanceof Set ? chosenSubjs : new Set(chosenSubjs || []);
+    const examsSet = chosenExams instanceof Set ? chosenExams : new Set(chosenExams || []);
+    const effectiveSubjs = subjsSet.size > 0 ? Array.from(subjsSet) : getUniqueSubjects();
+    const filterByExam = examsSet.size > 0;
     const buckets = new Map();
     const availableCounts = new Map();
     for (const s of effectiveSubjs) {
       buckets.set(s, []);
     }
     for (const q of QUESTIONS) {
+      if (filterByExam && !examsSet.has(q.exam)) continue;
       const s = getSubject(q);
       if (buckets.has(s)) {
         buckets.get(s).push(q);
@@ -5679,13 +5735,14 @@
     const simSubjWrap = el("simSubjectChips");
     if (!hintEl || !simSubjWrap) return;
 
-    const chosenSubjs = new Set(
-      Array.from(simSubjWrap.querySelectorAll(".chip.active")).map((b) => b.dataset.subj)
-    );
+    const chosenSubjs = getSelectedSimSubjects();
+    const chosenExams = getSelectedSimExams();
     const effectiveSubjs = chosenSubjs.size > 0 ? Array.from(chosenSubjs) : getUniqueSubjects();
+    const filterByExam = chosenExams.size > 0;
     const availableCounts = new Map();
     for (const s of effectiveSubjs) availableCounts.set(s, 0);
     for (const q of QUESTIONS) {
+      if (filterByExam && !chosenExams.has(q.exam)) continue;
       const s = getSubject(q);
       if (availableCounts.has(s)) {
         availableCounts.set(s, availableCounts.get(s) + 1);
@@ -5702,8 +5759,16 @@
     });
 
     if (totalPlanned === 0) {
-      hintEl.textContent = "אין שאלות זמינות למקצועות שנבחרו.";
+      hintEl.textContent = "אין שאלות זמינות למקצועות ולשנים שנבחרו.";
       return;
+    }
+
+    const selectedExamNames = EXAMS.map((ex) => ex.name).filter((name) => chosenExams.has(name));
+    let yearsLabel = "כל השנים";
+    if (selectedExamNames.length > 0 && selectedExamNames.length < EXAMS.length) {
+      yearsLabel = selectedExamNames.length <= 3
+        ? selectedExamNames.join(", ")
+        : `${selectedExamNames.length} שנים/מועדים`;
     }
 
     const parts = activeSubjects
@@ -5715,12 +5780,13 @@
         return `${subj} ${n} (${pct}%)`;
       });
 
-    hintEl.textContent = `חלוקה לפי יחס (${totalPlanned} שאלות): ${parts.join(" · ")}`;
+    hintEl.textContent = `חלוקה לפי יחס (${totalPlanned} שאלות · ${yearsLabel}): ${parts.join(" · ")}`;
   }
 
   // Exam Simulation
   function initExamSetup() {
     const sel = el("simExamSelect");
+    const prevSelectedExam = sel.value;
     sel.innerHTML = "";
     EXAMS.forEach((ex) => {
       const opt = document.createElement("option");
@@ -5728,21 +5794,53 @@
       opt.textContent = `${ex.name} (${ex.expectedCount} שאלות)`;
       sel.appendChild(opt);
     });
+    if (prevSelectedExam && EXAMS.some((ex) => ex.name === prevSelectedExam)) {
+      sel.value = prevSelectedExam;
+    }
+
+    const simExamWrap = el("simExamChips");
+    if (simExamWrap) {
+      const hadInitializedExams = simExamWrap.dataset.initialized === "1";
+      const prevExams = hadInitializedExams ? getSelectedSimExams() : null;
+      simExamWrap.innerHTML = "";
+      EXAMS.forEach((ex) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        const isPractice = ex.name === PRACTICE_EXAM_NAME;
+        const isActive = hadInitializedExams ? prevExams.has(ex.name) : true;
+        btn.className = "chip" + (isPractice ? " chip-practice" : "") + (isActive ? " active" : "");
+        btn.dataset.exam = ex.name;
+        btn.textContent = ex.name;
+        btn.title = `${ex.name} (${ex.expectedCount} שאלות)`;
+        btn.onclick = () => {
+          btn.classList.toggle("active");
+          selectSimTypeRadio("custom");
+          updateCustomSimRatioHint();
+        };
+        simExamWrap.appendChild(btn);
+      });
+      simExamWrap.dataset.initialized = "1";
+    }
 
     const simSubjWrap = el("simSubjectChips");
+    const hadInitializedSubjs = simSubjWrap.dataset.initialized === "1";
+    const prevSubjs = hadInitializedSubjs ? getSelectedSimSubjects() : null;
     simSubjWrap.innerHTML = "";
     getUniqueSubjects().forEach((s) => {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "chip active";
+      const isActive = hadInitializedSubjs ? prevSubjs.has(s) : true;
+      btn.className = "chip" + (isActive ? " active" : "");
       btn.dataset.subj = s;
       btn.textContent = formatSubject(s);
       btn.onclick = () => {
         btn.classList.toggle("active");
+        selectSimTypeRadio("custom");
         updateCustomSimRatioHint();
       };
       simSubjWrap.appendChild(btn);
     });
+    simSubjWrap.dataset.initialized = "1";
 
     if (el("simHideTimer")) {
       el("simHideTimer").checked = loadSimHideTimerPref();
@@ -6011,12 +6109,18 @@
       pool = QUESTIONS.filter((q) => q.exam === examName);
       label = `${examName} (${pool.length} שאלות)`;
     } else {
-      const chosenSubjs = new Set(
-        Array.from(el("simSubjectChips").querySelectorAll(".chip.active")).map((b) => b.dataset.subj)
-      );
+      const chosenSubjs = getSelectedSimSubjects();
+      const chosenExams = getSelectedSimExams();
       const count = Math.max(5, Math.min(200, parseInt(el("simCustomCount").value, 10) || 30));
-      pool = buildWeightedCustomSimPool(chosenSubjs, count);
-      label = `סימולציה מותאמת (${pool.length} שאלות)`;
+      pool = buildWeightedCustomSimPool(chosenSubjs, count, chosenExams);
+      const selectedExamsList = EXAMS.map((ex) => ex.name).filter((name) => chosenExams.has(name));
+      const yearsSuffix =
+        selectedExamsList.length > 0 && selectedExamsList.length < EXAMS.length
+          ? selectedExamsList.length <= 2
+            ? ` · ${selectedExamsList.join(", ")}`
+            : ` · ${selectedExamsList.length} שנים`
+          : "";
+      label = `סימולציה מותאמת${yearsSuffix} (${pool.length} שאלות)`;
     }
 
     if (pool.length === 0) {
@@ -8613,12 +8717,7 @@
     el("btnRecentYears").onclick = () => {
       hasUserInteractedWithNav = true;
       getActiveFilters().exams = new Set(
-        EXAMS.map((ex) => ex.name).filter((name) => {
-          const m = String(name).match(/^(\d{4})/);
-          if (!m) return false;
-          const yr = Number(m[1]);
-          return yr >= 2017 && yr <= 2026;
-        })
+        EXAMS.map((ex) => ex.name).filter(isRecentExamName)
       );
       renderFilterChips();
       applyFilters();
@@ -8883,7 +8982,16 @@
     el("btnCardForgot").onclick = () => rateFlashcard(false);
 
     // Exam Simulation
-    el("simCustomCount")?.addEventListener("input", updateCustomSimRatioHint);
+    el("simExamSelect")?.addEventListener("change", () => selectSimTypeRadio("full"));
+    el("simCustomCount")?.addEventListener("input", () => {
+      selectSimTypeRadio("custom");
+      updateCustomSimRatioHint();
+    });
+    el("btnSimRecentYears")?.addEventListener("click", () => setSimExamChipsFilter(isRecentExamName));
+    el("btnSimAllYears")?.addEventListener("click", () => setSimExamChipsFilter(() => true));
+    el("btnSimClearYears")?.addEventListener("click", () => setSimExamChipsFilter(() => false));
+    el("btnSimAllSubjects")?.addEventListener("click", () => setSimSubjectChipsActive(true));
+    el("btnSimClearSubjects")?.addEventListener("click", () => setSimSubjectChipsActive(false));
     el("simHideTimer")?.addEventListener("change", (e) => {
       saveSimHideTimerPref(e.target.checked);
     });
