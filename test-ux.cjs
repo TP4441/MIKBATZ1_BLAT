@@ -466,3 +466,170 @@ console.log("PASS custom simulation single and multi-year filtering");
   assert.equal("shuffleOptions" in shufCtx.progress.studySession, false);
   console.log("PASS one-time question and option shuffle (not persisted across refreshes)");
 }
+
+// Verify exam simulation shuffle is never retained across refreshes (setup checkbox, activeSim, and resume)
+{
+  const extractFn = (name) => {
+    const start = app.indexOf("  function " + name + "(");
+    assert.ok(start >= 0, name);
+    let parenDepth = 0, bodyStart = -1, inStr = null, esc = false;
+    for (let i = app.indexOf("(", start); i < app.length; i++) {
+      const ch = app[i];
+      if (esc) { esc = false; continue; }
+      if (inStr) {
+        if (ch === "\\") esc = true;
+        else if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
+      if (ch === "(") parenDepth++;
+      else if (ch === ")") {
+        parenDepth--;
+        if (parenDepth === 0) { bodyStart = app.indexOf("{", i); break; }
+      }
+    }
+    assert.ok(bodyStart >= 0, name + " body");
+    let depth = 0; inStr = null; esc = false;
+    for (let i = bodyStart; i < app.length; i++) {
+      const ch = app[i];
+      if (esc) { esc = false; continue; }
+      if (inStr) {
+        if (ch === "\\") esc = true;
+        else if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return app.slice(start, i + 1);
+      }
+    }
+    throw new Error("Unclosed function " + name);
+  };
+
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  assert.match(html, /<input[^>]+id="simShuffleOpts"[^>]+autocomplete="off"/);
+
+  const makeMockNode = (extra = {}) => ({
+    checked: false,
+    value: "",
+    innerHTML: "",
+    textContent: "",
+    dataset: {},
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    appendChild() {},
+    ...extra,
+  });
+  const simExamSelect = makeMockNode();
+  const simExamChips = makeMockNode();
+  const simSubjectChips = makeMockNode();
+  const simHideTimer = makeMockNode();
+  const simShuffleOpts = makeMockNode({ checked: true }); // Simulate browser form restore on refresh
+  const simSetupNodes = {
+    simExamSelect,
+    simExamChips,
+    simSubjectChips,
+    simHideTimer,
+    simShuffleOpts,
+    simRatioHint: makeMockNode(),
+    examSetup: makeMockNode(),
+    examHistorySection: makeMockNode(),
+    examResults: makeMockNode(),
+    examReview: makeMockNode(),
+    examActive: makeMockNode(),
+  };
+
+  const simQuestions = [
+    { id: "2026_q001", exam: "2026", num: 1, options: [{ text: "a" }, { text: "b" }] },
+    { id: "2026_q002", exam: "2026", num: 2, options: [{ text: "a" }, { text: "b" }] },
+    { id: "2026_q003", exam: "2026", num: 3, options: [{ text: "a" }, { text: "b" }] },
+  ];
+  const simCtx = vm.createContext({
+    MAX_SESSION_ARRAY_LEN: 2000,
+    PRACTICE_EXAM_NAME: "תרגוליישן",
+    EXAMS: [{ name: "2026", expectedCount: 3 }],
+    QUESTIONS: simQuestions,
+    Q_MAP: new Map(simQuestions.map((q) => [q.id, q])),
+    deviceId: "dev1",
+    hasUserInteractedWithNav: false,
+    optionPermutations: new Map([["2026_q001", [1, 0]]]),
+    simReviewState: { active: false },
+    simState: {
+      active: true,
+      questions: [...simQuestions],
+      answers: new Map(),
+      flagged: new Set(),
+      struck: new Map(),
+      currentIndex: 0,
+      deadline: 0,
+      secondsLeft: 0,
+      initialSeconds: 0,
+      elapsedSeconds: 0,
+      hasTimer: false,
+      timerHidden: false,
+      label: "2026 (3 שאלות)",
+      simType: "full",
+      examName: "2026",
+      timerId: null,
+      shuffleOpts: true,
+    },
+    progress: { activeSim: null, activeSimUpdatedAt: 0 },
+    document: { createElement: () => makeMockNode() },
+    el: (id) => simSetupNodes[id] || null,
+    getUniqueSubjects: () => ["ריאות"],
+    formatSubject: (s) => s,
+    loadSimHideTimerPref: () => false,
+    updateCustomSimRatioHint() {},
+    renderExamHistory() {},
+    saveProgress() {},
+    renderResumeSimBanner() {},
+    clearInterval() {},
+    switchMode() {},
+    updateExamFocusModeUI() {},
+    startSimTimer() {},
+    renderSimQuestion() {},
+    showToast() {},
+    clearActiveSimulation() {},
+    getSelectedSimExams: () => new Set(["2026"]),
+    getSelectedSimSubjects: () => new Set(["ריאות"]),
+  });
+
+  for (const fn of [
+    "sanitizeActiveSim", "initExamSetup", "persistActiveSimulation", "resumeSavedSimulation"
+  ]) {
+    vm.runInContext(extractFn(fn), simCtx);
+  }
+
+  // 1. Initial initExamSetup resets pre-checked simShuffleOpts (e.g. after browser refresh)
+  vm.runInContext(`initExamSetup()`, simCtx);
+  assert.equal(simShuffleOpts.checked, false);
+
+  // 2. Subsequent background initExamSetup does not clobber explicit user check before refresh
+  simShuffleOpts.checked = true;
+  vm.runInContext(`initExamSetup()`, simCtx);
+  assert.equal(simShuffleOpts.checked, true);
+
+  // 3. persistActiveSimulation and sanitizeActiveSim do not persist shuffleOpts: true
+  vm.runInContext(`persistActiveSimulation({ syncCloud: false })`, simCtx);
+  assert.equal(simCtx.progress.activeSim.shuffleOpts, false);
+  const sanitized = vm.runInContext(`sanitizeActiveSim({ questionIds: ["2026_q001"], shuffleOpts: true })`, simCtx);
+  assert.equal(sanitized.shuffleOpts, false);
+
+  // 4. resumeSavedSimulation resets shuffleOpts to false and restores normal full-exam question order
+  simCtx.progress.activeSim = {
+    label: "2026 (3 שאלות)",
+    simType: "full",
+    examName: "2026",
+    questionIds: ["2026_q003", "2026_q001", "2026_q002"],
+    currentIndex: 0, // points to 2026_q003
+    shuffleOpts: true,
+    hasTimer: false,
+  };
+  vm.runInContext(`resumeSavedSimulation()`, simCtx);
+  assert.equal(simCtx.simState.shuffleOpts, false);
+  assert.deepEqual(Array.from(simCtx.simState.questions.map((q) => q.id)), ["2026_q001", "2026_q002", "2026_q003"]);
+  assert.equal(simCtx.simState.currentIndex, 2); // still on 2026_q003
+  assert.equal(simCtx.optionPermutations.size, 0);
+  console.log("PASS exam simulation refresh resets shuffle and keeps normal exam order");
+}

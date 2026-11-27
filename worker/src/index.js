@@ -17,9 +17,9 @@ const UNUSED_STALE_INACTIVE_MS = 24 * 60 * 60 * 1000; // Empty profiles inactive
 const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
 const VALID_USER_ROLES = new Set(["user", "supervisor"]);
 
-const WORKER_VERSION = "2026.11.27.2";
+const WORKER_VERSION = "2026.11.27.3";
 const WORKER_SCHEMA_VERSION = 10;
-const LATEST_CLIENT_VERSION = "20261127e";
+const LATEST_CLIENT_VERSION = "20261127f";
 const GITHUB_REPO_OWNER = "TP4441";
 const GITHUB_REPO_NAME = "MIKBATZ1_BLAT";
 const DEFAULT_CF_ACCOUNT_ID = "e612e80b92d2545210e838c4825c5ca0";

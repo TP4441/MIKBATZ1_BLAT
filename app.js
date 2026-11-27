@@ -20,7 +20,7 @@
   const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
   const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
   const SITE_ANNOUNCEMENT_DISMISSED_KEY = "med_exam_dismissed_announcement_v1";
-  const CLIENT_APP_VERSION = "20261127e";
+  const CLIENT_APP_VERSION = "20261127f";
   const CLIENT_UPDATE_RELOAD_KEY = "med_exam_update_reload_v1";
   const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
   const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
@@ -753,7 +753,7 @@
       hasTimer,
       deadline: Number.isSafeInteger(raw.deadline) ? raw.deadline : 0,
       timerHidden: Boolean(raw.timerHidden),
-      shuffleOpts: Boolean(raw.shuffleOpts),
+      shuffleOpts: false,
       deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
     };
   }
@@ -5404,6 +5404,7 @@
     setShuffleOptionsEnabled(false);
     shuffledQuestionOrder = null;
     drillShuffledOrder = null;
+    if (el("simShuffleOpts")) el("simShuffleOpts").checked = false;
     clearDrillSessionState();
     lastQIdByMode = {};
     lastIndexByMode = {};
@@ -5451,6 +5452,7 @@
       setShuffleOptionsEnabled(false);
       shuffledQuestionOrder = null;
       drillShuffledOrder = null;
+      if (el("simShuffleOpts")) el("simShuffleOpts").checked = false;
       lastQIdByMode = { ...(clean.lastQIdByMode || {}) };
       lastIndexByMode = { ...(clean.lastIndexByMode || {}) };
 
@@ -5868,6 +5870,11 @@
     if (el("simHideTimer")) {
       el("simHideTimer").checked = loadSimHideTimerPref();
     }
+    const simShuffleEl = el("simShuffleOpts");
+    if (simShuffleEl && simShuffleEl.dataset.initialized !== "1") {
+      simShuffleEl.checked = false;
+      simShuffleEl.dataset.initialized = "1";
+    }
 
     updateCustomSimRatioHint();
     renderExamHistory();
@@ -5955,7 +5962,7 @@
       elapsedSeconds: Math.max(0, Math.floor(Number(simState.elapsedSeconds) || 0)),
       hasTimer: Boolean(simState.hasTimer),
       timerHidden: Boolean(simState.timerHidden),
-      shuffleOpts: Boolean(simState.shuffleOpts),
+      shuffleOpts: false,
       deviceId,
     };
     progress.activeSimUpdatedAt = Date.now();
@@ -6037,11 +6044,24 @@
     const saved = progress.activeSim;
     if (!saved || !Array.isArray(saved.questionIds)) return;
 
-    const questions = saved.questionIds.map((id) => Q_MAP.get(id)).filter(Boolean);
+    let questions = saved.questionIds.map((id) => Q_MAP.get(id)).filter(Boolean);
     if (questions.length === 0) {
       clearActiveSimulation({ syncCloud: true, immediateCloud: true });
       showToast("לא נמצאו שאלות לשחזור הסימולציה.");
       return;
+    }
+
+    let safeIdx = Math.max(0, Math.min(questions.length - 1, Number(saved.currentIndex) || 0));
+    if (saved.simType !== "custom") {
+      const curQId = questions[safeIdx]?.id || null;
+      const catalogIdx = new Map(QUESTIONS.map((q, idx) => [q.id, idx]));
+      questions = [...questions].sort(
+        (a, b) => (catalogIdx.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (catalogIdx.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+      );
+      if (curQId) {
+        const mappedIdx = questions.findIndex((q) => q.id === curQId);
+        if (mappedIdx >= 0) safeIdx = mappedIdx;
+      }
     }
 
     hasUserInteractedWithNav = true;
@@ -6066,7 +6086,6 @@
       });
     }
 
-    const safeIdx = Math.max(0, Math.min(questions.length - 1, Number(saved.currentIndex) || 0));
     const hasTimer = Boolean(saved.hasTimer);
     const secondsLeft = hasTimer ? Math.max(0, Number(saved.secondsLeft) || 0) : 0;
 
@@ -6089,7 +6108,7 @@
       simType: saved.simType === "custom" ? "custom" : "full",
       examName: saved.examName || "",
       timerId: null,
-      shuffleOpts: Boolean(saved.shuffleOpts),
+      shuffleOpts: false,
     };
 
     optionPermutations.clear();
@@ -6156,7 +6175,7 @@
       : Math.max(0, parseInt(el("simMinutes").value, 10) || 0);
     const shuffleOpts = customShuffleOpts !== null
       ? Boolean(customShuffleOpts)
-      : el("simShuffleOpts").checked;
+      : Boolean(el("simShuffleOpts")?.checked);
     const timerHidden = customTimerHidden !== null
       ? Boolean(customTimerHidden)
       : Boolean(el("simHideTimer")?.checked ?? loadSimHideTimerPref());
