@@ -490,7 +490,7 @@
   let simReviewState = {
     active: false,
     entry: null,
-    filter: "all", // all | wrong | skipped | wrong_skipped | correct | unsure | flagged
+    filters: new Set(), // empty = all; non-empty = union of: wrong | skipped | wrong_skipped | correct | unsure | flagged
     subjectFilter: "all",
     items: [],
     currentIndex: 0,
@@ -6849,22 +6849,47 @@
     });
   }
 
-  function filterSimReviewItems(analysis, filter, subjectFilter) {
+  const SIM_REVIEW_FILTER_KEYS = new Set(["wrong", "skipped", "wrong_skipped", "correct", "unsure", "flagged"]);
+
+  function normalizeSimReviewFilters(filterInput) {
+    if (!filterInput || filterInput === "all") return new Set();
+    const raw = filterInput instanceof Set
+      ? Array.from(filterInput)
+      : Array.isArray(filterInput)
+      ? filterInput
+      : [filterInput];
+    const next = new Set();
+    for (const key of raw) {
+      if (SIM_REVIEW_FILTER_KEYS.has(key)) next.add(key);
+    }
+    return next;
+  }
+
+  function matchesSimReviewFilterKey(it, key) {
+    switch (key) {
+      case "wrong": return it.isWrong;
+      case "skipped": return it.isSkipped;
+      case "wrong_skipped": return it.isWrong || it.isSkipped;
+      case "correct": return it.isCorrect;
+      case "unsure": return it.isUnsure;
+      case "flagged": return it.isFlagged;
+      default: return false;
+    }
+  }
+
+  function filterSimReviewItems(analysis, filterOrFilters, subjectFilter) {
+    const activeFilters = normalizeSimReviewFilters(filterOrFilters);
     return analysis.items.filter((it) => {
       if (subjectFilter && subjectFilter !== "all" && it.subject !== subjectFilter) return false;
-      switch (filter) {
-        case "wrong": return it.isWrong;
-        case "skipped": return it.isSkipped;
-        case "wrong_skipped": return it.isWrong || it.isSkipped;
-        case "correct": return it.isCorrect;
-        case "unsure": return it.isUnsure;
-        case "flagged": return it.isFlagged;
-        default: return true;
+      if (activeFilters.size === 0) return true;
+      for (const key of activeFilters) {
+        if (matchesSimReviewFilterKey(it, key)) return true;
       }
+      return false;
     });
   }
 
-  function openSimReview(entry, { filter = "all", subjectFilter = "all", index = 0, returnTo = "results", notesExpanded: nextNotesExpanded = false } = {}) {
+  function openSimReview(entry, { filter = "all", filters = null, subjectFilter = "all", index = 0, returnTo = "results", notesExpanded: nextNotesExpanded = false } = {}) {
     if (!entry) return;
     const analysis = computeSimEntryAnalysis(entry);
     if (analysis.items.length === 0) {
@@ -6873,11 +6898,12 @@
     }
 
     activeReplyComposer = null;
-    const items = filterSimReviewItems(analysis, filter, subjectFilter);
+    const activeFilters = normalizeSimReviewFilters(filters !== null ? filters : filter);
+    const items = filterSimReviewItems(analysis, activeFilters, subjectFilter);
     simReviewState = {
       active: true,
       entry,
-      filter,
+      filters: activeFilters,
       subjectFilter,
       items,
       currentIndex: Math.max(0, Math.min(Math.max(0, items.length - 1), index)),
@@ -6912,9 +6938,19 @@
       { key: "flagged", label: `🚩 לבדיקה (${analysis.flaggedCount})` },
     ];
 
+    const activeFilters = simReviewState.filters instanceof Set ? simReviewState.filters : new Set();
+    const isAllActive = activeFilters.size === 0;
+
     const filterButtonsHtml = filterDefs
-      .map((f) => `<button type="button" class="chip${simReviewState.filter === f.key ? " active" : ""}" data-rev-filter="${f.key}">${f.label}</button>`)
+      .map((f) => {
+        const isActive = f.key === "all" ? isAllActive : activeFilters.has(f.key);
+        return `<button type="button" class="chip${isActive ? " active" : ""}" data-rev-filter="${f.key}" aria-pressed="${isActive ? "true" : "false"}">${f.label}</button>`;
+      })
       .join("");
+
+    const filterHintText = activeFilters.size > 1
+      ? `משולבים ${activeFilters.size} מסננים · מוצגות ${simReviewState.items.length} שאלות (לחיצה נוספת מבטלת)`
+      : "ניתן לבחור כמה אפשרויות סינון במקביל (למשל טעויות + התלבטויות)";
 
     const subjOptionsHtml = [
       `<option value="all">כל המקצועות (${analysis.totalCount})</option>`,
@@ -6942,7 +6978,10 @@
         </div>
       </div>
       <div class="sim-review-filters-row">
-        <div class="chips-wrap" id="simReviewFilterChips">${filterButtonsHtml}</div>
+        <div class="sim-review-filters-group">
+          <div class="chips-wrap" id="simReviewFilterChips" role="group" aria-label="סינון שאלות (ניתן לבחור כמה אפשרויות)">${filterButtonsHtml}</div>
+          <div class="sim-review-filter-hint muted">${filterHintText}</div>
+        </div>
         <select id="simReviewSubjectSelect" class="form-select sim-review-subj-select" aria-label="סנן לפי מקצוע">${subjOptionsHtml}</select>
       </div>
     `;
@@ -6966,9 +7005,17 @@
     };
     el("simReviewFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
       chip.onclick = () => {
-        const nextFilter = chip.dataset.revFilter || "all";
+        const key = chip.dataset.revFilter || "all";
+        const nextFilters = new Set(simReviewState.filters);
+        if (key === "all") {
+          nextFilters.clear();
+        } else if (nextFilters.has(key)) {
+          nextFilters.delete(key);
+        } else {
+          nextFilters.add(key);
+        }
         openSimReview(simReviewState.entry, {
-          filter: nextFilter,
+          filters: nextFilters,
           subjectFilter: simReviewState.subjectFilter,
           index: 0,
           returnTo: simReviewState.returnTo,
@@ -6977,7 +7024,7 @@
     });
     el("simReviewSubjectSelect").onchange = (e) => {
       openSimReview(simReviewState.entry, {
-        filter: simReviewState.filter,
+        filters: simReviewState.filters,
         subjectFilter: e.target.value || "all",
         index: 0,
         returnTo: simReviewState.returnTo,
@@ -8307,7 +8354,7 @@
           const updated = getSimHistoryEntryById(simReviewState.entry.id);
           if (updated) {
             openSimReview(updated, {
-              filter: simReviewState.filter,
+              filters: simReviewState.filters,
               subjectFilter: simReviewState.subjectFilter,
               index: simReviewState.currentIndex,
               returnTo: simReviewState.returnTo,

@@ -81,3 +81,23 @@ for (const [answers, unsure, primary] of [
   assert.match(html,new RegExp('class="btn-primary" id="'+primary+'"'));
 }
 console.log("PASS four results states and action placement");
+
+const simItems = [
+  { simNum: 1, qId: "q1", subject: "Cardio", isCorrect: false, isWrong: true, isSkipped: false, isUnsure: false, isFlagged: false },
+  { simNum: 2, qId: "q2", subject: "Cardio", isCorrect: true, isWrong: false, isSkipped: false, isUnsure: true, isFlagged: false },
+  { simNum: 3, qId: "q3", subject: "Pulm", isCorrect: false, isWrong: false, isSkipped: true, isUnsure: false, isFlagged: true },
+  { simNum: 4, qId: "q4", subject: "Pulm", isCorrect: true, isWrong: false, isSkipped: false, isUnsure: false, isFlagged: false },
+];
+const simAnalysis = { items: simItems };
+const filterStart = app.indexOf("  const SIM_REVIEW_FILTER_KEYS");
+const filterEnd = app.indexOf("  function openSimReview(");
+assert.ok(filterStart >= 0 && filterEnd > filterStart, "simReview filter helpers found");
+run(app.slice(filterStart, filterEnd));
+assert.deepEqual(Array.from(run(`filterSimReviewItems(${JSON.stringify(simAnalysis)}, "all", "all")`).map((x) => x.qId)), ["q1", "q2", "q3", "q4"]);
+assert.deepEqual(Array.from(run(`filterSimReviewItems(${JSON.stringify(simAnalysis)}, ["wrong", "unsure"], "all")`).map((x) => x.qId)), ["q1", "q2"]);
+assert.deepEqual(Array.from(run(`filterSimReviewItems(${JSON.stringify(simAnalysis)}, ["wrong", "unsure", "flagged"], "all")`).map((x) => x.qId)), ["q1", "q2", "q3"]);
+assert.deepEqual(Array.from(run(`filterSimReviewItems(${JSON.stringify(simAnalysis)}, ["wrong", "unsure"], "Cardio")`).map((x) => x.qId)), ["q1", "q2"]);
+assert.deepEqual(Array.from(run(`filterSimReviewItems(${JSON.stringify(simAnalysis)}, ["wrong", "unsure"], "Pulm")`).map((x) => x.qId)), []);
+assert.deepEqual(Array.from(run(`Array.from(normalizeSimReviewFilters(new Set(["wrong", "unsure"])))`)), ["wrong", "unsure"]);
+assert.deepEqual(Array.from(run(`Array.from(normalizeSimReviewFilters("all"))`)), []);
+console.log("PASS multi-select sim review filters");

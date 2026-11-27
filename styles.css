@@ -2800,10 +2800,23 @@ body.exam-focus-mode .topbar-brand-row {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+}
+
+.sim-review-filters-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sim-review-filter-hint {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .sim-review-subj-select {
