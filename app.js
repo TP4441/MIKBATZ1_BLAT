@@ -9153,6 +9153,14 @@
     el("siteAnnouncementModal")?.addEventListener("click", (e) => {
       if (e.target === el("siteAnnouncementModal")) closeSiteAnnouncementModal();
     });
+    document.querySelectorAll('.modal-overlay[role="dialog"]').forEach((modalEl) => {
+      if (modalEl.id === "siteAnnouncementModal") return;
+      new MutationObserver(() => {
+        if (modalEl.classList.contains("hidden")) {
+          maybeShowPendingSiteAnnouncement();
+        }
+      }).observe(modalEl, { attributes: true, attributeFilter: ["class"] });
+    });
 
     // Onboarding Spotlight Tour
     el("btnHelpTour")?.addEventListener("click", () => startOnboardingTour({ manual: true }));
@@ -11848,9 +11856,7 @@
       adminBroadcastCache = ann;
       activeSiteAnnouncement = ann;
       lastKnownAnnouncementId = ann?.id || "";
-      if (ann?.id) {
-        setDismissedAnnouncementId(ann.id);
-      }
+      pendingSiteAnnouncement = null;
       if (titleInput) titleInput.value = "";
       if (msgInput) msgInput.value = "";
       updateAdminBroadcastCharCount();
