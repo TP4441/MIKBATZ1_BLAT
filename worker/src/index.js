@@ -17,8 +17,8 @@ const UNUSED_STALE_INACTIVE_MS = 24 * 60 * 60 * 1000; // Empty profiles inactive
 const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
 const VALID_USER_ROLES = new Set(["user", "supervisor"]);
 
-const WORKER_VERSION = "2026.11.26.4";
-const WORKER_SCHEMA_VERSION = 9;
+const WORKER_VERSION = "2026.11.27.1";
+const WORKER_SCHEMA_VERSION = 10;
 const GITHUB_REPO_OWNER = "TP4441";
 const GITHUB_REPO_NAME = "MIKBATZ1_BLAT";
 const DEFAULT_CF_ACCOUNT_ID = "e612e80b92d2545210e838c4825c5ca0";
@@ -1114,9 +1114,63 @@ async function verifyOrBindClientSecret(db, userId, clientSecret, identityInfo =
   return { ok: true, secretHash, identity: null };
 }
 
+function parseSiteAnnouncement(rawJson, now = Date.now(), { includeExpired = false } = {}) {
+  if (!rawJson) return null;
+  let parsed = rawJson;
+  if (typeof rawJson === "string") {
+    const trimmed = rawJson.trim();
+    if (!trimmed) return null;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const id = String(parsed.id || "").trim();
+  const message = String(parsed.message || "").trim();
+  if (!id || !message) return null;
+  const title = String(parsed.title || "").trim();
+  const createdAt = Number(parsed.createdAt) || 0;
+  const expiresAt = Math.max(0, Number(parsed.expiresAt) || 0);
+  const isExpired = expiresAt > 0 && now >= expiresAt;
+  if (isExpired && !includeExpired) return null;
+  const out = {
+    id,
+    title,
+    message,
+    createdAt,
+    expiresAt,
+    createdByName: String(parsed.createdByName || "").trim(),
+    createdByEmoji: String(parsed.createdByEmoji || "").trim(),
+  };
+  if (includeExpired) {
+    out.isExpired = isExpired;
+  }
+  return out;
+}
+
+async function getSyncMetaState(db, now = Date.now()) {
+  try {
+    const row = await db.prepare("SELECT community_version, announcement_json FROM sync_meta WHERE id = 1").first();
+    return {
+      communityVersion: Number(row?.community_version) || 1,
+      announcement: parseSiteAnnouncement(row?.announcement_json, now),
+      rawAnnouncement: parseSiteAnnouncement(row?.announcement_json, now, { includeExpired: true }),
+    };
+  } catch {
+    const row = await db.prepare("SELECT community_version FROM sync_meta WHERE id = 1").first();
+    return {
+      communityVersion: Number(row?.community_version) || 1,
+      announcement: null,
+      rawAnnouncement: null,
+    };
+  }
+}
+
 async function getCommunityVersion(db) {
-  const row = await db.prepare("SELECT community_version FROM sync_meta WHERE id = 1").first();
-  return Number(row?.community_version) || 1;
+  const meta = await getSyncMetaState(db);
+  return meta.communityVersion;
 }
 
 async function bumpCommunityVersion(db, now = Date.now()) {
@@ -1303,12 +1357,13 @@ async function getCachedCommunityData(db, version) {
 
 async function handleBootstrap(env) {
   const now = Date.now();
-  const [communityVersion, takenNames, onlineUsers, customIdentities] = await Promise.all([
-    getCommunityVersion(env.DB),
+  const [syncMeta, takenNames, onlineUsers, customIdentities] = await Promise.all([
+    getSyncMetaState(env.DB, now),
     getTakenNamesMap(env.DB),
     getOnlineUsersList(env.DB, now),
     getCustomIdentitiesList(env.DB),
   ]);
+  const communityVersion = syncMeta.communityVersion;
   const communityData = await getCachedCommunityData(env.DB, communityVersion);
 
   return jsonResponse({
@@ -1318,6 +1373,7 @@ async function handleBootstrap(env) {
     takenNames,
     customIdentities,
     onlineUsers,
+    announcement: syncMeta.announcement,
     serverTime: now,
   });
 }
@@ -1326,6 +1382,8 @@ async function handlePoll(request, env) {
   const url = new URL(request.url);
   const clientCommunityVersion = Math.max(0, Number.parseInt(url.searchParams.get("communityVersion") || "0", 10) || 0);
   const clientProgressVersion = Math.max(0, Number.parseInt(url.searchParams.get("progressVersion") || "0", 10) || 0);
+  const hasAnnouncementIdParam = url.searchParams.has("announcementId");
+  const clientAnnouncementId = String(url.searchParams.get("announcementId") || "").trim();
   const touchPresence = url.searchParams.get("touchPresence") !== "0";
 
   const userId = String(request.headers.get("X-User-Id") || "").trim();
@@ -1333,14 +1391,18 @@ async function handlePoll(request, env) {
   const hasAuthHeaders = Boolean(userId && clientSecret);
   const hasAdminAuthHeader = Boolean((request.headers.get("Authorization") || "").trim());
 
-  const [serverCommunityVersion, auth, adminAuth] = await Promise.all([
-    getCommunityVersion(env.DB),
+  const now = Date.now();
+  const [syncMeta, auth, adminAuth] = await Promise.all([
+    getSyncMetaState(env.DB, now),
     hasAuthHeaders ? verifyExistingClientSecret(env.DB, userId, clientSecret, { touchPresence }) : Promise.resolve(null),
     hasAdminAuthHeader ? verifyAdminToken(request, env, { touchPresence }) : Promise.resolve(null),
   ]);
 
-  const now = Date.now();
+  const serverCommunityVersion = syncMeta.communityVersion;
   const communityChanged = serverCommunityVersion !== clientCommunityVersion;
+  const activeAnn = syncMeta.announcement;
+  const activeAnnId = activeAnn ? activeAnn.id : "";
+  const announcementChanged = !hasAnnouncementIdParam || activeAnnId !== clientAnnouncementId;
 
   const [onlineUsers, communityData, progressRow] = await Promise.all([
     getOnlineUsersList(env.DB, now),
@@ -1365,8 +1427,13 @@ async function handlePoll(request, env) {
     serverTime: now,
     communityVersion: serverCommunityVersion,
     communityChanged,
+    announcementId: activeAnnId,
+    announcementChanged,
     onlineUsers,
   };
+  if (announcementChanged) {
+    payload.announcement = activeAnn;
+  }
 
   if (hasAdminAuthHeader && adminAuth) {
     payload.adminSessionValid = Boolean(adminAuth.valid);
@@ -4376,6 +4443,61 @@ async function handleAdminDeleteVersionRelease(env, releaseId) {
   return jsonResponse({ ok: true, deletedId: releaseId, deleted: (delRes?.meta?.changes ?? 0) > 0 });
 }
 
+async function handleAdminGetAnnouncement(env) {
+  const now = Date.now();
+  const meta = await getSyncMetaState(env.DB, now);
+  return jsonResponse({
+    ok: true,
+    serverTime: now,
+    announcement: meta.rawAnnouncement,
+    activeAnnouncement: meta.announcement,
+  });
+}
+
+async function handleAdminSetAnnouncement(request, env, auth) {
+  const body = await readJsonBody(request);
+  if (!body) return errorResponse("Invalid JSON", 400);
+
+  const title = String(body.title || "").trim().slice(0, 120);
+  const message = String(body.message || "").trim().slice(0, 1000);
+  if (!message) {
+    return errorResponse("יש להזין תוכן להודעה", 400);
+  }
+
+  const ttlRaw = Number(body.ttlMinutes);
+  const ttlMinutes = Number.isFinite(ttlRaw) && ttlRaw > 0 ? Math.min(43200, Math.round(ttlRaw)) : 0;
+  const now = Date.now();
+  const expiresAt = ttlMinutes > 0 ? now + ttlMinutes * 60 * 1000 : 0;
+  const id = `ann_${now.toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+
+  const announcement = {
+    id,
+    title,
+    message,
+    createdAt: now,
+    expiresAt,
+    createdByName: auth?.userName || "",
+    createdByEmoji: auth?.userEmoji || "",
+  };
+
+  await env.DB
+    .prepare(
+      `INSERT INTO sync_meta (id, community_version, updated_at, announcement_json)
+       VALUES (1, 1, 0, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         announcement_json = excluded.announcement_json`
+    )
+    .bind(JSON.stringify(announcement))
+    .run();
+
+  return jsonResponse({ ok: true, serverTime: now, announcement });
+}
+
+async function handleAdminClearAnnouncement(env) {
+  await env.DB.prepare("UPDATE sync_meta SET announcement_json = '' WHERE id = 1").run();
+  return jsonResponse({ ok: true, cleared: true, serverTime: Date.now() });
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === "OPTIONS") {
@@ -4663,6 +4785,18 @@ export default {
 
         if (method === "GET" && path === "/api/admin/feedback") {
           return finalize(await handleAdminFeedback(trackedEnv));
+        }
+
+        if (method === "GET" && path === "/api/admin/announcement") {
+          return finalize(await handleAdminGetAnnouncement(trackedEnv));
+        }
+
+        if ((method === "PUT" || method === "POST") && path === "/api/admin/announcement") {
+          return finalize(await handleAdminSetAnnouncement(request, trackedEnv, auth));
+        }
+
+        if (method === "DELETE" && path === "/api/admin/announcement") {
+          return finalize(await handleAdminClearAnnouncement(trackedEnv));
         }
 
         const adminFeedbackMatch = path.match(/^\/api\/admin\/feedback\/([^/]+)$/);

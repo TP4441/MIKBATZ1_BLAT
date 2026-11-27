@@ -169,3 +169,70 @@ vm.runInContext(`updateCustomSimRatioHint()`, customSimCtx);
 assert.match(simRatioHintEl.textContent, /2026, 2025/);
 assert.match(simRatioHintEl.textContent, /3 שאלות/);
 console.log("PASS custom simulation single and multi-year filtering");
+
+// Exercise site-wide broadcast popup show / dismiss / pending queue
+{
+  const annStart = app.indexOf("  function getDismissedAnnouncementId()");
+  const annEnd = app.indexOf("  function updateAdminBroadcastCharCount()");
+  assert.ok(annStart >= 0 && annEnd > annStart, "site announcement helpers found");
+  const storage = new Map();
+  const makeCls = (initiallyHidden = false) => {
+    const s = new Set(initiallyHidden ? ["hidden"] : []);
+    return {
+      add(c) { s.add(c); },
+      remove(c) { s.delete(c); },
+      toggle(c, f) { if (f === undefined) { if (s.has(c)) s.delete(c); else s.add(c); } else if (f) s.add(c); else s.delete(c); },
+      contains(c) { return s.has(c); }
+    };
+  };
+  const modalNodes = {
+    siteAnnouncementModal: { classList: makeCls(true) },
+    siteAnnouncementTitle: { textContent: "" },
+    siteAnnouncementBody: { textContent: "" },
+    siteAnnouncementMeta: { textContent: "", classList: makeCls(false) },
+    btnAckSiteAnnouncement: { textContent: "", focus() {} },
+  };
+  let blocking = false;
+  const annCtx = vm.createContext({
+    SITE_ANNOUNCEMENT_DISMISSED_KEY: "dismissed_ann_test",
+    activeSiteAnnouncement: null,
+    lastKnownAnnouncementId: "",
+    pendingSiteAnnouncement: null,
+    siteAnnouncementPreviewMode: false,
+    tourState: { active: false },
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k),
+    },
+    isAnyBlockingModalOpen: () => blocking,
+    formatNoteTime: (ts) => `t:${ts}`,
+    setTimeout: () => 0,
+    el: (id) => modalNodes[id] || null,
+  });
+  vm.runInContext(app.slice(annStart, annEnd), annCtx);
+
+  // 1. New announcement opens modal immediately when unblocked
+  vm.runInContext(`applyServerAnnouncementUpdate({ id: "ann_1", title: "כותרת", message: "שלום לכולם", createdAt: 1000, expiresAt: 0 })`, annCtx);
+  assert.equal(modalNodes.siteAnnouncementModal.classList.contains("hidden"), false);
+  assert.equal(modalNodes.siteAnnouncementTitle.textContent, "כותרת");
+  assert.equal(modalNodes.siteAnnouncementBody.textContent, "שלום לכולם");
+
+  // 2. Closing stores dismissed ID so same announcement does not reopen
+  vm.runInContext(`closeSiteAnnouncementModal()`, annCtx);
+  assert.equal(modalNodes.siteAnnouncementModal.classList.contains("hidden"), true);
+  assert.equal(storage.get("dismissed_ann_test"), "ann_1");
+  vm.runInContext(`applyServerAnnouncementUpdate({ id: "ann_1", title: "כותרת", message: "שלום לכולם", createdAt: 1000, expiresAt: 0 })`, annCtx);
+  assert.equal(modalNodes.siteAnnouncementModal.classList.contains("hidden"), true);
+
+  // 3. Announcement arriving while another modal is open queues until unblocked
+  blocking = true;
+  vm.runInContext(`applyServerAnnouncementUpdate({ id: "ann_2", title: "", message: "הודעה שנייה", createdAt: 2000, expiresAt: 0 })`, annCtx);
+  assert.equal(modalNodes.siteAnnouncementModal.classList.contains("hidden"), true);
+  blocking = false;
+  vm.runInContext(`maybeShowPendingSiteAnnouncement()`, annCtx);
+  assert.equal(modalNodes.siteAnnouncementModal.classList.contains("hidden"), false);
+  assert.equal(modalNodes.siteAnnouncementTitle.textContent, "הודעה מהמנהל");
+  assert.equal(modalNodes.siteAnnouncementBody.textContent, "הודעה שנייה");
+  console.log("PASS site-wide broadcast popup show, dismiss, and pending queue");
+}

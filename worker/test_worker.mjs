@@ -31,13 +31,14 @@ async function run() {
     assert.equal(h.status, 200);
     assert.equal(h.data.ok, true);
     assert.ok(h.data.workerVersion, "Health should expose workerVersion");
-    assert.ok(Number(h.data.schemaVersion) >= 9, "Health should expose schemaVersion >= 9");
+    assert.ok(Number(h.data.schemaVersion) >= 10, "Health should expose schemaVersion >= 10");
 
     const b = await req("/api/bootstrap");
     assert.equal(b.status, 200);
     assert.equal(b.data.ok, true);
     assert.equal(typeof b.data.communityVersion, "number");
     assert.ok(b.data.communityVersion >= 1);
+    assert.ok(b.data.announcement === null || typeof b.data.announcement === "object");
     assert.equal(typeof b.data.notes, "object");
     assert.equal(typeof b.data.noteReplies, "object");
     assert.equal(typeof b.data.problems, "object");
@@ -78,6 +79,10 @@ async function run() {
       ["POST", "/api/admin/versions", { version: "v1.0.0", title: "test" }],
       ["DELETE", "/api/admin/versions/rel_fake"],
       ["GET", "/api/admin/feedback"],
+      ["GET", "/api/admin/announcement"],
+      ["PUT", "/api/admin/announcement", { title: "t", message: "m" }],
+      ["POST", "/api/admin/announcement", { title: "t", message: "m" }],
+      ["DELETE", "/api/admin/announcement"],
       ["DELETE", "/api/admin/feedback/fb_fake"],
       ["DELETE", "/api/admin/users/u_fake"],
       ["PUT", "/api/admin/overrides/2026_q001", { hidden: true }],
@@ -2186,6 +2191,80 @@ async function run() {
       headers: authHeader,
     });
     console.log("✓ Manual unused-identity cleanup endpoint OK");
+  }
+
+  // 8i. Site-wide admin broadcast popup (set, bootstrap, poll delta, clear)
+  {
+    const authHeader = { Authorization: `Bearer ${adminToken}` };
+
+    const emptyAnn = await req("/api/admin/announcement", { headers: authHeader });
+    assert.equal(emptyAnn.status, 200);
+    assert.equal(emptyAnn.data.ok, true);
+    assert.equal(emptyAnn.data.announcement, null);
+
+    const badAnn = await req("/api/admin/announcement", {
+      method: "PUT",
+      headers: authHeader,
+      body: { title: "כותרת בלבד", message: "   " },
+    });
+    assert.equal(badAnn.status, 400);
+
+    const bootBefore = await req("/api/bootstrap");
+    const commVerBefore = bootBefore.data.communityVersion;
+
+    const setAnn = await req("/api/admin/announcement", {
+      method: "PUT",
+      headers: authHeader,
+      body: {
+        title: "עדכון חשוב",
+        message: "הועלו שאלות חדשות לסימולציה!\nנא לרענן.",
+        ttlMinutes: 60,
+      },
+    });
+    assert.equal(setAnn.status, 200);
+    assert.equal(setAnn.data.ok, true);
+    const annId = setAnn.data.announcement?.id;
+    assert.ok(annId && annId.startsWith("ann_"));
+    assert.equal(setAnn.data.announcement.title, "עדכון חשוב");
+    assert.equal(setAnn.data.announcement.message, "הועלו שאלות חדשות לסימולציה!\nנא לרענן.");
+    assert.ok(setAnn.data.announcement.expiresAt > Date.now());
+
+    // Bootstrap exposes announcement without bumping communityVersion
+    const bootAfter = await req("/api/bootstrap");
+    assert.equal(bootAfter.status, 200);
+    assert.equal(bootAfter.data.communityVersion, commVerBefore, "Announcement must not bump communityVersion");
+    assert.equal(bootAfter.data.announcement?.id, annId);
+
+    // Poll with empty announcementId receives announcementChanged=true and full payload
+    const pollNew = await req(`/api/poll?communityVersion=${commVerBefore}&announcementId=`);
+    assert.equal(pollNew.status, 200);
+    assert.equal(pollNew.data.communityChanged, false);
+    assert.equal(pollNew.data.announcementChanged, true);
+    assert.equal(pollNew.data.announcementId, annId);
+    assert.equal(pollNew.data.announcement?.id, annId);
+
+    // Poll with matching announcementId receives announcementChanged=false and omits announcement body
+    const pollSame = await req(`/api/poll?communityVersion=${commVerBefore}&announcementId=${encodeURIComponent(annId)}`);
+    assert.equal(pollSame.status, 200);
+    assert.equal(pollSame.data.announcementChanged, false);
+    assert.equal(pollSame.data.announcementId, annId);
+    assert.equal("announcement" in pollSame.data, false);
+
+    // Clear announcement
+    const delAnn = await req("/api/admin/announcement", {
+      method: "DELETE",
+      headers: authHeader,
+    });
+    assert.equal(delAnn.status, 200);
+    assert.equal(delAnn.data.cleared, true);
+
+    const pollCleared = await req(`/api/poll?communityVersion=${commVerBefore}&announcementId=${encodeURIComponent(annId)}`);
+    assert.equal(pollCleared.status, 200);
+    assert.equal(pollCleared.data.announcementChanged, true);
+    assert.equal(pollCleared.data.announcementId, "");
+    assert.equal(pollCleared.data.announcement, null);
+
+    console.log("✓ Site-wide admin broadcast popup endpoints & poll delta OK");
   }
 
   // 9. Rate-limit lockout after 5 consecutive wrong password attempts

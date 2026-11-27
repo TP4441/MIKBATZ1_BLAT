@@ -19,6 +19,7 @@
   const CUSTOM_IDENTITIES_CACHE_KEY = "med_exam_custom_identities_cache_v1";
   const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
   const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
+  const SITE_ANNOUNCEMENT_DISMISSED_KEY = "med_exam_dismissed_announcement_v1";
   const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
   const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
   const CLOUD_API_BASE = resolveCloudApiBase();
@@ -424,6 +425,12 @@
   let adminFeedbackCache = [];
   let adminMetricsCache = null;
   let adminMetricsLoading = false;
+  let adminBroadcastCache = null;
+  let adminBroadcastLoading = false;
+  let activeSiteAnnouncement = null;
+  let lastKnownAnnouncementId = "";
+  let pendingSiteAnnouncement = null;
+  let siteAnnouncementPreviewMode = false;
   let activeRenameUserId = null;
   let activeBlockUserId = null;
   let adminActiveTab = "users";
@@ -2986,6 +2993,7 @@
             takenNames: data?.takenNames && typeof data.takenNames === "object" ? data.takenNames : {},
             customIdentities: Array.isArray(data?.customIdentities) ? data.customIdentities : null,
             onlineUsers: Array.isArray(data?.onlineUsers) ? data.onlineUsers : null,
+            announcement: data?.announcement && typeof data.announcement === "object" ? data.announcement : null,
             serverTime: Number(data?.serverTime) || 0,
           };
         }
@@ -3188,6 +3196,9 @@
         fromCloud: data.source === "cloud",
       });
 
+      if (data.source === "cloud") {
+        applyServerAnnouncementUpdate(data.announcement || null);
+      }
       if (showFeedback) showToast("🔄 הנתונים המשותפים רועננו מהענן!");
       return true;
     } catch {
@@ -9136,6 +9147,13 @@
       }
     });
 
+    // Site-Wide Admin Broadcast Popup Modal
+    el("btnCloseSiteAnnouncement")?.addEventListener("click", closeSiteAnnouncementModal);
+    el("btnAckSiteAnnouncement")?.addEventListener("click", closeSiteAnnouncementModal);
+    el("siteAnnouncementModal")?.addEventListener("click", (e) => {
+      if (e.target === el("siteAnnouncementModal")) closeSiteAnnouncementModal();
+    });
+
     // Onboarding Spotlight Tour
     el("btnHelpTour")?.addEventListener("click", () => startOnboardingTour({ manual: true }));
     el("btnTourNext")?.addEventListener("click", nextTourStep);
@@ -9267,6 +9285,9 @@
     el("btnAdminCleanupUnused")?.addEventListener("click", adminCleanupUnusedUsers);
     el("btnAdminRefreshFeedback")?.addEventListener("click", () => loadAdminFeedback(true));
     el("btnAdminRefreshTraffic")?.addEventListener("click", () => loadAdminMetrics(true, true));
+    el("adminBroadcastMessageInput")?.addEventListener("input", updateAdminBroadcastCharCount);
+    el("adminBroadcastForm")?.addEventListener("submit", handleAdminBroadcastSubmit);
+    el("btnAdminPreviewBroadcast")?.addEventListener("click", previewAdminBroadcastPopup);
     el("btnAdminOpenAddName")?.addEventListener("click", openAdminAddNameModal);
     el("adminUsersSearch")?.addEventListener("input", renderAdminUsersTab);
     el("adminOverridesSearch")?.addEventListener("input", renderAdminOverridesTab);
@@ -9352,6 +9373,7 @@
         !el("lightboxModal")?.classList.contains("hidden") ||
         !el("feedbackModal")?.classList.contains("hidden") ||
         !el("supportModal")?.classList.contains("hidden") ||
+        !el("siteAnnouncementModal")?.classList.contains("hidden") ||
         !el("problemReportModal")?.classList.contains("hidden") ||
         !el("syncModal")?.classList.contains("hidden") ||
         !el("adminLoginModal")?.classList.contains("hidden") ||
@@ -9401,6 +9423,7 @@
         closeOnlineUsersPopover();
         closeFeedbackModal();
         closeSupportModal();
+        closeSiteAnnouncementModal();
         closeProblemModal();
         closeSyncModal();
         closeAdminLoginModal();
@@ -9572,6 +9595,7 @@
 
   function clearAdminTokens() {
     adminState = { authenticated: false, token: null, rememberDevice: false, expiresAt: 0, sessionId: null };
+    adminBroadcastCache = null;
     try {
       localStorage.removeItem(ADMIN_TOKEN_LOCAL_KEY);
       sessionStorage.removeItem(ADMIN_TOKEN_SESSION_KEY);
@@ -10234,6 +10258,7 @@
 
   function closeAdminDashboardModal() {
     el("adminDashboardModal")?.classList.add("hidden");
+    maybeShowPendingSiteAnnouncement();
   }
 
   function switchAdminTab(tab) {
@@ -10255,12 +10280,17 @@
     el("adminTabOverrides").classList.toggle("hidden", !canMod || adminActiveTab !== "overrides");
     el("adminTabModeration").classList.toggle("hidden", !canMod || adminActiveTab !== "moderation");
     el("adminTabFeedback")?.classList.toggle("hidden", !full || adminActiveTab !== "feedback");
+    el("adminTabBroadcast")?.classList.toggle("hidden", !full || adminActiveTab !== "broadcast");
     el("adminTabTraffic")?.classList.toggle("hidden", !full || adminActiveTab !== "traffic");
 
     if (adminActiveTab === "users" && full) renderAdminUsersTab();
     else if (adminActiveTab === "overrides" && canMod) renderAdminOverridesTab();
     else if (adminActiveTab === "moderation" && canMod) renderAdminModerationTab();
     else if (adminActiveTab === "feedback" && full) renderAdminFeedbackTab();
+    else if (adminActiveTab === "broadcast" && full) {
+      renderAdminBroadcastTab();
+      if (!adminBroadcastCache && !adminBroadcastLoading) loadAdminBroadcast(false);
+    }
     else if (adminActiveTab === "traffic" && full) {
       renderAdminTrafficTab();
       if (!adminMetricsCache && !adminMetricsLoading) loadAdminMetrics(false, false);
@@ -11577,6 +11607,293 @@
   }
 
   // ============================================================
+  // Site-Wide Admin Broadcast Popup & Admin Broadcast Tab
+  // ============================================================
+
+  function getDismissedAnnouncementId() {
+    try {
+      return localStorage.getItem(SITE_ANNOUNCEMENT_DISMISSED_KEY) || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function setDismissedAnnouncementId(id) {
+    try {
+      if (id) localStorage.setItem(SITE_ANNOUNCEMENT_DISMISSED_KEY, String(id));
+      else localStorage.removeItem(SITE_ANNOUNCEMENT_DISMISSED_KEY);
+    } catch {}
+  }
+
+  function openSiteAnnouncementModal(announcement, { preview = false } = {}) {
+    if (!announcement || !announcement.message) return;
+    const modal = el("siteAnnouncementModal");
+    if (!modal) return;
+    siteAnnouncementPreviewMode = Boolean(preview);
+    const titleEl = el("siteAnnouncementTitle");
+    const bodyEl = el("siteAnnouncementBody");
+    const metaEl = el("siteAnnouncementMeta");
+    const ackBtn = el("btnAckSiteAnnouncement");
+    if (titleEl) {
+      titleEl.textContent = announcement.title ? announcement.title : "הודעה מהמנהל";
+    }
+    if (bodyEl) {
+      bodyEl.textContent = announcement.message;
+    }
+    if (metaEl) {
+      const parts = [];
+      if (preview) {
+        parts.push("תצוגה מקדימה (לא פורסם עדיין)");
+      } else {
+        if (announcement.createdAt) parts.push(`נשלח: ${formatNoteTime(announcement.createdAt)}`);
+        if (announcement.expiresAt > 0) parts.push(`בתוקף עד: ${formatNoteTime(announcement.expiresAt)}`);
+      }
+      metaEl.textContent = parts.join(" · ");
+      metaEl.classList.toggle("hidden", parts.length === 0);
+    }
+    if (ackBtn) {
+      ackBtn.textContent = preview ? "סגור תצוגה מקדימה" : "הבנתי, סגור";
+    }
+    modal.classList.remove("hidden");
+    setTimeout(() => ackBtn?.focus(), 30);
+  }
+
+  function closeSiteAnnouncementModal() {
+    const modal = el("siteAnnouncementModal");
+    if (!modal || modal.classList.contains("hidden")) return;
+    modal.classList.add("hidden");
+    if (!siteAnnouncementPreviewMode && activeSiteAnnouncement?.id) {
+      setDismissedAnnouncementId(activeSiteAnnouncement.id);
+    }
+    siteAnnouncementPreviewMode = false;
+  }
+
+  function maybeShowPendingSiteAnnouncement() {
+    if (!pendingSiteAnnouncement) return;
+    if (tourState.active || isAnyBlockingModalOpen()) return;
+    const next = pendingSiteAnnouncement;
+    pendingSiteAnnouncement = null;
+    if (next.id && next.id !== getDismissedAnnouncementId()) {
+      openSiteAnnouncementModal(next, { preview: false });
+    }
+  }
+
+  function applyServerAnnouncementUpdate(announcement) {
+    const valid =
+      announcement &&
+      typeof announcement === "object" &&
+      typeof announcement.id === "string" &&
+      announcement.id.trim() &&
+      typeof announcement.message === "string" &&
+      announcement.message.trim()
+        ? announcement
+        : null;
+
+    activeSiteAnnouncement = valid;
+    lastKnownAnnouncementId = valid ? valid.id : "";
+
+    if (!valid) {
+      pendingSiteAnnouncement = null;
+      if (!siteAnnouncementPreviewMode) {
+        el("siteAnnouncementModal")?.classList.add("hidden");
+      }
+      return;
+    }
+
+    if (valid.id === getDismissedAnnouncementId()) {
+      return;
+    }
+
+    if (tourState.active || isAnyBlockingModalOpen()) {
+      pendingSiteAnnouncement = valid;
+    } else {
+      pendingSiteAnnouncement = null;
+      openSiteAnnouncementModal(valid, { preview: false });
+    }
+  }
+
+  function updateAdminBroadcastCharCount() {
+    const input = el("adminBroadcastMessageInput");
+    const counter = el("adminBroadcastCharCount");
+    if (!input || !counter) return;
+    if (input.value.length > 1000) {
+      input.value = input.value.slice(0, 1000);
+    }
+    const len = input.value.length;
+    counter.textContent = `${len} / 1000`;
+    counter.classList.toggle("is-limit", len >= 1000);
+  }
+
+  async function loadAdminBroadcast(showFeedback = false) {
+    if (!adminState.authenticated) return;
+    adminBroadcastLoading = true;
+    renderAdminBroadcastTab();
+    try {
+      const data = await adminFetch("/api/admin/announcement");
+      adminBroadcastCache = data.announcement || null;
+      if (showFeedback) showToast("🔄 מצב ההודעה רוענן.");
+    } catch (err) {
+      if (showFeedback) showToast(`❌ שגיאה בטעינת הודעה פעילה: ${err.message}`);
+    } finally {
+      adminBroadcastLoading = false;
+      renderAdminBroadcastTab();
+    }
+  }
+
+  function renderAdminBroadcastTab() {
+    const statusPill = el("adminBroadcastStatusPill");
+    const currentWrap = el("adminBroadcastCurrentWrap");
+    if (!statusPill || !currentWrap) return;
+    updateAdminBroadcastCharCount();
+
+    if (adminBroadcastLoading && adminBroadcastCache === null) {
+      statusPill.textContent = "טוען...";
+      statusPill.className = "admin-source-pill";
+      currentWrap.innerHTML = `<div class="muted" style="font-size:0.84rem;">⏳ בודק אם קיימת הודעה פעילה...</div>`;
+      return;
+    }
+
+    const ann = adminBroadcastCache;
+    if (!ann || !ann.id) {
+      statusPill.textContent = "⚪ אין הודעה פעילה";
+      statusPill.className = "admin-source-pill";
+      currentWrap.innerHTML = `<div class="muted" style="font-size:0.84rem;">אין כרגע פופאפ פעיל באתר. אפשר לפרסם הודעה חדשה בטופס למטה.</div>`;
+      return;
+    }
+
+    const isExpired = Boolean(ann.isExpired || (ann.expiresAt > 0 && Date.now() >= ann.expiresAt));
+    statusPill.textContent = isExpired ? "⌛ פג תוקף" : "🟢 פעילה כעת באתר";
+    statusPill.className = isExpired ? "admin-source-pill warn" : "admin-source-pill ok";
+
+    currentWrap.innerHTML = "";
+    const activeWrap = document.createElement("div");
+    activeWrap.className = "admin-broadcast-active-row";
+
+    const head = document.createElement("div");
+    head.className = "admin-feed-head";
+
+    const badges = document.createElement("div");
+    badges.className = "admin-feed-badges";
+
+    const titleStrong = document.createElement("strong");
+    titleStrong.textContent = ann.title ? `📢 ${ann.title}` : "📢 הודעה מהמנהל";
+
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "muted";
+    const metaParts = [];
+    if (ann.createdAt) metaParts.push(`פורסמה: ${formatNoteTime(ann.createdAt)}`);
+    metaParts.push(ann.expiresAt > 0 ? `תפוגה: ${formatNoteTime(ann.expiresAt)}` : "ללא תפוגה");
+    timeSpan.textContent = metaParts.join(" · ");
+
+    badges.append(titleStrong, timeSpan);
+
+    const actions = document.createElement("div");
+    actions.className = "admin-feed-actions";
+
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "note-card-action-btn danger admin-del";
+    clearBtn.textContent = "🗑️ הסר מהאתר";
+    clearBtn.onclick = handleAdminClearBroadcast;
+
+    actions.appendChild(clearBtn);
+    head.append(badges, actions);
+
+    const msgDiv = document.createElement("div");
+    msgDiv.className = "admin-broadcast-preview-msg";
+    msgDiv.textContent = ann.message || "";
+
+    activeWrap.append(head, msgDiv);
+    currentWrap.appendChild(activeWrap);
+  }
+
+  async function handleAdminBroadcastSubmit(e) {
+    e.preventDefault();
+    const titleInput = el("adminBroadcastTitleInput");
+    const msgInput = el("adminBroadcastMessageInput");
+    const ttlSelect = el("adminBroadcastTtlSelect");
+    const errEl = el("adminBroadcastError");
+    const submitBtn = el("btnAdminSendBroadcast");
+
+    const title = (titleInput?.value || "").trim();
+    const message = (msgInput?.value || "").trim();
+    const ttlMinutes = Number(ttlSelect?.value || 0) || 0;
+
+    if (errEl) {
+      errEl.textContent = "";
+      errEl.classList.add("hidden");
+    }
+
+    if (!message) {
+      if (errEl) {
+        errEl.textContent = "יש להזין תוכן להודעה לפני הפרסום.";
+        errEl.classList.remove("hidden");
+      }
+      msgInput?.focus();
+      return;
+    }
+
+    const origText = submitBtn ? submitBtn.textContent : "";
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "⏳ מפרסם...";
+    }
+
+    try {
+      const data = await adminFetch("/api/admin/announcement", {
+        method: "PUT",
+        body: JSON.stringify({ title, message, ttlMinutes }),
+      });
+      const ann = data.announcement || null;
+      adminBroadcastCache = ann;
+      activeSiteAnnouncement = ann;
+      lastKnownAnnouncementId = ann?.id || "";
+      if (ann?.id) {
+        setDismissedAnnouncementId(ann.id);
+      }
+      if (titleInput) titleInput.value = "";
+      if (msgInput) msgInput.value = "";
+      updateAdminBroadcastCharCount();
+      renderAdminBroadcastTab();
+      showToast("📢 הפופאפ פורסם ויוצג לכל המחוברים באתר!");
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err.message || "שגיאה בפרסום ההודעה";
+        errEl.classList.remove("hidden");
+      }
+    } finally {
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = origText;
+      }
+    }
+  }
+
+  async function handleAdminClearBroadcast() {
+    if (!confirm("להסיר את ההודעה הפעילה מהאתר?")) return;
+    try {
+      await adminFetch("/api/admin/announcement", { method: "DELETE" });
+      adminBroadcastCache = null;
+      applyServerAnnouncementUpdate(null);
+      renderAdminBroadcastTab();
+      showToast("🗑️ ההודעה הוסרה מהאתר.");
+    } catch (err) {
+      showToast(`❌ שגיאה בהסרת הודעה: ${err.message}`);
+    }
+  }
+
+  function previewAdminBroadcastPopup() {
+    const title = (el("adminBroadcastTitleInput")?.value || "").trim();
+    const message = (el("adminBroadcastMessageInput")?.value || "").trim();
+    if (!message) {
+      showToast("✏️ כתוב תוכן הודעה כדי לראות תצוגה מקדימה.");
+      el("adminBroadcastMessageInput")?.focus();
+      return;
+    }
+    openSiteAnnouncementModal({ id: "preview", title, message, createdAt: Date.now(), expiresAt: 0 }, { preview: true });
+  }
+
+  // ============================================================
   // User Feedback (Suggestions / Complaints) Modal
   // ============================================================
 
@@ -12383,6 +12700,7 @@
         const params = new URLSearchParams({
           communityVersion: String(lastCommunityVersion || 0),
           progressVersion: String(lastSyncedProgressVersion || 0),
+          announcementId: lastKnownAnnouncementId || "",
           touchPresence: canAuthIdentity && touchPresence ? "1" : "0",
         });
         const pollHeaders = {};
@@ -12476,6 +12794,10 @@
           });
         } else if (Number(data.communityVersion) > 0) {
           lastCommunityVersion = Number(data.communityVersion);
+        }
+
+        if (data.announcementChanged) {
+          applyServerAnnouncementUpdate(data.announcement || null);
         }
 
         return true;
@@ -12807,6 +13129,7 @@
       "shortcutsModal",
       "feedbackModal",
       "supportModal",
+      "siteAnnouncementModal",
       "problemReportModal",
       "adminLoginModal",
       "adminQuestionModal",
@@ -13162,6 +13485,7 @@
     if (wasManual) {
       el("btnHelpTour")?.focus();
     }
+    maybeShowPendingSiteAnnouncement();
   }
 
   // Init

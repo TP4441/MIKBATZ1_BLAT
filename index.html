@@ -1326,6 +1326,28 @@
     </div>
   </div>
 
+  <!-- Site-Wide Admin Broadcast Popup Modal -->
+  <div class="modal-overlay hidden" id="siteAnnouncementModal" role="dialog" aria-modal="true" aria-labelledby="siteAnnouncementTitle">
+    <div class="modal-box card site-announcement-box">
+      <div class="modal-header site-announcement-header">
+        <div class="site-announcement-title-wrap">
+          <span class="site-announcement-badge" aria-hidden="true">📢</span>
+          <h2 id="siteAnnouncementTitle">הודעה מהמנהל</h2>
+        </div>
+        <button type="button" class="icon-btn icon-only" id="btnCloseSiteAnnouncement" aria-label="סגור הודעה">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="site-announcement-body" id="siteAnnouncementBody"></div>
+      <div class="muted site-announcement-meta" id="siteAnnouncementMeta"></div>
+
+      <div class="site-announcement-footer">
+        <button type="button" class="btn-primary" id="btnAckSiteAnnouncement">הבנתי, סגור</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Problem Report Modal -->
   <div class="modal-overlay hidden" id="problemReportModal" role="dialog" aria-modal="true" aria-labelledby="problemModalTitle">
     <div class="modal-box card problem-modal-box">
@@ -1482,6 +1504,7 @@
         <button type="button" class="admin-tab-btn" data-admin-tab="overrides" role="tab" aria-selected="false">📝 שאלות ששונו/הוסרו</button>
         <button type="button" class="admin-tab-btn" data-admin-tab="moderation" role="tab" aria-selected="false">💬 מודרציית תגובות ודיווחים</button>
         <button type="button" class="admin-tab-btn" data-admin-tab="feedback" role="tab" aria-selected="false">📬 הצעות ותלונות <span class="badge-pill hidden" id="adminFeedbackCountBadge">0</span></button>
+        <button type="button" class="admin-tab-btn" data-admin-tab="broadcast" role="tab" aria-selected="false">📢 הודעה לכולם</button>
         <button type="button" class="admin-tab-btn" data-admin-tab="traffic" role="tab" aria-selected="false">📊 טראפיק ומכסות</button>
       </div>
 
@@ -1551,6 +1574,56 @@
           <button type="button" class="btn-secondary btn-sm" id="btnAdminRefreshFeedback">🔄 רענן הודעות</button>
         </div>
         <div class="admin-feed-list" id="adminFeedbackList"></div>
+      </div>
+
+      <!-- Site Broadcast Popup Tab -->
+      <div class="admin-tab-panel hidden" id="adminTabBroadcast">
+        <section class="admin-broadcast-section" id="adminBroadcastStatusCard">
+          <div class="admin-section-head">
+            <h3>📡 מצב הודעה נוכחי באתר</h3>
+            <span class="admin-source-pill" id="adminBroadcastStatusPill">טוען...</span>
+          </div>
+          <div id="adminBroadcastCurrentWrap"></div>
+        </section>
+
+        <section class="admin-broadcast-section admin-broadcast-divider">
+          <div class="admin-section-head">
+            <h3>📢 שליחת פופאפ חדש לכל המחוברים</h3>
+          </div>
+          <p class="muted" style="font-size:0.84rem;">
+            הפופאפ יוצג פעם אחת לכל משתמש מחובר (בסנכרון האוטומטי הקרוב תוך עד 2.5 דקות, או מיד בטעינת/חזרה לאתר). שליחת הודעה חדשה תציג אותה מחדש לכולם.
+          </p>
+          <form id="adminBroadcastForm" class="admin-broadcast-form">
+            <label class="feedback-field">
+              <span>כותרת (אופציונלי)</span>
+              <input type="text" id="adminBroadcastTitleInput" maxlength="120" placeholder="לדוגמה: עדכון חשוב / הועלו שאלות חדשות" />
+            </label>
+            <label class="feedback-field">
+              <span>תוכן ההודעה</span>
+              <textarea id="adminBroadcastMessageInput" rows="4" maxlength="1000" required placeholder="כתוב כאן את ההודעה שתופיע כפופאפ לכל מי שמחובר לאתר..."></textarea>
+              <div class="feedback-meta-row">
+                <span class="muted">שורות חדשות יישמרו כפי שנכתבו</span>
+                <span class="feedback-char-count tabular-text" id="adminBroadcastCharCount">0 / 1000</span>
+              </div>
+            </label>
+            <label class="feedback-field">
+              <span>משך הצגה באתר (תפוגה אוטומטית)</span>
+              <select id="adminBroadcastTtlSelect">
+                <option value="1440" selected>24 שעות (מומלץ)</option>
+                <option value="60">שעה אחת</option>
+                <option value="360">6 שעות</option>
+                <option value="4320">3 ימים</option>
+                <option value="10080">שבוע</option>
+                <option value="0">ללא תפוגה (עד הסרה ידנית)</option>
+              </select>
+            </label>
+            <div class="admin-error hidden" id="adminBroadcastError"></div>
+            <div class="admin-broadcast-actions">
+              <button type="submit" class="btn-primary" id="btnAdminSendBroadcast">📢 פרסם פופאפ לכולם</button>
+              <button type="button" class="btn-secondary" id="btnAdminPreviewBroadcast">👁️ תצוגה מקדימה</button>
+            </div>
+          </form>
+        </section>
       </div>
 
       <!-- Traffic & Quotas Tab -->

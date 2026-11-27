@@ -180,7 +180,8 @@ CREATE TABLE IF NOT EXISTS admin_rate_limit (
 CREATE TABLE IF NOT EXISTS sync_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   community_version INTEGER NOT NULL DEFAULT 1,
-  updated_at INTEGER NOT NULL DEFAULT 0
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  announcement_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS user_feedback (
