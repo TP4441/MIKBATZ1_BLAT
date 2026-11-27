@@ -20,6 +20,8 @@
   const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
   const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
   const SITE_ANNOUNCEMENT_DISMISSED_KEY = "med_exam_dismissed_announcement_v1";
+  const CLIENT_APP_VERSION = "20261127e";
+  const CLIENT_UPDATE_RELOAD_KEY = "med_exam_update_reload_v1";
   const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
   const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
   const CLOUD_API_BASE = resolveCloudApiBase();
@@ -39,15 +41,26 @@
   function resolveCloudApiBase() {
     try {
       const params = new URLSearchParams(window.location.search);
+      let mutatedSearch = false;
+      if (params.has("_v")) {
+        params.delete("_v");
+        mutatedSearch = true;
+      }
       const apiParam = params.get("api");
       if (apiParam) {
         const clean = apiParam.replace(/\/+$/, "");
         sessionStorage.setItem(CLOUD_API_OVERRIDE_KEY, clean);
         params.delete("api");
+        mutatedSearch = true;
         const qs = params.toString();
         const nextUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
         history.replaceState(null, "", nextUrl);
         return clean;
+      }
+      if (mutatedSearch) {
+        const qs = params.toString();
+        const nextUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
+        history.replaceState(null, "", nextUrl);
       }
       const savedOverride = sessionStorage.getItem(CLOUD_API_OVERRIDE_KEY);
       if (savedOverride) return savedOverride.replace(/\/+$/, "");
@@ -328,9 +341,10 @@
   let deviceId = loadOrInitDeviceId();
   let userIdentity = loadOrInitIdentity();
   let progress = loadProgress();
-  const CLOUD_POLL_INTERVAL_MS = 150000; // 2.5 minutes (was 90s)
+  const CLOUD_POLL_INTERVAL_MS = 60000; // 1 minute while active
+  const CLOUD_IDLE_POLL_INTERVAL_MS = 120000; // 2 minutes passive read-only check while idle
   const USER_IDLE_TIMEOUT_MS = 180000;
-  const VISIBILITY_POLL_COOLDOWN_MS = 30000; // 30 seconds on tab return (was 15s)
+  const VISIBILITY_POLL_COOLDOWN_MS = 10000; // 10 seconds on tab return / focus
   const CLOUD_PROGRESS_DEBOUNCE_MS = 30000; // 30 seconds debounce (was 8s)
   const CLOUD_PROGRESS_MAX_WAIT_MS = 120000; // Guarantee cloud flush within 2m during continuous activity
   const KEEPALIVE_SAFE_BODY_BYTES = 60 * 1024; // Safety cap below browser 64 KB fetch keepalive limit
@@ -431,6 +445,12 @@
   let lastKnownAnnouncementId = "";
   let pendingSiteAnnouncement = null;
   let siteAnnouncementPreviewMode = false;
+  let lastPassivePollAt = 0;
+  let latestServerClientVersion = "";
+  let verifiedLiveClientVersion = "";
+  let dismissedClientUpdateVersion = "";
+  let clientVersionCheckInFlight = null;
+  let clientUpdateReloadTimer = null;
   let activeRenameUserId = null;
   let activeBlockUserId = null;
   let adminActiveTab = "users";
@@ -661,14 +681,11 @@
         mergePathology: rawFilters.mergePathology !== undefined ? Boolean(rawFilters.mergePathology) : true,
       },
       filterCollapsed: Boolean(raw.filterCollapsed),
-      shuffleOptions: Boolean(raw.shuffleOptions),
-      shuffledOrder: Array.isArray(raw.shuffledOrder) ? toStrArray(raw.shuffledOrder) : null,
       drillFilters: {
         exams: toStrArray(rawDrillFilters.exams),
         subjects: toStrArray(rawDrillFilters.subjects),
         search: typeof rawDrillFilters.search === "string" ? rawDrillFilters.search.slice(0, 500) : "",
       },
-      drillShuffledOrder: Array.isArray(raw.drillShuffledOrder) ? toStrArray(raw.drillShuffledOrder) : null,
       lastQIdByMode,
       lastIndexByMode,
       deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
@@ -2994,6 +3011,7 @@
             customIdentities: Array.isArray(data?.customIdentities) ? data.customIdentities : null,
             onlineUsers: Array.isArray(data?.onlineUsers) ? data.onlineUsers : null,
             announcement: data?.announcement && typeof data.announcement === "object" ? data.announcement : null,
+            clientVersion: typeof data?.clientVersion === "string" ? data.clientVersion : "",
             serverTime: Number(data?.serverTime) || 0,
           };
         }
@@ -3198,6 +3216,9 @@
 
       if (data.source === "cloud") {
         applyServerAnnouncementUpdate(data.announcement || null);
+        if (data.clientVersion) {
+          handleServerClientVersion(data.clientVersion);
+        }
       }
       if (showFeedback) showToast("🔄 הנתונים המשותפים רועננו מהענן!");
       return true;
@@ -4421,14 +4442,11 @@
         mergePathology: Boolean(filters.mergePathology),
       },
       filterCollapsed: Boolean(el("filterBody")?.classList.contains("hidden")),
-      shuffleOptions: Boolean(shuffleOptionsEnabled),
-      shuffledOrder: Array.isArray(shuffledQuestionOrder) ? [...shuffledQuestionOrder] : null,
       drillFilters: {
         exams: Array.from(drillFilters.exams),
         subjects: Array.from(drillFilters.subjects),
         search: drillFilters.search,
       },
-      drillShuffledOrder: Array.isArray(drillShuffledOrder) ? [...drillShuffledOrder] : null,
       lastQIdByMode: { ...lastQIdByMode },
       lastIndexByMode: { ...lastIndexByMode },
       deviceId,
@@ -5360,7 +5378,6 @@
     setActiveShuffledOrder(filteredList.map((q) => q.id));
     currentIndex = 0;
     renderQuestion();
-    persistStudySession();
     showToast("🔀 סדר השאלות עורבב!");
   }
 
@@ -5368,7 +5385,6 @@
     hasUserInteractedWithNav = true;
     setShuffleOptionsEnabled(!shuffleOptionsEnabled);
     renderQuestion();
-    persistStudySession();
     showToast(shuffleOptionsEnabled ? "🎲 ערבוב מסיחים הופעל" : "סדר מסיחים מקורי");
   }
 
@@ -5432,13 +5448,9 @@
       el("clearSearchBtn")?.classList.toggle("hidden", !activeSearch);
 
       setFilterPanelCollapsed(Boolean(clean.filterCollapsed));
-      setShuffleOptionsEnabled(Boolean(clean.shuffleOptions));
-      shuffledQuestionOrder = Array.isArray(clean.shuffledOrder) && clean.shuffledOrder.length > 0
-        ? [...clean.shuffledOrder]
-        : null;
-      drillShuffledOrder = Array.isArray(clean.drillShuffledOrder) && clean.drillShuffledOrder.length > 0
-        ? [...clean.drillShuffledOrder]
-        : null;
+      setShuffleOptionsEnabled(false);
+      shuffledQuestionOrder = null;
+      drillShuffledOrder = null;
       lastQIdByMode = { ...(clean.lastQIdByMode || {}) };
       lastIndexByMode = { ...(clean.lastIndexByMode || {}) };
 
@@ -9162,6 +9174,15 @@
       }).observe(modalEl, { attributes: true, attributeFilter: ["class"] });
     });
 
+    el("btnReloadLatestSite")?.addEventListener("click", () => {
+      const targetVer = latestServerClientVersion || CLIENT_APP_VERSION;
+      reloadToLatestClientVersion(targetVer);
+    });
+    el("btnDismissSiteUpdate")?.addEventListener("click", () => {
+      dismissedClientUpdateVersion = latestServerClientVersion || "";
+      hideSiteUpdateBanner();
+    });
+
     // Onboarding Spotlight Tour
     el("btnHelpTour")?.addEventListener("click", () => startOnboardingTour({ manual: true }));
     el("btnTourNext")?.addEventListener("click", nextTourStep);
@@ -11899,6 +11920,129 @@
     openSiteAnnouncementModal({ id: "preview", title, message, createdAt: Date.now(), expiresAt: 0 }, { preview: true });
   }
 
+  function compareClientVersions(a, b) {
+    const sa = String(a || "").trim();
+    const sb = String(b || "").trim();
+    if (!sa && !sb) return 0;
+    if (!sa) return -1;
+    if (!sb) return 1;
+    if (sa === sb) return 0;
+    const parseVer = (v) => {
+      const m = /^(\d{8})([a-z]*)$/i.exec(v);
+      if (m) return { date: Number(m[1]), suffix: m[2].toLowerCase() };
+      return null;
+    };
+    const pa = parseVer(sa);
+    const pb = parseVer(sb);
+    if (pa && pb) {
+      if (pa.date !== pb.date) return pa.date > pb.date ? 1 : -1;
+      if (pa.suffix.length !== pb.suffix.length) return pa.suffix.length > pb.suffix.length ? 1 : -1;
+      return pa.suffix > pb.suffix ? 1 : -1;
+    }
+    return sa.localeCompare(sb, "en", { numeric: true });
+  }
+
+  function isUserTypingInField() {
+    const active = document.activeElement;
+    if (!active) return false;
+    const tag = String(active.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    return Boolean(active.isContentEditable);
+  }
+
+  function canAutoReloadForUpdate() {
+    return !simState.active && !tourState.active && !isAnyBlockingModalOpen() && !isUserTypingInField();
+  }
+
+  function showSiteUpdateBanner(targetVersion) {
+    if (dismissedClientUpdateVersion && dismissedClientUpdateVersion === targetVersion) return;
+    const banner = el("siteUpdateBanner");
+    if (!banner) return;
+    banner.classList.remove("hidden");
+  }
+
+  function hideSiteUpdateBanner() {
+    el("siteUpdateBanner")?.classList.add("hidden");
+  }
+
+  async function verifyLiveHtmlHasClientVersion(targetVersion) {
+    if (!targetVersion) return false;
+    if (verifiedLiveClientVersion === targetVersion) return true;
+    const proto = String(window.location?.protocol || "");
+    if (proto !== "http:" && proto !== "https:") return false;
+    if (clientVersionCheckInFlight) return clientVersionCheckInFlight;
+
+    clientVersionCheckInFlight = (async () => {
+      try {
+        const basePath = window.location.pathname || "/";
+        const res = await fetch(`${basePath}?_vcheck=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) return false;
+        const html = await res.text();
+        if (html.includes(`app.js?v=${targetVersion}`)) {
+          verifiedLiveClientVersion = targetVersion;
+          return true;
+        }
+        return false;
+      } catch {
+        return false;
+      } finally {
+        clientVersionCheckInFlight = null;
+      }
+    })();
+
+    return clientVersionCheckInFlight;
+  }
+
+  async function reloadToLatestClientVersion(targetVersion) {
+    try {
+      if (cloudProgressDirty) {
+        await pushCloudProgress();
+      }
+    } catch {}
+    try {
+      const nextUrl = new URL(window.location.href);
+      if (targetVersion) {
+        nextUrl.searchParams.set("_v", targetVersion);
+      } else {
+        nextUrl.searchParams.set("_v", String(Date.now()));
+      }
+      window.location.replace(nextUrl.toString());
+    } catch {
+      window.location.reload();
+    }
+  }
+
+  async function handleServerClientVersion(serverVersion) {
+    const cleanVer = String(serverVersion || "").trim();
+    if (!cleanVer) return false;
+    if (compareClientVersions(cleanVer, CLIENT_APP_VERSION) <= 0) return false;
+
+    latestServerClientVersion = cleanVer;
+    const liveReady = await verifyLiveHtmlHasClientVersion(cleanVer);
+    if (!liveReady) return false;
+
+    let attemptedVer = "";
+    try {
+      attemptedVer = sessionStorage.getItem(CLIENT_UPDATE_RELOAD_KEY) || "";
+    } catch {}
+
+    if (attemptedVer !== cleanVer && canAutoReloadForUpdate()) {
+      try {
+        sessionStorage.setItem(CLIENT_UPDATE_RELOAD_KEY, cleanVer);
+      } catch {}
+      showToast("🔄 יצאה גרסה חדשה לאתר — מרענן כעת...", { duration: 4000 });
+      if (clientUpdateReloadTimer) clearTimeout(clientUpdateReloadTimer);
+      clientUpdateReloadTimer = setTimeout(() => {
+        clientUpdateReloadTimer = null;
+        reloadToLatestClientVersion(cleanVer);
+      }, 1000);
+      return true;
+    }
+
+    showSiteUpdateBanner(cleanVer);
+    return true;
+  }
+
   // ============================================================
   // User Feedback (Suggestions / Complaints) Modal
   // ============================================================
@@ -12806,6 +12950,10 @@
           applyServerAnnouncementUpdate(data.announcement || null);
         }
 
+        if (data.clientVersion) {
+          handleServerClientVersion(data.clientVersion);
+        }
+
         return true;
       } catch {
         cloudProgressSyncState = "offline";
@@ -13518,12 +13666,9 @@
       (Array.isArray(f.subjects) && f.subjects.length > 0) ||
       (Array.isArray(f.statuses) && f.statuses.length > 0) ||
       (typeof f.search === "string" && f.search.trim().length > 0) ||
-      (Array.isArray(s.shuffledOrder) && s.shuffledOrder.length > 0) ||
       (Array.isArray(df.exams) && df.exams.length > 0) ||
       (Array.isArray(df.subjects) && df.subjects.length > 0) ||
       (typeof df.search === "string" && df.search.trim().length > 0) ||
-      (Array.isArray(s.drillShuffledOrder) && s.drillShuffledOrder.length > 0) ||
-      Boolean(s.shuffleOptions) ||
       Boolean(s.filterCollapsed) ||
       (s.lastIndexByMode?.[curModeKey] || 0) > 0;
     applyStudySessionState(s, { showToastInfo: hasNonDefault, fromOtherDevice: false });
@@ -13598,23 +13743,32 @@
     }
   }
 
+  function triggerReturnToTabPoll() {
+    if (document.visibilityState !== "visible") return;
+    const now = Date.now();
+    lastUserActivityAt = now;
+    if (hasHumanInteractionSignal && !identityRegisteredInCloud) {
+      scheduleLazyCloudRegistration();
+    }
+    const lastRelevantPollAt = Math.max(lastVisibilityPullAt, lastCloudPollAt);
+    if (now - lastRelevantPollAt > VISIBILITY_POLL_COOLDOWN_MS) {
+      lastVisibilityPullAt = now;
+      pollCloudState({ touchPresence: true });
+    }
+  }
+
   document.addEventListener("visibilitychange", () => {
     tickSimClock();
     if (document.visibilityState === "hidden") {
       clearLazyRegistrationTimer();
       flushPendingCloudSyncOnExit();
     } else if (document.visibilityState === "visible") {
-      const now = Date.now();
-      lastUserActivityAt = now;
-      if (hasHumanInteractionSignal && !identityRegisteredInCloud) {
-        scheduleLazyCloudRegistration();
-      }
-      const lastRelevantPollAt = Math.max(lastVisibilityPullAt, lastCloudPollAt);
-      if (now - lastRelevantPollAt > VISIBILITY_POLL_COOLDOWN_MS) {
-        lastVisibilityPullAt = now;
-        pollCloudState({ touchPresence: true });
-      }
+      triggerReturnToTabPoll();
     }
+  });
+
+  window.addEventListener("focus", () => {
+    triggerReturnToTabPoll();
   });
 
   window.addEventListener("pagehide", () => {
@@ -13623,7 +13777,14 @@
 
   setInterval(() => {
     if (document.visibilityState === "hidden") return;
-    if (Date.now() - lastUserActivityAt > USER_IDLE_TIMEOUT_MS) return;
-    pollCloudState({ touchPresence: true });
+    const now = Date.now();
+    if (now - lastUserActivityAt <= USER_IDLE_TIMEOUT_MS) {
+      pollCloudState({ touchPresence: true });
+      return;
+    }
+    if (now - lastPassivePollAt >= CLOUD_IDLE_POLL_INTERVAL_MS) {
+      lastPassivePollAt = now;
+      pollCloudState({ touchPresence: false });
+    }
   }, CLOUD_POLL_INTERVAL_MS);
 })();

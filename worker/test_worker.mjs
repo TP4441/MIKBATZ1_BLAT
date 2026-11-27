@@ -2228,6 +2228,9 @@ async function run() {
     assert.equal(setAnn.data.announcement.title, "עדכון חשוב");
     assert.equal(setAnn.data.announcement.message, "הועלו שאלות חדשות לסימולציה!\nנא לרענן.");
     assert.ok(setAnn.data.announcement.expiresAt > Date.now());
+    assert.ok(typeof bootBefore.data.clientVersion === "string" && bootBefore.data.clientVersion.length > 0);
+    const healthCheck = await req("/api/health");
+    assert.equal(healthCheck.data.clientVersion, bootBefore.data.clientVersion);
 
     // Bootstrap exposes announcement without bumping communityVersion
     const bootAfter = await req("/api/bootstrap");
@@ -2242,6 +2245,7 @@ async function run() {
     assert.equal(pollNew.data.announcementChanged, true);
     assert.equal(pollNew.data.announcementId, annId);
     assert.equal(pollNew.data.announcement?.id, annId);
+    assert.equal(pollNew.data.clientVersion, bootBefore.data.clientVersion);
 
     // Poll with matching announcementId receives announcementChanged=false and omits announcement body
     const pollSame = await req(`/api/poll?communityVersion=${commVerBefore}&announcementId=${encodeURIComponent(annId)}`);

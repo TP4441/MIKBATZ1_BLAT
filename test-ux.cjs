@@ -236,3 +236,233 @@ console.log("PASS custom simulation single and multi-year filtering");
   assert.equal(modalNodes.siteAnnouncementBody.textContent, "הודעה שנייה");
   console.log("PASS site-wide broadcast popup show, dismiss, and pending queue");
 }
+
+// Exercise client version comparison, auto-reload loop guard, and busy-state banner fallback
+{
+  const updStart = app.indexOf("  function compareClientVersions(a, b)");
+  const updEnd = app.indexOf("  // User Feedback (Suggestions / Complaints) Modal");
+  assert.ok(updStart >= 0 && updEnd > updStart, "client update helpers found");
+
+  const sess = new Map();
+  const makeCls = (initiallyHidden = true) => {
+    const s = new Set(initiallyHidden ? ["hidden"] : []);
+    return {
+      add(c) { s.add(c); },
+      remove(c) { s.delete(c); },
+      toggle(c, f) { if (f === undefined) { if (s.has(c)) s.delete(c); else s.add(c); } else if (f) s.add(c); else s.delete(c); },
+      contains(c) { return s.has(c); }
+    };
+  };
+  const bannerEl = { classList: makeCls(true) };
+  const bannerTextEl = { textContent: "" };
+  let reloadedTo = null;
+  let simActive = false;
+  let blocking = false;
+  const scheduled = [];
+  const toasts = [];
+
+  const updCtx = vm.createContext({
+    CLIENT_APP_VERSION: "20261127e",
+    CLIENT_UPDATE_RELOAD_KEY: "reload_key_test",
+    latestServerClientVersion: "",
+    verifiedLiveClientVersion: "",
+    dismissedClientUpdateVersion: "",
+    clientVersionCheckInFlight: null,
+    clientUpdateReloadTimer: null,
+    cloudProgressDirty: false,
+    simState: { get active() { return simActive; } },
+    tourState: { active: false },
+    isAnyBlockingModalOpen: () => blocking,
+    pushCloudProgress: async () => true,
+    fetch: async () => ({ ok: true, text: async () => '<script src="app.js?v=20261127f"></script>' }),
+    showToast: (msg) => toasts.push(msg),
+    el: (id) => (id === "siteUpdateBanner" ? bannerEl : id === "siteUpdateBannerText" ? bannerTextEl : null),
+    document: { activeElement: null },
+    window: {
+      location: {
+        protocol: "https:",
+        pathname: "/MIKBATZ1_BLAT/",
+        href: "https://tp4441.github.io/MIKBATZ1_BLAT/",
+        replace(u) { reloadedTo = u; },
+      },
+    },
+    URL,
+    sessionStorage: {
+      getItem: (k) => (sess.has(k) ? sess.get(k) : null),
+      setItem: (k, v) => sess.set(k, String(v)),
+    },
+    setTimeout: (fn) => {
+      scheduled.push(fn);
+      return scheduled.length;
+    },
+    clearTimeout: () => {},
+  });
+  vm.runInContext(app.slice(updStart, updEnd), updCtx);
+
+  assert.equal(vm.runInContext(`compareClientVersions("20261127e", "20261127e")`, updCtx), 0);
+  assert.equal(vm.runInContext(`compareClientVersions("20261127f", "20261127e")`, updCtx), 1);
+  assert.equal(vm.runInContext(`compareClientVersions("20261127aa", "20261127z")`, updCtx), 1);
+  assert.equal(vm.runInContext(`compareClientVersions("20261128a", "20261127z")`, updCtx), 1);
+  assert.equal(vm.runInContext(`compareClientVersions("20261127d", "20261127e")`, updCtx), -1);
+
+  (async () => {
+    // 1. Busy during simulation -> shows banner, does NOT auto-reload
+    simActive = true;
+    await updCtx.handleServerClientVersion("20261127f");
+    assert.equal(bannerEl.classList.contains("hidden"), false);
+    assert.equal(scheduled.length, 0);
+    assert.equal(reloadedTo, null);
+
+    // 2. Idle & safe -> schedules one reload and records sessionStorage guard
+    simActive = false;
+    bannerEl.classList.add("hidden");
+    await updCtx.handleServerClientVersion("20261127f");
+    assert.equal(sess.get("reload_key_test"), "20261127f");
+    assert.equal(scheduled.length, 1);
+    await scheduled[0]();
+    assert.equal(reloadedTo, "https://tp4441.github.io/MIKBATZ1_BLAT/?_v=20261127f");
+
+    // 3. Second invocation with sessionStorage guard set -> falls back to banner (never loops)
+    reloadedTo = null;
+    await updCtx.handleServerClientVersion("20261127f");
+    assert.equal(scheduled.length, 1);
+    assert.equal(reloadedTo, null);
+    assert.equal(bannerEl.classList.contains("hidden"), false);
+    console.log("PASS client version comparison, safe auto-reload, and loop guard");
+  })().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+// Verify question & option shuffling is one-time per session and never persisted/restored on refresh
+{
+  const extractFn = (name) => {
+    const start = app.indexOf("  function " + name + "(");
+    assert.ok(start >= 0, name);
+    let parenDepth = 0, bodyStart = -1, inStr = null, esc = false;
+    for (let i = app.indexOf("(", start); i < app.length; i++) {
+      const ch = app[i];
+      if (esc) { esc = false; continue; }
+      if (inStr) {
+        if (ch === "\\") esc = true;
+        else if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
+      if (ch === "(") parenDepth++;
+      else if (ch === ")") {
+        parenDepth--;
+        if (parenDepth === 0) { bodyStart = app.indexOf("{", i); break; }
+      }
+    }
+    assert.ok(bodyStart >= 0, name + " body");
+    let depth = 0; inStr = null; esc = false;
+    for (let i = bodyStart; i < app.length; i++) {
+      const ch = app[i];
+      if (esc) { esc = false; continue; }
+      if (inStr) {
+        if (ch === "\\") esc = true;
+        else if (ch === inStr) inStr = null;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return app.slice(start, i + 1);
+      }
+    }
+    throw new Error("Unclosed function " + name);
+  };
+
+  const makeBtnCls = () => {
+    const s = new Set(["btn-secondary"]);
+    return {
+      toggle(c, f) { if (f === undefined) { if (s.has(c)) s.delete(c); else s.add(c); } else if (f) s.add(c); else s.delete(c); },
+      contains(c) { return s.has(c); }
+    };
+  };
+  const btnOptDesktop = { classList: makeBtnCls() };
+  const btnOptMobile = { classList: makeBtnCls() };
+  const qSample = [
+    { id: "q1", exam: "2026", num: 1, options: [{ text: "a" }, { text: "b" }, { text: "c" }, { text: "d" }] },
+    { id: "q2", exam: "2026", num: 2, options: [{ text: "a" }, { text: "b" }, { text: "c" }, { text: "d" }] },
+    { id: "q3", exam: "2026", num: 3, options: [{ text: "a" }, { text: "b" }, { text: "c" }, { text: "d" }] },
+  ];
+  const shufCtx = vm.createContext({
+    VALID_STUDY_MODES: new Set(["practice", "flashcard", "drill"]),
+    MAX_SESSION_ARRAY_LEN: 2000,
+    MAX_SIM_HISTORY_LEN: 100,
+    EXAMS: [{ name: "2026" }],
+    currentMode: "practice",
+    filteredList: [...qSample],
+    currentIndex: 0,
+    optionPermutations: new Map(),
+    shuffleOptionsEnabled: false,
+    shuffledQuestionOrder: null,
+    drillShuffledOrder: null,
+    lastQIdByMode: {},
+    lastIndexByMode: {},
+    isRestoringSession: false,
+    hasUserInteractedWithNav: false,
+    deviceId: "dev1",
+    progress: { studySession: null, studySessionUpdatedAt: 0 },
+    filters: { exams: new Set(), subjects: new Set(), statuses: new Set(), search: "", mergePathology: true },
+    drillFilters: { exams: new Set(), subjects: new Set(), search: "" },
+    isStudyMode: (m) => m === "practice" || m === "flashcard" || m === "drill",
+    getUniqueSubjects: () => ["Cardio"],
+    getStatusKeys: () => [],
+    setFilterPanelCollapsed() {},
+    renderFilterChips() {},
+    initExamSetup() {},
+    renderQuestion() {},
+    showToast() {},
+    saveProgress() {},
+    switchMode(mode) { shufCtx.currentMode = mode; },
+    el: (id) => ({
+      btnShuffleOptions: btnOptDesktop,
+      btnShuffleOptionsMobile: btnOptMobile,
+    }[id] || null),
+  });
+  for (const fn of [
+    "getActiveShuffledOrder", "setActiveShuffledOrder", "sanitizeStudySession",
+    "setShuffleOptionsEnabled", "recordCurrentModePosition", "persistStudySession",
+    "getOptionOrder", "shuffleFilteredQuestions", "toggleShuffleOptions", "applyStudySessionState"
+  ]) {
+    vm.runInContext(extractFn(fn), shufCtx);
+  }
+
+  // 1. Legacy saved studySession with shuffle flags is sanitized without shuffle fields and resets active shuffle
+  vm.runInContext(`
+    shuffledQuestionOrder = ["q3", "q1", "q2"];
+    drillShuffledOrder = ["q2", "q1"];
+    setShuffleOptionsEnabled(true);
+    applyStudySessionState({
+      mode: "practice",
+      shuffleOptions: true,
+      shuffledOrder: ["q3", "q1", "q2"],
+      drillShuffledOrder: ["q2", "q1"],
+      lastQIdByMode: { practice: "q1" },
+      lastIndexByMode: { practice: 0 },
+    });
+  `, shufCtx);
+  assert.equal(shufCtx.shuffledQuestionOrder, null);
+  assert.equal(shufCtx.drillShuffledOrder, null);
+  assert.equal(shufCtx.shuffleOptionsEnabled, false);
+  assert.equal(btnOptDesktop.classList.contains("btn-primary"), false);
+  assert.deepEqual(Array.from(vm.runInContext(`getOptionOrder({ id: "q1", options: [0,1,2,3] })`, shufCtx)), [0, 1, 2, 3]);
+
+  // 2. One-time shuffle works in memory, and persistStudySession does NOT save shuffle state
+  vm.runInContext(`
+    shuffleFilteredQuestions();
+    toggleShuffleOptions();
+    persistStudySession();
+  `, shufCtx);
+  assert.equal(Array.isArray(shufCtx.shuffledQuestionOrder), true);
+  assert.equal(shufCtx.shuffleOptionsEnabled, true);
+  assert.equal("shuffledOrder" in shufCtx.progress.studySession, false);
+  assert.equal("drillShuffledOrder" in shufCtx.progress.studySession, false);
+  assert.equal("shuffleOptions" in shufCtx.progress.studySession, false);
+  console.log("PASS one-time question and option shuffle (not persisted across refreshes)");
+}
