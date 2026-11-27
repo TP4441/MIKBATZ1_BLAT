@@ -3195,50 +3195,6 @@ kbd {
   gap: 8px;
 }
 
-.site-update-banner {
-  position: fixed;
-  bottom: 20px;
-  right: 20px;
-  z-index: 195;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  max-width: min(460px, calc(100vw - 24px));
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--accent);
-  box-shadow: var(--shadow-elevated);
-}
-
-.site-update-banner.hidden {
-  display: none;
-}
-
-.site-update-banner-text {
-  font-size: 0.88rem;
-  font-weight: 600;
-  line-height: 1.4;
-}
-
-.site-update-banner-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-@media (max-width: 640px) {
-  .site-update-banner {
-    right: 12px;
-    left: 12px;
-    bottom: 14px;
-    max-width: none;
-  }
-}
-
 .toast {
   background: var(--shell-bg);
   color: var(--shell-text);

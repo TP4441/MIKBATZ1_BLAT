@@ -17,9 +17,8 @@ const UNUSED_STALE_INACTIVE_MS = 24 * 60 * 60 * 1000; // Empty profiles inactive
 const LEADERBOARD_CACHE_TTL_MS = 45 * 1000; // 45 seconds in-memory leaderboard cache
 const VALID_USER_ROLES = new Set(["user", "supervisor"]);
 
-const WORKER_VERSION = "2026.11.27.3";
+const WORKER_VERSION = "2026.11.27.4";
 const WORKER_SCHEMA_VERSION = 10;
-const LATEST_CLIENT_VERSION = "20261127f";
 const GITHUB_REPO_OWNER = "TP4441";
 const GITHUB_REPO_NAME = "MIKBATZ1_BLAT";
 const DEFAULT_CF_ACCOUNT_ID = "e612e80b92d2545210e838c4825c5ca0";
@@ -1370,7 +1369,6 @@ async function handleBootstrap(env) {
   return jsonResponse({
     ok: true,
     communityVersion,
-    clientVersion: LATEST_CLIENT_VERSION,
     ...communityData,
     takenNames,
     customIdentities,
@@ -1428,7 +1426,6 @@ async function handlePoll(request, env) {
     ok: true,
     serverTime: now,
     communityVersion: serverCommunityVersion,
-    clientVersion: LATEST_CLIENT_VERSION,
     communityChanged,
     announcementId: activeAnnId,
     announcementChanged,
@@ -4529,7 +4526,6 @@ export default {
             ok: true,
             workerVersion: WORKER_VERSION,
             schemaVersion: WORKER_SCHEMA_VERSION,
-            clientVersion: LATEST_CLIENT_VERSION,
             serverTime: Date.now(),
           })
         );

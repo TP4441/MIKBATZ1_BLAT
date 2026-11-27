@@ -20,8 +20,6 @@
   const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
   const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
   const SITE_ANNOUNCEMENT_DISMISSED_KEY = "med_exam_dismissed_announcement_v1";
-  const CLIENT_APP_VERSION = "20261127f";
-  const CLIENT_UPDATE_RELOAD_KEY = "med_exam_update_reload_v1";
   const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
   const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
   const CLOUD_API_BASE = resolveCloudApiBase();
@@ -41,26 +39,15 @@
   function resolveCloudApiBase() {
     try {
       const params = new URLSearchParams(window.location.search);
-      let mutatedSearch = false;
-      if (params.has("_v")) {
-        params.delete("_v");
-        mutatedSearch = true;
-      }
       const apiParam = params.get("api");
       if (apiParam) {
         const clean = apiParam.replace(/\/+$/, "");
         sessionStorage.setItem(CLOUD_API_OVERRIDE_KEY, clean);
         params.delete("api");
-        mutatedSearch = true;
         const qs = params.toString();
         const nextUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
         history.replaceState(null, "", nextUrl);
         return clean;
-      }
-      if (mutatedSearch) {
-        const qs = params.toString();
-        const nextUrl = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
-        history.replaceState(null, "", nextUrl);
       }
       const savedOverride = sessionStorage.getItem(CLOUD_API_OVERRIDE_KEY);
       if (savedOverride) return savedOverride.replace(/\/+$/, "");
@@ -446,11 +433,6 @@
   let pendingSiteAnnouncement = null;
   let siteAnnouncementPreviewMode = false;
   let lastPassivePollAt = 0;
-  let latestServerClientVersion = "";
-  let verifiedLiveClientVersion = "";
-  let dismissedClientUpdateVersion = "";
-  let clientVersionCheckInFlight = null;
-  let clientUpdateReloadTimer = null;
   let activeRenameUserId = null;
   let activeBlockUserId = null;
   let adminActiveTab = "users";
@@ -3011,7 +2993,6 @@
             customIdentities: Array.isArray(data?.customIdentities) ? data.customIdentities : null,
             onlineUsers: Array.isArray(data?.onlineUsers) ? data.onlineUsers : null,
             announcement: data?.announcement && typeof data.announcement === "object" ? data.announcement : null,
-            clientVersion: typeof data?.clientVersion === "string" ? data.clientVersion : "",
             serverTime: Number(data?.serverTime) || 0,
           };
         }
@@ -3216,9 +3197,6 @@
 
       if (data.source === "cloud") {
         applyServerAnnouncementUpdate(data.announcement || null);
-        if (data.clientVersion) {
-          handleServerClientVersion(data.clientVersion);
-        }
       }
       if (showFeedback) showToast("🔄 הנתונים המשותפים רועננו מהענן!");
       return true;
@@ -9193,15 +9171,6 @@
       }).observe(modalEl, { attributes: true, attributeFilter: ["class"] });
     });
 
-    el("btnReloadLatestSite")?.addEventListener("click", () => {
-      const targetVer = latestServerClientVersion || CLIENT_APP_VERSION;
-      reloadToLatestClientVersion(targetVer);
-    });
-    el("btnDismissSiteUpdate")?.addEventListener("click", () => {
-      dismissedClientUpdateVersion = latestServerClientVersion || "";
-      hideSiteUpdateBanner();
-    });
-
     // Onboarding Spotlight Tour
     el("btnHelpTour")?.addEventListener("click", () => startOnboardingTour({ manual: true }));
     el("btnTourNext")?.addEventListener("click", nextTourStep);
@@ -11939,129 +11908,6 @@
     openSiteAnnouncementModal({ id: "preview", title, message, createdAt: Date.now(), expiresAt: 0 }, { preview: true });
   }
 
-  function compareClientVersions(a, b) {
-    const sa = String(a || "").trim();
-    const sb = String(b || "").trim();
-    if (!sa && !sb) return 0;
-    if (!sa) return -1;
-    if (!sb) return 1;
-    if (sa === sb) return 0;
-    const parseVer = (v) => {
-      const m = /^(\d{8})([a-z]*)$/i.exec(v);
-      if (m) return { date: Number(m[1]), suffix: m[2].toLowerCase() };
-      return null;
-    };
-    const pa = parseVer(sa);
-    const pb = parseVer(sb);
-    if (pa && pb) {
-      if (pa.date !== pb.date) return pa.date > pb.date ? 1 : -1;
-      if (pa.suffix.length !== pb.suffix.length) return pa.suffix.length > pb.suffix.length ? 1 : -1;
-      return pa.suffix > pb.suffix ? 1 : -1;
-    }
-    return sa.localeCompare(sb, "en", { numeric: true });
-  }
-
-  function isUserTypingInField() {
-    const active = document.activeElement;
-    if (!active) return false;
-    const tag = String(active.tagName || "").toUpperCase();
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-    return Boolean(active.isContentEditable);
-  }
-
-  function canAutoReloadForUpdate() {
-    return !simState.active && !tourState.active && !isAnyBlockingModalOpen() && !isUserTypingInField();
-  }
-
-  function showSiteUpdateBanner(targetVersion) {
-    if (dismissedClientUpdateVersion && dismissedClientUpdateVersion === targetVersion) return;
-    const banner = el("siteUpdateBanner");
-    if (!banner) return;
-    banner.classList.remove("hidden");
-  }
-
-  function hideSiteUpdateBanner() {
-    el("siteUpdateBanner")?.classList.add("hidden");
-  }
-
-  async function verifyLiveHtmlHasClientVersion(targetVersion) {
-    if (!targetVersion) return false;
-    if (verifiedLiveClientVersion === targetVersion) return true;
-    const proto = String(window.location?.protocol || "");
-    if (proto !== "http:" && proto !== "https:") return false;
-    if (clientVersionCheckInFlight) return clientVersionCheckInFlight;
-
-    clientVersionCheckInFlight = (async () => {
-      try {
-        const basePath = window.location.pathname || "/";
-        const res = await fetch(`${basePath}?_vcheck=${Date.now()}`, { cache: "no-store" });
-        if (!res.ok) return false;
-        const html = await res.text();
-        if (html.includes(`app.js?v=${targetVersion}`)) {
-          verifiedLiveClientVersion = targetVersion;
-          return true;
-        }
-        return false;
-      } catch {
-        return false;
-      } finally {
-        clientVersionCheckInFlight = null;
-      }
-    })();
-
-    return clientVersionCheckInFlight;
-  }
-
-  async function reloadToLatestClientVersion(targetVersion) {
-    try {
-      if (cloudProgressDirty) {
-        await pushCloudProgress();
-      }
-    } catch {}
-    try {
-      const nextUrl = new URL(window.location.href);
-      if (targetVersion) {
-        nextUrl.searchParams.set("_v", targetVersion);
-      } else {
-        nextUrl.searchParams.set("_v", String(Date.now()));
-      }
-      window.location.replace(nextUrl.toString());
-    } catch {
-      window.location.reload();
-    }
-  }
-
-  async function handleServerClientVersion(serverVersion) {
-    const cleanVer = String(serverVersion || "").trim();
-    if (!cleanVer) return false;
-    if (compareClientVersions(cleanVer, CLIENT_APP_VERSION) <= 0) return false;
-
-    latestServerClientVersion = cleanVer;
-    const liveReady = await verifyLiveHtmlHasClientVersion(cleanVer);
-    if (!liveReady) return false;
-
-    let attemptedVer = "";
-    try {
-      attemptedVer = sessionStorage.getItem(CLIENT_UPDATE_RELOAD_KEY) || "";
-    } catch {}
-
-    if (attemptedVer !== cleanVer && canAutoReloadForUpdate()) {
-      try {
-        sessionStorage.setItem(CLIENT_UPDATE_RELOAD_KEY, cleanVer);
-      } catch {}
-      showToast("🔄 יצאה גרסה חדשה לאתר — מרענן כעת...", { duration: 4000 });
-      if (clientUpdateReloadTimer) clearTimeout(clientUpdateReloadTimer);
-      clientUpdateReloadTimer = setTimeout(() => {
-        clientUpdateReloadTimer = null;
-        reloadToLatestClientVersion(cleanVer);
-      }, 1000);
-      return true;
-    }
-
-    showSiteUpdateBanner(cleanVer);
-    return true;
-  }
-
   // ============================================================
   // User Feedback (Suggestions / Complaints) Modal
   // ============================================================
@@ -12967,10 +12813,6 @@
 
         if (data.announcementChanged) {
           applyServerAnnouncementUpdate(data.announcement || null);
-        }
-
-        if (data.clientVersion) {
-          handleServerClientVersion(data.clientVersion);
         }
 
         return true;
