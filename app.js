@@ -502,9 +502,7 @@
   let lbScale = 1;
   let lbX = 0;
   let lbY = 0;
-  let lbDragging = false;
-  let lbStartX = 0;
-  let lbStartY = 0;
+  const imagePointers = new Map();
   let lbCurrentSrc = "";
   let lbCurrentCaption = "";
 
@@ -729,6 +727,7 @@
       initialSeconds,
       elapsedSeconds,
       hasTimer,
+      deadline: Number.isSafeInteger(raw.deadline) ? raw.deadline : 0,
       timerHidden: Boolean(raw.timerHidden),
       shuffleOpts: Boolean(raw.shuffleOpts),
       deviceId: typeof raw.deviceId === "string" ? raw.deviceId.slice(0, 80) : "",
@@ -4935,7 +4934,7 @@
     }
     const att = currentMode === "drill"
       ? (drillSessionAttempts.get(q.id) || null)
-      : progress.attempts[q.id];
+      : pendingRetry.has(q.id) ? null : progress.attempts[q.id];
     const fl = progress.flags[q.id] || {};
     const struckSet = currentMode === "drill"
       ? (drillSessionStruck.get(q.id) || new Set())
@@ -4995,13 +4994,14 @@
       const img = document.createElement("img");
       img.src = src;
       img.alt = `תמונה ${idx + 1} לשאלה ${q.num}`;
-      const hint = document.createElement("span");
+      const hint = document.createElement("button");
+      hint.type = "button";
       hint.className = "q-image-hint";
       hint.textContent = "🔍 לחץ לזום";
       const imgLabel = `${q.exam} · שאלה ${q.num}`;
       const toBoardBtn = createImageToBoardButton(src, imgLabel);
       box.append(img, toBoardBtn, hint);
-      box.onclick = () => openLightbox(src, imgLabel);
+      box.onclick = () => { hint.focus({ preventScroll: true }); openLightbox(src, imgLabel); };
       imgWrap.appendChild(box);
     });
 
@@ -5115,6 +5115,7 @@
   }
 
   function handleAnswer(q, origIdx) {
+    pendingRetry.delete(q.id);
     hasUserInteractedWithNav = true;
     const now = Date.now();
     const isCorrect = q.correct.includes(origIdx);
@@ -5479,6 +5480,7 @@
   }
 
   function closeLightbox() {
+    imagePointers.clear();
     el("lightboxModal").classList.add("hidden");
     el("lightboxStage").innerHTML = "";
     lbCurrentSrc = "";
@@ -5498,18 +5500,36 @@
       lbScale = Math.min(5, Math.max(0.5, lbScale + delta));
       updateLightboxTransform();
     });
-    stage.addEventListener("mousedown", (e) => {
-      lbDragging = true;
-      lbStartX = e.clientX - lbX;
-      lbStartY = e.clientY - lbY;
+    function gesture() {
+      const [first, second = first] = imagePointers.values();
+      const rect = stage.getBoundingClientRect();
+      return {
+        x: (first.x + second.x - rect.left - rect.right) / 2,
+        y: (first.y + second.y - rect.top - rect.bottom) / 2,
+        distance: Math.hypot(first.x - second.x, first.y - second.y),
+      };
+    }
+    stage.addEventListener("pointerdown", event => {
+      if (event.button !== 0 || imagePointers.size >= 2) return;
+      stage.setPointerCapture(event.pointerId);
+      imagePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     });
-    window.addEventListener("mousemove", (e) => {
-      if (!lbDragging) return;
-      lbX = e.clientX - lbStartX;
-      lbY = e.clientY - lbStartY;
+    stage.addEventListener("pointermove", event => {
+      if (!imagePointers.has(event.pointerId)) return;
+      const before = gesture();
+      imagePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const after = gesture();
+      const scale = before.distance ? Math.min(5, Math.max(0.5, lbScale * after.distance / before.distance)) : lbScale;
+      if (event.pointerType === "mouse" || imagePointers.size === 2 || lbScale > 1) {
+        lbX = after.x - (before.x - lbX) * scale / lbScale;
+        lbY = after.y - (before.y - lbY) * scale / lbScale;
+      }
+      lbScale = scale;
       updateLightboxTransform();
     });
-    window.addEventListener("mouseup", () => { lbDragging = false; });
+    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+      stage.addEventListener(type, event => imagePointers.delete(event.pointerId));
+    }
 
     el("btnZoomIn").onclick = () => { lbScale = Math.min(5, lbScale + 0.35); updateLightboxTransform(); };
     el("btnZoomOut").onclick = () => { lbScale = Math.max(0.5, lbScale - 0.35); updateLightboxTransform(); };
@@ -5808,6 +5828,7 @@
       flagged: Array.from(simState.flagged),
       struck: struckObj,
       currentIndex: simState.currentIndex,
+      deadline: simState.deadline || 0,
       secondsLeft: simState.hasTimer ? Math.max(0, simState.secondsLeft) : 0,
       initialSeconds: simState.hasTimer ? Math.max(0, simState.initialSeconds || 0) : 0,
       elapsedSeconds: Math.max(0, Math.floor(Number(simState.elapsedSeconds) || 0)),
@@ -5852,38 +5873,43 @@
     const timerPart = saved.hasTimer
       ? saved.timerHidden
         ? " · טיימר מוסתר"
-        : ` · נותרו ${formatMmSs(saved.secondsLeft)}`
+        : ` · נותרו ${formatMmSs(saved.deadline ? Math.max(0, Math.ceil((saved.deadline - Date.now()) / 1000)) : saved.secondsLeft)}`
       : " · ללא טיימר";
     const labelPart = saved.label ? ` · ${saved.label}` : "";
     textEl.textContent = `יש לך סימולציה שלא הושלמה${labelPart} (${answeredCount}/${totalCount} שאלות${timerPart})`;
     banner.classList.remove("hidden");
   }
 
+  function updateSimClock(now = Date.now()) {
+    if (!simState.active) return;
+    if (simState.hasTimer) {
+      simState.secondsLeft = Math.max(0, Math.ceil((simState.deadline - now) / 1000));
+      simState.elapsedSeconds = simState.initialSeconds - simState.secondsLeft;
+    } else {
+      simState.elapsedSeconds = Math.max(0, Math.floor((now - simState.startedAt) / 1000));
+    }
+    updateSimTimerDisplay();
+  }
+
+  function tickSimClock() {
+    if (!simState.active) return;
+    updateSimClock();
+    if (simState.hasTimer && !simState.secondsLeft) {
+      submitSimulation();
+    } else if (Date.now() - simState.lastClockSave >= 5000) {
+      simState.lastClockSave = Date.now();
+      persistActiveSimulation({ syncCloud: false });
+    }
+  }
+
   function startSimTimer() {
     clearInterval(simState.timerId);
-    simState.timerId = null;
-    updateSimTimerDisplay();
-    simState.timerId = setInterval(() => {
-      if (!simState.active) {
-        clearInterval(simState.timerId);
-        simState.timerId = null;
-        return;
-      }
-      simState.elapsedSeconds = (simState.elapsedSeconds || 0) + 1;
-      if (simState.hasTimer && simState.secondsLeft > 0) {
-        simState.secondsLeft--;
-        updateSimTimerDisplay();
-        if (simState.secondsLeft <= 0) {
-          clearInterval(simState.timerId);
-          simState.timerId = null;
-          submitSimulation();
-        } else if (simState.secondsLeft % 5 === 0) {
-          persistActiveSimulation({ syncCloud: false });
-        }
-      } else if (simState.elapsedSeconds % 10 === 0) {
-        persistActiveSimulation({ syncCloud: false });
-      }
-    }, 1000);
+    const now = Date.now();
+    simState.startedAt = now - simState.elapsedSeconds * 1000;
+    if (simState.hasTimer && !simState.deadline) simState.deadline = now + simState.secondsLeft * 1000;
+    simState.lastClockSave = now;
+    simState.timerId = setInterval(tickSimClock, 1000);
+    tickSimClock();
   }
 
   function resumeSavedSimulation() {
@@ -5921,7 +5947,7 @@
 
     const safeIdx = Math.max(0, Math.min(questions.length - 1, Number(saved.currentIndex) || 0));
     const hasTimer = Boolean(saved.hasTimer);
-    const secondsLeft = hasTimer ? Math.max(1, Number(saved.secondsLeft) || 1) : 0;
+    const secondsLeft = hasTimer ? Math.max(0, Number(saved.secondsLeft) || 0) : 0;
 
     clearInterval(simState.timerId);
     simReviewState.active = false;
@@ -5932,6 +5958,7 @@
       flagged,
       struck,
       currentIndex: safeIdx,
+      deadline: saved.deadline || 0,
       secondsLeft,
       initialSeconds: hasTimer ? Math.max(secondsLeft, Number(saved.initialSeconds) || 0) : 0,
       elapsedSeconds: Math.max(0, Number(saved.elapsedSeconds) || 0),
@@ -5955,6 +5982,7 @@
     updateExamFocusModeUI();
     renderResumeSimBanner();
     startSimTimer();
+    if (!simState.active) return;
     renderSimQuestion();
     showToast("⏱️ הסימולציה שוחזרה מהמקום שבו עצרת!");
   }
@@ -6041,7 +6069,9 @@
   }
 
   function pauseSimulation() {
+    tickSimClock();
     if (!simState.active) return;
+    simState.deadline = 0;
     clearInterval(simState.timerId);
     simState.timerId = null;
     persistActiveSimulation({ syncCloud: true });
@@ -6111,6 +6141,8 @@
 
   function selectSimOption(q, origIdx) {
     if (!simState.active || !q) return;
+    tickSimClock();
+    if (!simState.active) return;
     simState.answers.set(q.id, origIdx);
     persistActiveSimulation({ syncCloud: true });
     renderSimQuestion();
@@ -6227,13 +6259,14 @@
       const img = document.createElement("img");
       img.src = src;
       img.alt = "תמונה";
-      const hint = document.createElement("span");
+      const hint = document.createElement("button");
+      hint.type = "button";
       hint.className = "q-image-hint";
       hint.textContent = "🔍 לחץ לזום";
       const simLabel = `סימולציה · שאלה ${simState.currentIndex + 1}`;
       const toBoardBtn = createImageToBoardButton(src, simLabel);
       box.append(img, toBoardBtn, hint);
-      box.onclick = () => openLightbox(src, simLabel);
+      box.onclick = () => { hint.focus({ preventScroll: true }); openLightbox(src, simLabel); };
       imgWrap.appendChild(box);
     });
 
@@ -6266,6 +6299,8 @@
       optWrap.appendChild(row);
     });
 
+    el("simPrevBtn").disabled = simState.currentIndex === 0;
+    el("simNextBtn").disabled = simState.currentIndex === simState.questions.length - 1;
     el("simPrevBtn").onclick = prevSimQuestion;
     el("simNextBtn").onclick = nextSimQuestion;
   }
@@ -6273,9 +6308,12 @@
   /**
    * Open Practice mode focused on a specific list of simulation question IDs.
    */
+  const pendingRetry = new Set();
+
   function reviewSimQuestions(ids, labelText) {
     if (!ids || ids.length === 0) return;
     switchMode("practice");
+    ids.forEach(id => pendingRetry.add(id));
     filteredList = ids.map((id) => Q_MAP.get(id)).filter(Boolean);
     currentIndex = 0;
     el("filteredCountText").textContent = labelText;
@@ -6283,6 +6321,9 @@
   }
 
   function submitSimulation() {
+    if (!simState.active) return;
+    updateSimClock();
+    el("submissionDialog").close();
     clearInterval(simState.timerId);
     simState.timerId = null;
     simState.active = false;
@@ -6772,18 +6813,17 @@
         <div class="kpi-card"><div class="kpi-label">🤔 התלבטתי</div><div class="kpi-value">${analysis.unsureCount}</div></div>
       </div>
 
-      <h3 style="margin-top:18px;">פילוח לפי מקצוע (במה טעית וכמה)</h3>
-      <div class="subject-progress-list">${subjRows}</div>
-
       <div class="sim-results-actions">
-        <button type="button" class="btn-primary" id="btnOpenSimReviewMistakes" ${analysis.mistakesCount === 0 ? "disabled" : ""}>❌ עבור על הטעויות והדילוגים (${analysis.mistakesCount})</button>
-        <button type="button" class="${analysis.mistakesCount === 0 ? "btn-primary" : "btn-secondary"}" id="btnOpenSimReviewAll">📋 עבור על כל השאלות במבחן (${analysis.totalCount})</button>
-        ${analysis.unsureCount > 0 ? `<button type="button" class="btn-secondary" id="btnOpenSimReviewUnsure">🤔 עבור על התלבטויות (${analysis.unsureCount})</button>` : ""}
-        <button type="button" class="btn-secondary" id="btnReviewSimWrongPractice" ${wrongAndSkippedIds.length === 0 ? "disabled" : ""}>🔥 תרגל טעויות מחדש (${wrongAndSkippedIds.length})</button>
+        <button type="button" class="btn-primary" id="btnOpenSimReviewMistakes" ${analysis.mistakesCount === 0 ? "hidden" : ""}>❌ עבור על הטעויות והדילוגים (${analysis.mistakesCount})</button>
+        <button type="button" class="${analysis.mistakesCount === 0 && analysis.unsureCount === 0 ? "btn-primary" : "btn-secondary"}" id="btnOpenSimReviewAll">📋 עבור על כל השאלות במבחן (${analysis.totalCount})</button>
+        ${analysis.unsureCount > 0 ? `<button type="button" class="${analysis.mistakesCount ? "btn-secondary" : "btn-primary"}" id="btnOpenSimReviewUnsure">🤔 עבור על התלבטויות (${analysis.unsureCount})</button>` : ""}
+        <button type="button" class="btn-secondary" id="btnReviewSimWrongPractice" ${wrongAndSkippedIds.length === 0 ? "hidden" : ""}>נסה לפתור אותן שוב (${wrongAndSkippedIds.length})</button>
         ${showCombinedBtn ? `<button type="button" class="btn-secondary" id="btnReviewSimWrongAndUnsure">🎯 תרגל טעויות והתלבטויות (${wrongOrUnsureIds.length})</button>` : ""}
         <button type="button" class="btn-secondary" id="btnRetakeSimFromResults">🔄 בצע סימולציה זו שוב</button>
         <button type="button" class="btn-ghost btn-sm" id="btnNewSim">🆕 סימולציה חדשה</button>
       </div>
+      <h3 style="margin-top:18px;">פילוח לפי מקצוע (במה טעית וכמה)</h3>
+      <div class="subject-progress-list">${subjRows}</div>
     `;
 
     el("btnBackToExamHome").onclick = showExamSetupHome;
@@ -7212,13 +7252,14 @@
       const img = document.createElement("img");
       img.src = src;
       img.alt = "תמונה";
-      const hint = document.createElement("span");
+      const hint = document.createElement("button");
+      hint.type = "button";
       hint.className = "q-image-hint";
       hint.textContent = "🔍 לחץ לזום";
       const label = `סקירת סימולציה · שאלה ${item.simNum}`;
       const toBoardBtn = createImageToBoardButton(src, label);
       box.append(img, toBoardBtn, hint);
-      box.onclick = () => openLightbox(src, label);
+      box.onclick = () => { hint.focus({ preventScroll: true }); openLightbox(src, label); };
       imgWrap.appendChild(box);
     });
 
@@ -8073,6 +8114,7 @@
     }
     if (runBtn) {
       runBtn.disabled = matched.length === 0;
+      runBtn.textContent = `הורד ${exportState.format.toUpperCase()} (${matched.length})`;
     }
 
     if (matched.length === 0) {
@@ -8203,6 +8245,7 @@
   // Mode switching
   function switchMode(mode, { persist = true, fromUser = false } = {}) {
     if (fromUser) hasUserInteractedWithNav = true;
+    pendingRetry.clear();
     const prevMode = currentMode;
     if (isStudyMode(currentMode) && currentMode !== mode && !isRestoringSession) {
       recordCurrentModePosition();
@@ -8808,8 +8851,26 @@
     el("btnStartSim").onclick = () => startSimulation();
     el("btnPauseSim")?.addEventListener("click", pauseSimulation);
     el("btnToggleSimGrid").onclick = () => el("simGridPanel").classList.toggle("hidden");
+    el("finishSubmission").onclick = submitSimulation;
+    el("cancelSubmission").onclick = () => el("submissionDialog").close();
+    el("returnUnanswered").onclick = () => {
+      const index = simState.questions.findIndex(q => !simState.answers.has(q.id));
+      el("submissionDialog").close();
+      if (index < 0) return;
+      simState.currentIndex = index;
+      persistActiveSimulation();
+      renderSimQuestion();
+      el("simOptions").querySelector("button")?.focus();
+    };
     el("btnSubmitSim").onclick = () => {
-      if (confirm("להגיש את המבחן ולראות תוצאות?")) submitSimulation();
+      tickSimClock();
+      if (!simState.active) return;
+      const total = simState.questions.length;
+      const answered = simState.answers.size;
+      el("submissionCount").textContent = `ענית על ${answered} מתוך ${total} שאלות.`;
+      el("submissionMissing").textContent = total === answered ? "כל השאלות נענו." : `נותרו ${total - answered} שאלות ללא תשובה.`;
+      el("returnUnanswered").hidden = total === answered;
+      el("submissionDialog").showModal();
     };
     el("examHistoryFilterChips")?.querySelectorAll(".chip").forEach((chip) => {
       chip.addEventListener("click", () => {
@@ -9152,6 +9213,7 @@
 
     // Keyboard shortcuts
     document.addEventListener("keydown", (e) => {
+      if (el("submissionDialog").open) return;
       if (tourState.active) {
         if (e.key === "Escape") {
           e.preventDefault();
@@ -13052,6 +13114,7 @@
   }
 
   document.addEventListener("visibilitychange", () => {
+    tickSimClock();
     if (document.visibilityState === "hidden") {
       clearLazyRegistrationTimer();
       flushPendingCloudSyncOnExit();

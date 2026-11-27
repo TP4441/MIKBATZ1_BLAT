@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261126g" />
+  <link rel="stylesheet" href="styles.css?v=20261127a" />
 </head>
 <body>
   <header class="topbar">
@@ -94,6 +94,14 @@
             <span class="sync-mobile-ico" aria-hidden="true">☁️</span>
             <span id="syncText" class="sync-text-label">שמירה בדפדפן</span>
           </button>
+          <details class="mobile-tools" id="mobileTools">
+            <summary class="icon-btn">כלים</summary>
+            <div class="mobile-tools-list">
+              <button type="button" data-tool="btnExportObsidian">ייצוא</button>
+              <button type="button" data-tool="btnBackupMenu">גיבוי ושחזור</button>
+              <button type="button" data-tool="btnHelpTour">מדריך</button>
+            </div>
+          </details>
           <button type="button" class="icon-btn" id="btnExportObsidian" title="ייצוא שאלות והערות לפי פילטרים, נושאים ושנים" aria-label="ייצוא שאלות והערות">
             <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19v20H6.5a2.5 2.5 0 0 1 0-5H19" />
@@ -543,7 +551,7 @@
                 <span class="hud-label">⏱️ זמן שנותר</span>
                 <button type="button" class="hud-timer-toggle" id="btnToggleSimTimer" title="הסתר את הטיימר" aria-label="הסתר טיימר" aria-pressed="false">הסתר</button>
               </div>
-              <strong class="hud-timer tabular-text" id="simTimerDisplay">90:00</strong>
+              <strong class="hud-timer tabular-text" id="simTimerDisplay" dir="auto">90:00</strong>
             </div>
             <div class="hud-divider" aria-hidden="true"></div>
             <div class="hud-item">
@@ -878,6 +886,16 @@
   <div class="drawboard-backdrop hidden" id="drawboardBackdrop" aria-hidden="true"></div>
 
   <!-- Image Lightbox Modal (Pan & Zoom) -->
+  <dialog id="submissionDialog" class="submission-dialog" aria-labelledby="submissionTitle">
+    <h2 id="submissionTitle">הגשת המבחן</h2>
+    <p id="submissionCount"></p><p id="submissionMissing"></p>
+    <div class="submission-actions">
+      <button type="button" class="btn-secondary" id="returnUnanswered" autofocus>חזור לשאלה הראשונה שלא נענתה</button>
+      <button type="button" class="btn-primary" id="finishSubmission">הגש מבחן</button>
+      <button type="button" class="btn-ghost" id="cancelSubmission">המשך במבחן</button>
+    </div>
+  </dialog>
+
   <div class="modal-overlay hidden" id="lightboxModal" role="dialog" aria-modal="true" aria-labelledby="lightboxCaption">
     <div class="lightbox-toolbar">
       <span id="lightboxCaption">תמונה קלינית</span>
@@ -920,7 +938,7 @@
           <div class="chips-wrap" id="exportPresetChips">
             <button type="button" class="chip" data-export-preset="mistakes_classic">📓 טעויות והערות (קלאסי)</button>
             <button type="button" class="chip" data-export-preset="wrong">❌ שאלות שטעיתי בהן</button>
-            <button type="button" class="chip" data-export-preset="correct">✅ שאלות שלא טעיתי בהן</button>
+            <button type="button" class="chip" data-export-preset="correct">✅ עניתי נכון</button>
             <button type="button" class="chip" data-export-preset="my_notes">📝 ההערות שלי בלבד</button>
             <button type="button" class="chip" data-export-preset="all_notes">💬 כל ההערות באתר</button>
             <button type="button" class="chip" data-export-preset="from_active">🔄 לפי הסינון הנוכחי</button>
@@ -930,18 +948,18 @@
         <!-- 1. Attempt / Correctness Filter -->
         <section class="export-section" aria-label="סינון לפי מענה">
           <div class="export-section-head">
-            <span class="export-section-title">🎯 1. שאלות שטעיתי / לא טעיתי בהן</span>
+            <span class="export-section-title">🎯 סטטוס מענה</span>
             <div class="filter-mini-links">
               <button type="button" class="link-btn" id="btnExportAttemptAll">הכל</button>
               <button type="button" class="link-btn" id="btnExportAttemptWrong">רק טעיתי</button>
-              <button type="button" class="link-btn" id="btnExportAttemptCorrect">צדקתי</button>
-              <button type="button" class="link-btn" id="btnExportAttemptNotWrong">לא טעיתי (כולל לא פתורות)</button>
+              <button type="button" class="link-btn" id="btnExportAttemptCorrect">עניתי נכון</button>
+              <button type="button" class="link-btn" id="btnExportAttemptNotWrong">נכונות + שאלות שטרם נענו</button>
             </div>
           </div>
           <div class="chips-wrap" id="exportAttemptChips">
             <button type="button" class="chip" data-export-attempt="wrong">❌ טעיתי בהן</button>
-            <button type="button" class="chip" data-export-attempt="correct">✅ לא טעיתי (צדקתי)</button>
-            <button type="button" class="chip" data-export-attempt="unsolved">⏳ לא נפתרו</button>
+            <button type="button" class="chip" data-export-attempt="correct">✅ עניתי נכון</button>
+            <button type="button" class="chip" data-export-attempt="unsolved">⏳ טרם עניתי</button>
           </div>
         </section>
 
@@ -1050,7 +1068,7 @@
               <button type="button" class="chip" data-export-group="year">📅 לפי שנים במבחנים</button>
               <button type="button" class="chip" data-export-group="subject_year">🏥←📅 נושא ← שנה</button>
               <button type="button" class="chip" data-export-group="year_subject">📅←🏥 שנה ← נושא</button>
-              <button type="button" class="chip" data-export-group="correctness">🎯 לפי טעיתי / לא טעיתי</button>
+              <button type="button" class="chip" data-export-group="correctness">🎯 לפי סטטוס מענה</button>
             </div>
           </div>
           <div class="export-subblock">
@@ -1058,7 +1076,7 @@
             <div class="chips-wrap" id="exportFormatChips">
               <button type="button" class="chip active" data-export-format="md">📝 קובץ Markdown אחד (.md)</button>
               <button type="button" class="chip" data-export-format="zip">🗂️ קבצים נפרדים בארכיון (.zip)</button>
-              <button type="button" class="chip" data-export-format="csv">📊 טבלת Excel (.csv)</button>
+              <button type="button" class="chip" data-export-format="csv">📊 טבלת CSV לפתיחה ב־Excel</button>
               <button type="button" class="chip" data-export-format="json">🧾 נתונים מובנים (.json)</button>
             </div>
           </div>
@@ -1687,7 +1705,8 @@
   <script src="questions_data.js?v=20261125j"></script>
   <script src="qr.js?v=20261124d"></script>
   <script src="drawboard.js?v=20261126b"></script>
-  <script src="export.js?v=20261126d"></script>
-  <script src="app.js?v=20261126h"></script>
+  <script src="export.js?v=20261127a"></script>
+  <script src="dialog-controls.js?v=20261127a"></script>
+  <script src="app.js?v=20261127a"></script>
 </body>
 </html>

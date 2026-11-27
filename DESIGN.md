@@ -297,3 +297,9 @@ High-contrast Haifa Cobalt topbar paired with thumb-anchored mobile question con
 - **Don't** use hard offset shadows, glassmorphic blur backdrops, or nested box-shadows inside `.card` containers.
 - **Don't** introduce secondary brand hues or decorative gradients that compete with the semantic clinical feedback states (`#15803D`, `#B91C1C`, `#B45309`).
 - **Don't** auto-open the peer community notes drawer on question load; spoiler-safety requires explicit toggle expansion.
+
+### Question controls and exam review
+Use equal outer grid tracks for the practice footer and a content-sized center track.
+Keep option letters in a fixed 1.5rem column aligned to the first text line. Text wraps independently.
+Use at least 44px for adjacent touch icon targets. Keep the sync indicator visible beside the mobile tools disclosure.
+Results actions follow the score and precede the subject breakdown. For a perfect score prioritize unsure questions when present.

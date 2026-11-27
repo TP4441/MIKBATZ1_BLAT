@@ -6553,3 +6553,57 @@ body.drawboard-resizing {
     flex: 1 1 auto;
   }
 }
+
+/* Keep the retry action on the card's centerline in both reading directions. */
+#studyNavFooter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+#studyNavFooter .nav-prev-btn { justify-self: start; }
+#studyNavFooter .nav-next-btn { justify-self: end; }
+.option-letter { flex: 0 0 1.5rem; }
+.option-btn { min-inline-size: 0; overflow-wrap: anywhere; }
+.q-flags .flag-btn, .icon-btn, .strike-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .35rem;
+}
+.q-flags .flag-btn { min-height: 36px; }
+.chip { min-height: 30px; }
+button:focus-visible, summary:focus-visible, .q-image-hint:focus-visible {
+  outline: 3px solid var(--primary-ink); outline-offset: 2px;
+}
+.q-image-hint { border: none; cursor: zoom-in; }
+.lightbox-stage { touch-action: none; overscroll-behavior: contain; }
+.lightbox-stage img { transition: none; user-select: none; }
+body:has(.modal-overlay:not(.hidden)), body:has(dialog[open]) { overflow: hidden; }
+.modal-box { max-block-size: calc(100dvh - 2rem); overflow-y: auto; }
+.lightbox-toolbar, .lightbox-controls { flex-wrap: wrap; }
+#simTimerDisplay, #syncCodeDisplay { unicode-bidi: isolate; direction: ltr; }
+.submission-dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; width: min(28rem, 92vw); margin: auto; }
+.submission-dialog::backdrop { background: rgb(10 22 39 / .58); }
+.submission-dialog p { margin-block: .65rem; }
+.submission-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.25rem; }
+.submission-actions [hidden], .sim-results-actions [hidden] { display: none; }
+.mobile-tools { display: none; position: relative; }
+.mobile-tools summary { cursor: pointer; list-style: none; }
+.mobile-tools summary::-webkit-details-marker { display: none; }
+.mobile-tools-list { position: absolute; inset-inline-end: 0; top: 100%; z-index: 80; background: var(--surface); padding: .4rem; border-radius: .6rem; border: 1px solid var(--border); box-shadow: var(--shadow-elevated); min-width: 8rem; }
+.mobile-tools-list button { display: block; width: 100%; min-height: 44px; text-align: start; color: var(--text); background: transparent; border: 0; padding-inline: .75rem; }
+@media (pointer: coarse) {
+  .q-flags .flag-btn, .icon-btn.icon-only, .strike-btn { min-inline-size: 44px; min-block-size: 44px; }
+}
+@media (max-width: 700px) {
+  .mobile-tools { display: block; }
+  #btnExportObsidian, #btnBackupMenu, #btnHelpTour, .exam-focus-mode .mobile-tools { display: none; }
+  #modeTabs { display: flex; overflow-x: auto; justify-content: flex-start; }
+  #modeTabs .tab-btn { flex: 1 0 auto; white-space: nowrap; }
+  #studyNavFooter > button { justify-self: stretch; }
+  .question-card :is(.option-btn, textarea, .strike-btn) { scroll-margin-block-end: 5rem; }
+}
+@media (max-height: 540px), (max-width: 360px) {
+  .export-modal-box { display: block; overflow: auto; }
+  .export-modal-body { max-height: none; overflow: visible; }
+  .export-modal-footer { position: static; }
+}

@@ -17,8 +17,8 @@
 
   const ATTEMPT_LABELS = {
     wrong: "❌ טעיתי בהן",
-    correct: "✅ לא טעיתי (צדקתי)",
-    unsolved: "⏳ לא נפתרו",
+    correct: "✅ עניתי נכון",
+    unsolved: "⏳ טרם עניתי",
   };
 
   const GROUP_BY_LABELS = {
@@ -27,7 +27,7 @@
     year: "לפי שנים במבחנים",
     subject_year: "נושא ← שנה",
     year_subject: "שנה ← נושא",
-    correctness: "לפי טעיתי / לא טעיתי / לא נפתרו",
+    correctness: "לפי סטטוס מענה",
   };
 
   function toSet(val) {
@@ -374,7 +374,7 @@
     const { q, att, attemptStatus, fl, qProblems } = item;
     const tags = [];
     if (attemptStatus === "wrong") tags.push("❌ טעיתי");
-    else if (attemptStatus === "correct") tags.push("✅ צדקתי");
+    else if (attemptStatus === "correct") tags.push("✅ עניתי נכון");
     else tags.push("⏳ לא נפתרה");
 
     if (fl.star) tags.push("⭐ מועדף");
@@ -685,7 +685,7 @@
     for (const item of ordered) {
       const { q, effSubj, att, attemptStatus } = item;
       const statusText =
-        attemptStatus === "wrong" ? "טעיתי" : attemptStatus === "correct" ? "צדקתי" : "לא נפתרה";
+        attemptStatus === "wrong" ? "טעיתי" : attemptStatus === "correct" ? "עניתי נכון" : "טרם עניתי";
       const myChoice =
         att && Number.isInteger(att.selected) && q.options?.[att.selected]
           ? formatOptionLabel(q, att.selected)
