@@ -242,16 +242,31 @@ console.log("PASS custom simulation single and multi-year filtering");
   const extractFn = (name) => {
     const start = app.indexOf("  function " + name + "(");
     assert.ok(start >= 0, name);
+    const skipCommentsAndStrings = (i, inStr, esc) => {
+      const ch = app[i];
+      if (esc) return { nextI: i, inStr, esc: false, skip: true };
+      if (inStr) {
+        if (ch === "\\") return { nextI: i, inStr, esc: true, skip: true };
+        if (ch === inStr) return { nextI: i, inStr: null, esc: false, skip: true };
+        return { nextI: i, inStr, esc: false, skip: true };
+      }
+      if (ch === "/" && app[i + 1] === "/") {
+        const nl = app.indexOf("\n", i);
+        return { nextI: nl >= 0 ? nl : app.length, inStr: null, esc: false, skip: true };
+      }
+      if (ch === "/" && app[i + 1] === "*") {
+        const end = app.indexOf("*/", i + 2);
+        return { nextI: end >= 0 ? end + 1 : app.length, inStr: null, esc: false, skip: true };
+      }
+      if (ch === "'" || ch === '"' || ch === "`") return { nextI: i, inStr: ch, esc: false, skip: true };
+      return { nextI: i, inStr: null, esc: false, skip: false };
+    };
     let parenDepth = 0, bodyStart = -1, inStr = null, esc = false;
     for (let i = app.indexOf("(", start); i < app.length; i++) {
+      const st = skipCommentsAndStrings(i, inStr, esc);
+      i = st.nextI; inStr = st.inStr; esc = st.esc;
+      if (st.skip) continue;
       const ch = app[i];
-      if (esc) { esc = false; continue; }
-      if (inStr) {
-        if (ch === "\\") esc = true;
-        else if (ch === inStr) inStr = null;
-        continue;
-      }
-      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
       if (ch === "(") parenDepth++;
       else if (ch === ")") {
         parenDepth--;
@@ -261,14 +276,10 @@ console.log("PASS custom simulation single and multi-year filtering");
     assert.ok(bodyStart >= 0, name + " body");
     let depth = 0; inStr = null; esc = false;
     for (let i = bodyStart; i < app.length; i++) {
+      const st = skipCommentsAndStrings(i, inStr, esc);
+      i = st.nextI; inStr = st.inStr; esc = st.esc;
+      if (st.skip) continue;
       const ch = app[i];
-      if (esc) { esc = false; continue; }
-      if (inStr) {
-        if (ch === "\\") esc = true;
-        else if (ch === inStr) inStr = null;
-        continue;
-      }
-      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
       if (ch === "{") depth++;
       else if (ch === "}") {
         depth--;
@@ -374,16 +385,31 @@ console.log("PASS custom simulation single and multi-year filtering");
   const extractFn = (name) => {
     const start = app.indexOf("  function " + name + "(");
     assert.ok(start >= 0, name);
+    const skipCommentsAndStrings = (i, inStr, esc) => {
+      const ch = app[i];
+      if (esc) return { nextI: i, inStr, esc: false, skip: true };
+      if (inStr) {
+        if (ch === "\\") return { nextI: i, inStr, esc: true, skip: true };
+        if (ch === inStr) return { nextI: i, inStr: null, esc: false, skip: true };
+        return { nextI: i, inStr, esc: false, skip: true };
+      }
+      if (ch === "/" && app[i + 1] === "/") {
+        const nl = app.indexOf("\n", i);
+        return { nextI: nl >= 0 ? nl : app.length, inStr: null, esc: false, skip: true };
+      }
+      if (ch === "/" && app[i + 1] === "*") {
+        const end = app.indexOf("*/", i + 2);
+        return { nextI: end >= 0 ? end + 1 : app.length, inStr: null, esc: false, skip: true };
+      }
+      if (ch === "'" || ch === '"' || ch === "`") return { nextI: i, inStr: ch, esc: false, skip: true };
+      return { nextI: i, inStr: null, esc: false, skip: false };
+    };
     let parenDepth = 0, bodyStart = -1, inStr = null, esc = false;
     for (let i = app.indexOf("(", start); i < app.length; i++) {
+      const st = skipCommentsAndStrings(i, inStr, esc);
+      i = st.nextI; inStr = st.inStr; esc = st.esc;
+      if (st.skip) continue;
       const ch = app[i];
-      if (esc) { esc = false; continue; }
-      if (inStr) {
-        if (ch === "\\") esc = true;
-        else if (ch === inStr) inStr = null;
-        continue;
-      }
-      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
       if (ch === "(") parenDepth++;
       else if (ch === ")") {
         parenDepth--;
@@ -393,14 +419,10 @@ console.log("PASS custom simulation single and multi-year filtering");
     assert.ok(bodyStart >= 0, name + " body");
     let depth = 0; inStr = null; esc = false;
     for (let i = bodyStart; i < app.length; i++) {
+      const st = skipCommentsAndStrings(i, inStr, esc);
+      i = st.nextI; inStr = st.inStr; esc = st.esc;
+      if (st.skip) continue;
       const ch = app[i];
-      if (esc) { esc = false; continue; }
-      if (inStr) {
-        if (ch === "\\") esc = true;
-        else if (ch === inStr) inStr = null;
-        continue;
-      }
-      if (ch === "'" || ch === '"' || ch === "`") { inStr = ch; continue; }
       if (ch === "{") depth++;
       else if (ch === "}") {
         depth--;
@@ -534,4 +556,122 @@ console.log("PASS custom simulation single and multi-year filtering");
   assert.equal(simCtx.simState.currentIndex, 2); // still on 2026_q003
   assert.equal(simCtx.optionPermutations.size, 0);
   console.log("PASS exam simulation refresh resets shuffle and keeps normal exam order");
+}
+
+// Verify Crowd Wisdom ("חכמת ההמונים") filtering, communityProblems exclusion, and hierarchical grouping
+{
+  const extractFn = (name) => {
+    const start = app.indexOf("  function " + name + "(");
+    assert.ok(start >= 0, name);
+    const skipCommentsAndStrings = (i, inStr, esc) => {
+      const ch = app[i];
+      if (esc) return { nextI: i, inStr, esc: false, skip: true };
+      if (inStr) {
+        if (ch === "\\") return { nextI: i, inStr, esc: true, skip: true };
+        if (ch === inStr) return { nextI: i, inStr: null, esc: false, skip: true };
+        return { nextI: i, inStr, esc: false, skip: true };
+      }
+      if (ch === "/" && app[i + 1] === "/") {
+        const nl = app.indexOf("\n", i);
+        return { nextI: nl >= 0 ? nl : app.length, inStr: null, esc: false, skip: true };
+      }
+      if (ch === "/" && app[i + 1] === "*") {
+        const end = app.indexOf("*/", i + 2);
+        return { nextI: end >= 0 ? end + 1 : app.length, inStr: null, esc: false, skip: true };
+      }
+      if (ch === "'" || ch === '"' || ch === "`") return { nextI: i, inStr: ch, esc: false, skip: true };
+      return { nextI: i, inStr: null, esc: false, skip: false };
+    };
+    let parenDepth = 0, bodyStart = -1, inStr = null, esc = false;
+    for (let i = app.indexOf("(", start); i < app.length; i++) {
+      const st = skipCommentsAndStrings(i, inStr, esc);
+      i = st.nextI; inStr = st.inStr; esc = st.esc;
+      if (st.skip) continue;
+      const ch = app[i];
+      if (ch === "(") parenDepth++;
+      else if (ch === ")") {
+        parenDepth--;
+        if (parenDepth === 0) { bodyStart = app.indexOf("{", i); break; }
+      }
+    }
+    assert.ok(bodyStart >= 0, name + " body");
+    let depth = 0; inStr = null; esc = false;
+    for (let i = bodyStart; i < app.length; i++) {
+      const st = skipCommentsAndStrings(i, inStr, esc);
+      i = st.nextI; inStr = st.inStr; esc = st.esc;
+      if (st.skip) continue;
+      const ch = app[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return app.slice(start, i + 1);
+      }
+    }
+    throw new Error("Unclosed function " + name);
+  };
+
+  const wisdomStart = app.indexOf('  // Crowd Wisdom ("חכמת ההמונים")');
+  const wisdomEnd = app.indexOf("  function appendHighlightedText(");
+  assert.ok(wisdomStart >= 0 && wisdomEnd > wisdomStart, "wisdom helpers found");
+
+  const wisdomQuestions = [
+    { id: "q_note_no_reply", exam: "2026", num: 5, subject: "פתולוגיית ריאות", baseSubject: "ריאות", stem: "שאלה עם הערה ללא תגובה", options: [{ text: "אופציה 1" }], correct: [0], appealNote: "" },
+    { id: "q_problem_only", exam: "2026", num: 2, subject: "קרדיולוגיה", baseSubject: "קרדיולוגיה", stem: "שאלה עם דיווח בעיה בלבד", options: [{ text: "אופציה 2" }], correct: [0], appealNote: "" },
+    { id: "q_note_with_reply", exam: "2025", num: 1, subject: "פתולוגיית קרדיולוגיה", baseSubject: "קרדיולוגיה", stem: "שאלה אחרת", options: [{ text: "תרופה" }], correct: [0], appealNote: "" },
+    { id: "q_practice_note", exam: "תרגוליישן", num: 10, subject: "נוירולוגיה", baseSubject: "נוירולוגיה", stem: "שאלת תרגול עם הערה", options: [{ text: "נוירו" }], correct: [0], appealNote: "" },
+  ];
+
+  const wisdomCtx = vm.createContext({
+    WISDOM_PREFS_KEY: "wisdom_prefs_test",
+    WISDOM_RENDER_CHUNK: 40,
+    EXAMS: [{ name: "2026" }, { name: "2025" }, { name: "תרגוליישן" }],
+    QUESTIONS: wisdomQuestions,
+    userIdentity: { userId: "u1", name: "תפוח", emoji: "🍎" },
+    communityNotes: {
+      q_note_no_reply: { u2: { author: "מנגו", emoji: "🥭", text: "הערה חשובה בריאות", updatedAt: 100 } },
+      q_note_with_reply: { u2: { author: "מנגו", emoji: "🥭", text: "הערה בקרדיו", updatedAt: 200 } },
+      q_practice_note: { u1: { author: "תפוח", emoji: "🍎", text: "הערה בתרגוליישן", updatedAt: 300 } },
+      q_problem_only: {},
+    },
+    communityNoteReplies: {
+      q_note_with_reply: {
+        u2: [{ replyId: "r1", parentReplyId: null, userId: "u3", author: "תות", emoji: "🍓", text: "הסבר על אמיודרון", createdAt: 210 }],
+      },
+    },
+    communityProblems: {
+      q_problem_only: { u4: { type: "question_issue", text: "בעיה בשאלה בלבד", updatedAt: 500 } },
+    },
+    localStorage: { getItem: () => null, setItem() {} },
+    formatSubject: (s) => s,
+  });
+
+  for (const fn of ["getQuestionCommunityNotesList", "getNoteRepliesList", "getQuestionRepliesCount"]) {
+    vm.runInContext(extractFn(fn), wisdomCtx);
+  }
+  vm.runInContext(app.slice(wisdomStart, wisdomEnd), wisdomCtx);
+
+  const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
+  assert.match(html, /data-mode="wisdom"/);
+  assert.match(html, /id="wisdomView"/);
+
+  // 1. Only questions with communityNotes appear; communityProblems-only is excluded; תרגוליישן is included
+  const notedIds = Array.from(vm.runInContext(`getWisdomNotedQuestionsPool().map(q => q.id)`, wisdomCtx));
+  assert.deepEqual(notedIds, ["q_note_no_reply", "q_note_with_reply", "q_practice_note"]);
+  assert.equal(notedIds.includes("q_problem_only"), false);
+
+  // 2. Search matches inside replies as well as notes/stems
+  vm.runInContext(`wisdomState.search = "אמיודרון"`, wisdomCtx);
+  assert.deepEqual(Array.from(vm.runInContext(`getWisdomMatchingQuestions().map(q => q.id)`, wisdomCtx)), ["q_note_with_reply"]);
+  vm.runInContext(`wisdomState.search = ""`, wisdomCtx);
+
+  // 3. Grouping: year_subject preserves EXAMS order (2026 -> 2025 -> תרגוליישן) and respects mergePathology
+  const byYearUnmerged = vm.runInContext(`groupWisdomQuestions(getWisdomMatchingQuestions(), "year_subject", false)`, wisdomCtx);
+  assert.deepEqual(Array.from(byYearUnmerged.map((g) => g.key)), ["2026", "2025", "תרגוליישן"]);
+  assert.equal(byYearUnmerged[0].subgroups[0].key, "פתולוגיית ריאות");
+
+  // 4. Grouping: subject_year with mergePathology=true merges פתולוגיית ריאות -> ריאות and פתולוגיית קרדיולוגיה -> קרדיולוגיה
+  const bySubjectMerged = vm.runInContext(`groupWisdomQuestions(getWisdomMatchingQuestions(), "subject_year", true)`, wisdomCtx);
+  assert.deepEqual(Array.from(bySubjectMerged.map((g) => g.key)), ["נוירולוגיה", "קרדיולוגיה", "ריאות"]);
+  assert.equal(bySubjectMerged[1].subgroups[0].key, "2025");
+  console.log("PASS Crowd Wisdom filtering, communityProblems exclusion, search, and grouping");
 }

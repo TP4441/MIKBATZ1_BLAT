@@ -17,7 +17,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20261127g" />
+  <link rel="stylesheet" href="styles.css?v=20261128a" />
 </head>
 <body>
   <header class="topbar">
@@ -214,6 +214,15 @@
             <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" />
           </svg>
           <span>לידרבורד</span>
+        </button>
+        <button type="button" class="tab-btn" data-mode="wisdom">
+          <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+          <span><span class="tab-label-long">חכמת ההמונים</span><span class="tab-label-short">קהילה</span></span>
         </button>
       </nav>
 
@@ -697,6 +706,91 @@
         </div>
         <div id="leaderboardListMount"></div>
       </div>
+    </section>
+
+    <!-- Crowd Wisdom View (Questions + Community Notes Table) -->
+    <section id="wisdomView" class="wisdom-view hidden" aria-label="חכמת ההמונים">
+      <div class="card wisdom-toolbar-card">
+        <div class="wisdom-head">
+          <div class="wisdom-title-group">
+            <h2>💡 חכמת ההמונים</h2>
+            <p class="muted">ריכוז השאלות שיש להן הערות קהילה, לקריאה ולחזרה מהירה — השאלה והתשובה מימין, הערות הקהילה והתגובות משמאל.</p>
+          </div>
+          <div class="wisdom-head-actions">
+            <span class="filter-summary-pill tabular-text" id="wisdomStatsMeta">0 שאלות · 0 הערות</span>
+            <button type="button" class="btn-secondary btn-sm wisdom-refresh-btn" id="btnRefreshWisdom" title="רענן הערות מהענן" aria-label="רענן חכמת ההמונים">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+                <path d="M16 16h5v5" />
+              </svg>
+              <span>רענן</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="wisdom-controls-row">
+          <div class="search-box wisdom-search-box">
+            <svg class="search-icon ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
+            </svg>
+            <input type="text" id="wisdomSearchInput" placeholder="חיפוש בשאלות, מסיחים, הערות או תגובות..." aria-label="חיפוש בחכמת ההמונים" />
+            <button type="button" class="clear-search hidden" id="btnClearWisdomSearch" title="נקה חיפוש" aria-label="נקה חיפוש">
+              <svg class="ui-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="wisdom-order-tabs" role="tablist" aria-label="סדר חלוקה">
+            <button type="button" class="wisdom-order-btn active" id="btnWisdomOrderYearSubject" data-wisdom-order="year_subject" role="tab" aria-selected="true">שנה ← נושא</button>
+            <button type="button" class="wisdom-order-btn" id="btnWisdomOrderSubjectYear" data-wisdom-order="subject_year" role="tab" aria-selected="false">נושא ← שנה</button>
+          </div>
+
+          <label class="toggle-switch wisdom-correct-toggle" title="הצג בכל שאלה רק את המסיחים הנכונים לסריקה מהירה">
+            <input type="checkbox" id="wisdomCorrectOnlyToggle" />
+            <span class="slider"></span>
+            <span class="toggle-label">✓ תשובה נכונה בלבד</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card wisdom-filters-card" aria-label="סינון שאלות עם הערות">
+        <div class="filter-controls-strip">
+          <label class="toggle-switch" title="אחד את פתולוגיית ריאות ופתולוגיית קרדיולוגיה לתוך ריאות וקרדיולוגיה">
+            <input type="checkbox" id="wisdomMergePathologyToggle" />
+            <span class="slider"></span>
+            <span class="toggle-label">🔗 איחוד תתי-פתולוגיה (ריאות / קרדיולוגיה)</span>
+          </label>
+          <button type="button" class="link-btn hidden" id="btnWisdomResetFilters">אפס סינונים</button>
+        </div>
+
+        <div class="filter-row">
+          <div class="filter-label">
+            <span>📅 שנה / מועד</span>
+            <div class="filter-mini-links">
+              <button type="button" class="link-btn" id="btnWisdomAllYears">הכל</button>
+              <button type="button" class="link-btn" id="btnWisdomClearYears">נקה</button>
+            </div>
+          </div>
+          <div class="chips-wrap" id="wisdomExamChips"></div>
+        </div>
+
+        <div class="filter-row">
+          <div class="filter-label">
+            <span>🏥 מקצוע</span>
+            <div class="filter-mini-links">
+              <button type="button" class="link-btn" id="btnWisdomAllSubjects">הכל</button>
+              <button type="button" class="link-btn" id="btnWisdomClearSubjects">נקה</button>
+            </div>
+          </div>
+          <div class="chips-wrap" id="wisdomSubjectChips"></div>
+        </div>
+      </div>
+
+      <nav id="wisdomJumpNav" class="card wisdom-jump-nav hidden" aria-label="קפיצה מהירה לקבוצות"></nav>
+
+      <div id="wisdomSectionsMount" class="wisdom-sections-mount"></div>
     </section>
       </div><!-- /.workspace-primary -->
 
@@ -1797,6 +1891,6 @@
   <script src="drawboard.js?v=20261126b"></script>
   <script src="export.js?v=20261127a"></script>
   <script src="dialog-controls.js?v=20261127a"></script>
-  <script src="app.js?v=20261127g"></script>
+  <script src="app.js?v=20261128a"></script>
 </body>
 </html>

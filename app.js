@@ -20,6 +20,8 @@
   const ADMIN_TOKEN_LOCAL_KEY = "med_exam_admin_token_v1";
   const ADMIN_TOKEN_SESSION_KEY = "med_exam_admin_token_session_v1";
   const SITE_ANNOUNCEMENT_DISMISSED_KEY = "med_exam_dismissed_announcement_v1";
+  const WISDOM_PREFS_KEY = "med_exam_wisdom_prefs_v1";
+  const WISDOM_RENDER_CHUNK = 40;
   const CLOUD_API_OVERRIDE_KEY = "med_exam_cloud_api_override_v1";
   const DEFAULT_CLOUD_API_BASE = "https://mikbatz1-api.mikbatz1-tal.workers.dev";
   const CLOUD_API_BASE = resolveCloudApiBase();
@@ -315,7 +317,7 @@
 
   // State
   let serverOnline = false;
-  let currentMode = "practice"; // practice | exam | drill | flashcard | analytics | leaderboard
+  let currentMode = "practice"; // practice | exam | drill | flashcard | analytics | leaderboard | wisdom
   let communityNotes = loadCommunityNotesCache(); // { qId: { userId: { author, emoji, category, text, updatedAt } } }
   let communityNoteReplies = loadCommunityNoteRepliesCache(); // { qId: { noteUserId: [ { replyId, parentReplyId, replyToAuthor, userId, author, emoji, category, text, createdAt, updatedAt } ] } }
   let communityProblems = loadCommunityProblemsCache(); // { qId: { userId: { type, text, author, emoji, category, updatedAt } } }
@@ -1577,10 +1579,12 @@
   }
 
   function getActiveNotesDrawerEl() {
+    if (currentMode === "wisdom") return el("wisdomSectionsMount");
     return isSimReviewNotesActive() ? el("simReviewNotesDrawer") : el("qNotesDrawer");
   }
 
   function getActiveNoteInputEl() {
+    if (currentMode === "wisdom") return el("wisdomSectionsMount")?.querySelector(".wisdom-note-textarea") || null;
     return isSimReviewNotesActive() ? el("simReviewNoteInput") : el("qNoteInput");
   }
 
@@ -1590,7 +1594,9 @@
       if (q && (!qId || q.id === qId)) {
         renderSimReviewNotesSection(preserveFocus);
       }
-    } else if (currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard") {
+    } else if (currentMode === "wisdom") {
+      refreshWisdomNotesUI(qId, preserveFocus);
+    } else if (isStudyMode(currentMode)) {
       const q = filteredList[currentIndex];
       if (q && (!qId || q.id === qId)) {
         renderNotesSection(q, preserveFocus);
@@ -1721,7 +1727,7 @@
   function openReplyComposer(qId, noteUserId, parentReplyId = null, replyToAuthor = "") {
     if (!qId || !noteUserId) return;
     if (isSimReviewNotesActive()) simReviewState.notesExpanded = true;
-    else notesExpanded = true;
+    else if (isStudyMode(currentMode)) notesExpanded = true;
     activeReplyComposer = {
       qId,
       noteUserId,
@@ -1737,7 +1743,7 @@
   function openEditReplyComposer(qId, noteUserId, replyObj) {
     if (!qId || !noteUserId || !replyObj) return;
     if (isSimReviewNotesActive()) simReviewState.notesExpanded = true;
-    else notesExpanded = true;
+    else if (isStudyMode(currentMode)) notesExpanded = true;
     activeReplyComposer = {
       qId,
       noteUserId,
@@ -1924,7 +1930,7 @@
     noteDrafts[qId] = existing;
     editingNoteQIds.add(qId);
     if (isSimReviewNotesActive()) simReviewState.notesExpanded = true;
-    else notesExpanded = true;
+    else if (isStudyMode(currentMode)) notesExpanded = true;
     refreshActiveNotesUI(qId, false);
     const inputEl = getActiveNoteInputEl();
     if (inputEl) {
@@ -3541,7 +3547,7 @@
       }
       return;
     }
-    if (currentMode !== "analytics" && currentMode !== "leaderboard" && filteredList.length > 0) {
+    if (isStudyMode(currentMode) && filteredList.length > 0) {
       const q = filteredList[currentIndex];
       if (q) {
         renderProblemBanner(el("qProblemBanner"), q);
@@ -4897,7 +4903,7 @@
   }
 
   function renderQuestion() {
-    if (currentMode === "exam" || currentMode === "analytics" || currentMode === "leaderboard") return;
+    if (currentMode === "exam" || currentMode === "analytics" || currentMode === "leaderboard" || currentMode === "wisdom") return;
 
     const card = el("questionCard");
     const empty = el("emptyState");
@@ -8022,6 +8028,986 @@
     `;
   }
 
+  // Crowd Wisdom ("חכמת ההמונים")
+  function loadWisdomPrefs() {
+    try {
+      const raw = localStorage.getItem(WISDOM_PREFS_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  const savedWisdomPrefs = loadWisdomPrefs();
+  const wisdomState = {
+    exams: new Set(), // empty = all exams
+    subjects: new Set(), // empty = all subjects
+    search: "",
+    groupOrder: savedWisdomPrefs.groupOrder === "subject_year" ? "subject_year" : "year_subject",
+    correctOnly: Boolean(savedWisdomPrefs.correctOnly),
+    mergePathology: Boolean(savedWisdomPrefs.mergePathology),
+    renderLimit: WISDOM_RENDER_CHUNK,
+    refreshing: false,
+  };
+
+  function saveWisdomPrefs() {
+    try {
+      localStorage.setItem(
+        WISDOM_PREFS_KEY,
+        JSON.stringify({
+          groupOrder: wisdomState.groupOrder,
+          correctOnly: Boolean(wisdomState.correctOnly),
+          mergePathology: Boolean(wisdomState.mergePathology),
+        })
+      );
+    } catch {}
+  }
+
+  function getWisdomSubject(q, mergePathology = wisdomState.mergePathology) {
+    if (!q) return "";
+    return mergePathology ? (q.baseSubject || q.subject || "") : (q.subject || "");
+  }
+
+  function getWisdomNotedQuestionsPool() {
+    return QUESTIONS.filter((q) => getQuestionCommunityNotesList(q.id).length > 0);
+  }
+
+  function getWisdomMatchingQuestions(pool = null) {
+    const base = Array.isArray(pool) ? pool : getWisdomNotedQuestionsPool();
+    const term = String(wisdomState.search || "").trim().toLowerCase();
+    return base.filter((q) => {
+      if (wisdomState.exams.size > 0 && !wisdomState.exams.has(q.exam)) return false;
+      const subj = getWisdomSubject(q, wisdomState.mergePathology);
+      if (wisdomState.subjects.size > 0 && !wisdomState.subjects.has(subj)) return false;
+
+      if (term) {
+        const notesList = getQuestionCommunityNotesList(q.id);
+        const commText = notesList
+          .map((n) => {
+            const reps = getNoteRepliesList(q.id, n.userId)
+              .map((r) => `${r.emoji} ${r.author} ${r.text}`)
+              .join(" ");
+            return `${n.emoji} ${n.author} ${n.text} ${reps}`;
+          })
+          .join(" ");
+        const hay = (
+          (q.stem || "") + " " +
+          (q.options || []).map((o) => o.text || "").join(" ") + " " +
+          (q.appealNote || "") + " " +
+          (q.explanation || "") + " " +
+          (q.topic || "") + " " +
+          (q.exam || "") + " " +
+          (q.subject || "") + " " +
+          (q.baseSubject || "") + " " +
+          commText
+        ).toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+  }
+
+  function groupWisdomQuestions(
+    questions,
+    groupOrder = wisdomState.groupOrder,
+    mergePathology = wisdomState.mergePathology
+  ) {
+    const examOrderMap = new Map(EXAMS.map((ex, idx) => [ex.name, idx]));
+    const compareExams = (a, b) => {
+      const ia = examOrderMap.has(a) ? examOrderMap.get(a) : Number.MAX_SAFE_INTEGER;
+      const ib = examOrderMap.has(b) ? examOrderMap.get(b) : Number.MAX_SAFE_INTEGER;
+      if (ia !== ib) return ia - ib;
+      return String(a).localeCompare(String(b), "he");
+    };
+    const compareSubjects = (a, b) => String(a).localeCompare(String(b), "he");
+    const compareQNum = (a, b) => (Number(a.num) || 0) - (Number(b.num) || 0);
+
+    const byOuter = new Map();
+    for (const q of questions || []) {
+      const examKey = q.exam || "";
+      const subjKey = getWisdomSubject(q, mergePathology);
+      const outerKey = groupOrder === "subject_year" ? subjKey : examKey;
+      const innerKey = groupOrder === "subject_year" ? examKey : subjKey;
+      if (!byOuter.has(outerKey)) byOuter.set(outerKey, new Map());
+      const byInner = byOuter.get(outerKey);
+      if (!byInner.has(innerKey)) byInner.set(innerKey, []);
+      byInner.get(innerKey).push(q);
+    }
+
+    const outerKeys = Array.from(byOuter.keys()).sort(
+      groupOrder === "subject_year" ? compareSubjects : compareExams
+    );
+
+    return outerKeys.map((outerKey) => {
+      const byInner = byOuter.get(outerKey);
+      const innerKeys = Array.from(byInner.keys()).sort(
+        groupOrder === "subject_year" ? compareExams : compareSubjects
+      );
+      let totalQuestions = 0;
+      let totalNotes = 0;
+      let totalReplies = 0;
+
+      const subgroups = innerKeys.map((innerKey) => {
+        const list = byInner.get(innerKey).slice().sort(compareQNum);
+        let subNotes = 0;
+        let subReplies = 0;
+        for (const q of list) {
+          subNotes += getQuestionCommunityNotesList(q.id).length;
+          subReplies += getQuestionRepliesCount(q.id);
+        }
+        totalQuestions += list.length;
+        totalNotes += subNotes;
+        totalReplies += subReplies;
+        return {
+          key: innerKey,
+          kind: groupOrder === "subject_year" ? "exam" : "subject",
+          label: groupOrder === "subject_year" ? innerKey : formatSubject(innerKey),
+          questions: list,
+          totalNotes: subNotes,
+          totalReplies: subReplies,
+        };
+      });
+
+      return {
+        key: outerKey,
+        kind: groupOrder === "subject_year" ? "subject" : "exam",
+        label: groupOrder === "subject_year" ? formatSubject(outerKey) : outerKey,
+        totalQuestions,
+        totalNotes,
+        totalReplies,
+        subgroups,
+      };
+    });
+  }
+
+  function appendHighlightedText(parentEl, rawText, rawTerm) {
+    if (!parentEl) return;
+    const text = typeof rawText === "string" ? rawText : String(rawText || "");
+    const term = String(rawTerm || "").trim();
+    parentEl.textContent = "";
+    if (!term || !text) {
+      parentEl.textContent = text;
+      return;
+    }
+    const lowerText = text.toLowerCase();
+    const lowerTerm = term.toLowerCase();
+    const termLen = lowerTerm.length;
+    let cursor = 0;
+    let hit = lowerText.indexOf(lowerTerm, cursor);
+    if (hit < 0) {
+      parentEl.textContent = text;
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    while (hit >= 0) {
+      if (hit > cursor) {
+        frag.appendChild(document.createTextNode(text.slice(cursor, hit)));
+      }
+      const mark = document.createElement("mark");
+      mark.className = "wisdom-search-hit";
+      mark.textContent = text.slice(hit, hit + termLen);
+      frag.appendChild(mark);
+      cursor = hit + termLen;
+      hit = lowerText.indexOf(lowerTerm, cursor);
+    }
+    if (cursor < text.length) {
+      frag.appendChild(document.createTextNode(text.slice(cursor)));
+    }
+    parentEl.appendChild(frag);
+  }
+
+  function jumpToQuestionInPractice(qId) {
+    const q = Q_MAP.get(qId);
+    if (!q) return;
+    lastQIdByMode.practice = qId;
+    switchMode("practice", { persist: true, fromUser: true });
+    if (!filteredList.some((item) => item.id === qId)) {
+      filters.exams.clear();
+      filters.subjects.clear();
+      filters.statuses.clear();
+      filters.search = "";
+      if (el("searchInput")) el("searchInput").value = "";
+      el("clearSearchBtn")?.classList.add("hidden");
+      renderFilterChips();
+      applyFilters(qId);
+      persistStudySession();
+    } else {
+      applyFilters(qId, { preserveShuffle: true });
+      persistStudySession();
+    }
+    requestAnimationFrame(() => {
+      el("questionCard")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  function createWisdomNoteCardEl(q, n) {
+    const repliesTree = getNoteRepliesTree(q.id, n.userId);
+    const card = document.createElement("div");
+    card.className = "community-note-card" + (n.isMine ? " is-mine" : "");
+
+    const head = document.createElement("div");
+    head.className = "community-note-head";
+
+    const authorSpan = document.createElement("span");
+    authorSpan.className = "community-note-author";
+    authorSpan.textContent = `${n.emoji} ${n.author}`;
+    if (n.isMine) {
+      const mineBadge = document.createElement("span");
+      mineBadge.className = "community-note-mine-badge";
+      mineBadge.textContent = "שלי";
+      authorSpan.appendChild(mineBadge);
+    }
+
+    const headActions = document.createElement("div");
+    headActions.className = "community-note-head-actions";
+
+    const timeSpan = document.createElement("span");
+    timeSpan.className = "community-note-time";
+    timeSpan.textContent = formatNoteTime(n.updatedAt);
+    headActions.appendChild(timeSpan);
+
+    const replyBtn = document.createElement("button");
+    replyBtn.type = "button";
+    replyBtn.className = "note-card-action-btn";
+    replyBtn.title = "הגב להערה זו";
+    replyBtn.textContent = "💬 הגב";
+    replyBtn.onclick = () => openReplyComposer(q.id, n.userId, null, `${n.emoji} ${n.author}`);
+    headActions.appendChild(replyBtn);
+
+    if (n.isMine) {
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "note-card-action-btn";
+      editBtn.title = "ערוך את ההערה שלי";
+      editBtn.textContent = "✏️ ערוך";
+      editBtn.onclick = () => startEditMyNote(q.id);
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "note-card-action-btn danger";
+      delBtn.title = "מחק את ההערה שלי";
+      delBtn.textContent = "🗑️ מחק";
+      delBtn.onclick = () => deleteMyNote(q.id);
+
+      headActions.append(editBtn, delBtn);
+    } else if (canModerate()) {
+      const adminDelBtn = document.createElement("button");
+      adminDelBtn.type = "button";
+      adminDelBtn.className = "note-card-action-btn danger admin-del";
+      adminDelBtn.title = isFullAdmin() ? "מחק הערה כמנהל" : "מחק הערה כמפקח";
+      adminDelBtn.textContent = "🗑️ הסר";
+      adminDelBtn.onclick = () => adminDeleteNote(q.id, n.userId);
+      headActions.appendChild(adminDelBtn);
+    }
+
+    head.append(authorSpan, headActions);
+
+    const textDiv = document.createElement("div");
+    textDiv.className = "community-note-text";
+    textDiv.dir = "auto";
+    appendHighlightedText(textDiv, n.text, wisdomState.search);
+
+    card.append(head, textDiv);
+
+    const isReplyingDirectlyToNote =
+      activeReplyComposer &&
+      activeReplyComposer.qId === q.id &&
+      activeReplyComposer.noteUserId === n.userId &&
+      !activeReplyComposer.parentReplyId &&
+      !activeReplyComposer.editReplyId;
+
+    if (repliesTree.length > 0 || isReplyingDirectlyToNote) {
+      const repliesWrap = document.createElement("div");
+      repliesWrap.className = "note-replies-list";
+
+      repliesTree.forEach((r) => {
+        const isEditingThisReply =
+          activeReplyComposer &&
+          activeReplyComposer.qId === q.id &&
+          activeReplyComposer.noteUserId === n.userId &&
+          activeReplyComposer.editReplyId === r.replyId;
+
+        if (isEditingThisReply) {
+          repliesWrap.appendChild(createInlineReplyEditorEl(activeReplyComposer));
+          return;
+        }
+
+        const rCard = document.createElement("div");
+        rCard.className =
+          "note-reply-card" +
+          (r.depth > 0 ? " is-nested" : "") +
+          (r.isMine ? " is-mine" : "");
+
+        const rHead = document.createElement("div");
+        rHead.className = "note-reply-head";
+
+        const rAuthor = document.createElement("span");
+        rAuthor.className = "note-reply-author";
+        rAuthor.textContent = `${r.emoji} ${r.author}`;
+        if (r.isMine) {
+          const rMineBadge = document.createElement("span");
+          rMineBadge.className = "community-note-mine-badge";
+          rMineBadge.textContent = "שלי";
+          rAuthor.appendChild(rMineBadge);
+        }
+        if (r.parentReplyId && r.effectiveReplyToAuthor) {
+          const ctxSpan = document.createElement("span");
+          ctxSpan.className = "note-reply-context";
+          ctxSpan.textContent = `↩️ בתגובה ל-${r.effectiveReplyToAuthor}`;
+          rAuthor.appendChild(ctxSpan);
+        }
+
+        const rActions = document.createElement("div");
+        rActions.className = "community-note-head-actions";
+
+        const rTime = document.createElement("span");
+        rTime.className = "community-note-time";
+        rTime.textContent = formatNoteTime(r.updatedAt || r.createdAt);
+        rActions.appendChild(rTime);
+
+        const rReplyBtn = document.createElement("button");
+        rReplyBtn.type = "button";
+        rReplyBtn.className = "note-card-action-btn";
+        rReplyBtn.title = "הגב לתגובה זו";
+        rReplyBtn.textContent = "💬 הגב";
+        rReplyBtn.onclick = () => openReplyComposer(q.id, n.userId, r.replyId, `${r.emoji} ${r.author}`);
+        rActions.appendChild(rReplyBtn);
+
+        if (r.isMine) {
+          const rEditBtn = document.createElement("button");
+          rEditBtn.type = "button";
+          rEditBtn.className = "note-card-action-btn";
+          rEditBtn.title = "ערוך תגובה";
+          rEditBtn.textContent = "✏️ ערוך";
+          rEditBtn.onclick = () => openEditReplyComposer(q.id, n.userId, r);
+
+          const rDelBtn = document.createElement("button");
+          rDelBtn.type = "button";
+          rDelBtn.className = "note-card-action-btn danger";
+          rDelBtn.title = "מחק תגובה";
+          rDelBtn.textContent = "🗑️ מחק";
+          rDelBtn.onclick = () => deleteMyNoteReply(q.id, n.userId, r.replyId);
+
+          rActions.append(rEditBtn, rDelBtn);
+        } else if (canModerate()) {
+          const rAdminDel = document.createElement("button");
+          rAdminDel.type = "button";
+          rAdminDel.className = "note-card-action-btn danger admin-del";
+          rAdminDel.title = isFullAdmin() ? "מחק תגובה כמנהל" : "מחק תגובה כמפקח";
+          rAdminDel.textContent = "🗑️ הסר";
+          rAdminDel.onclick = () => adminDeleteNoteReply(q.id, n.userId, r.replyId);
+          rActions.appendChild(rAdminDel);
+        }
+
+        rHead.append(rAuthor, rActions);
+
+        const rText = document.createElement("div");
+        rText.className = "note-reply-text";
+        rText.dir = "auto";
+        appendHighlightedText(rText, r.text, wisdomState.search);
+
+        rCard.append(rHead, rText);
+        repliesWrap.appendChild(rCard);
+
+        const isReplyingToThisReply =
+          activeReplyComposer &&
+          activeReplyComposer.qId === q.id &&
+          activeReplyComposer.noteUserId === n.userId &&
+          activeReplyComposer.parentReplyId === r.replyId &&
+          !activeReplyComposer.editReplyId;
+        if (isReplyingToThisReply) {
+          repliesWrap.appendChild(createInlineReplyEditorEl(activeReplyComposer));
+        }
+      });
+
+      if (isReplyingDirectlyToNote) {
+        repliesWrap.appendChild(createInlineReplyEditorEl(activeReplyComposer));
+      }
+      card.appendChild(repliesWrap);
+    }
+
+    return card;
+  }
+
+  function renderWisdomNotesCellInto(notesCell, q) {
+    if (!notesCell || !q) return;
+    notesCell.innerHTML = "";
+    const notesList = getQuestionCommunityNotesList(q.id);
+
+    const listWrap = document.createElement("div");
+    listWrap.className = "wisdom-notes-list";
+    notesList.forEach((n) => {
+      listWrap.appendChild(createWisdomNoteCardEl(q, n));
+    });
+    notesCell.appendChild(listWrap);
+
+    const isEditingMine = editingNoteQIds.has(q.id);
+    if (isEditingMine) {
+      const editor = document.createElement("div");
+      editor.className = "wisdom-my-note-editor";
+
+      const edHead = document.createElement("div");
+      edHead.className = "note-reply-editor-head";
+      const edTitle = document.createElement("span");
+      edTitle.textContent = communityNotes[q.id]?.[userIdentity.userId]?.text
+        ? `✏️ עריכת ההערה שלי בתור ${userIdentity.emoji} ${userIdentity.name}`
+        : `📝 הוספת הערה משלי בתור ${userIdentity.emoji} ${userIdentity.name}`;
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "link-btn";
+      cancelBtn.textContent = "ביטול";
+      cancelBtn.onclick = () => cancelEditMyNote(q.id);
+      edHead.append(edTitle, cancelBtn);
+
+      const ta = document.createElement("textarea");
+      ta.className = "wisdom-note-textarea";
+      ta.rows = 3;
+      ta.placeholder = "כתוב הערה משלך... (Enter לשליחה, Shift+Enter לשורה חדשה)";
+      ta.value = noteDrafts[q.id] ?? (communityNotes[q.id]?.[userIdentity.userId]?.text || "");
+      ta.addEventListener("input", () => {
+        noteDrafts[q.id] = ta.value;
+      });
+      ta.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelEditMyNote(q.id);
+          return;
+        }
+        if ((e.key === "Enter" || e.code === "Enter" || e.code === "NumpadEnter") && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          submitNoteFor(q, ta);
+        }
+      });
+
+      const actionsRow = document.createElement("div");
+      actionsRow.style.display = "flex";
+      actionsRow.style.justifyContent = "flex-end";
+      actionsRow.style.gap = "6px";
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "btn-primary btn-sm";
+      saveBtn.textContent = "💾 שמור הערה";
+      saveBtn.onclick = () => submitNoteFor(q, ta);
+      actionsRow.appendChild(saveBtn);
+
+      editor.append(edHead, ta, actionsRow);
+      notesCell.appendChild(editor);
+    }
+
+    const footerActions = document.createElement("div");
+    footerActions.className = "wisdom-notes-footer-actions";
+
+    const hasMyNote = notesList.some((n) => n.isMine);
+    if (!hasMyNote && !isEditingMine) {
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "note-card-action-btn";
+      addBtn.textContent = "➕ הוסף הערה משלי";
+      addBtn.onclick = () => {
+        noteDrafts[q.id] = "";
+        editingNoteQIds.add(q.id);
+        renderWisdomNotesCellInto(notesCell, q);
+        notesCell.querySelector(".wisdom-note-textarea")?.focus();
+      };
+      footerActions.appendChild(addBtn);
+    }
+
+    const openPracticeBtn = document.createElement("button");
+    openPracticeBtn.type = "button";
+    openPracticeBtn.className = "note-card-action-btn";
+    openPracticeBtn.textContent = "↗️ פתח בתרגול";
+    openPracticeBtn.title = "פתח שאלה זו במצב תרגול";
+    openPracticeBtn.onclick = () => jumpToQuestionInPractice(q.id);
+    footerActions.appendChild(openPracticeBtn);
+
+    notesCell.appendChild(footerActions);
+  }
+
+  function createWisdomRowElement(q) {
+    const row = document.createElement("article");
+    row.className = "wisdom-row";
+    row.dataset.wisdomQid = q.id;
+
+    // Right column (Question + Answer)
+    const qCell = document.createElement("div");
+    qCell.className = "wisdom-cell-question";
+
+    const metaRow = document.createElement("div");
+    metaRow.className = "wisdom-q-meta";
+
+    const examBtn = document.createElement("button");
+    examBtn.type = "button";
+    examBtn.className = "q-badge exam-badge wisdom-jump-q-btn" + (q.exam === PRACTICE_EXAM_NAME ? " practice-badge" : "");
+    examBtn.textContent = `${q.exam} · שאלה ${q.num}`;
+    examBtn.title = "פתח שאלה זו במצב תרגול";
+    examBtn.onclick = () => jumpToQuestionInPractice(q.id);
+    metaRow.appendChild(examBtn);
+
+    const subjBadge = document.createElement("span");
+    subjBadge.className = "q-badge subject-badge";
+    subjBadge.textContent = formatSubject(getWisdomSubject(q));
+    metaRow.appendChild(subjBadge);
+
+    if ((Array.isArray(q.correct) && q.correct.length > 1) || q.allAccepted) {
+      const appealBadge = document.createElement("span");
+      appealBadge.className = "q-badge appeal-badge";
+      appealBadge.textContent = "⚖️ שאלת ערעור";
+      metaRow.appendChild(appealBadge);
+    }
+
+    if (q.pdf) {
+      const pdfLink = document.createElement("a");
+      pdfLink.className = "pdf-link";
+      const encodedPdf = encodeURI(q.pdf);
+      pdfLink.href = q.pdfPage ? `${encodedPdf}#page=${q.pdfPage}` : encodedPdf;
+      pdfLink.target = "_blank";
+      pdfLink.rel = "noopener noreferrer";
+      pdfLink.textContent = q.pdfPage ? `📖 עמ׳ ${q.pdfPage} במבחן` : "📖 קובץ המבחן";
+      metaRow.appendChild(pdfLink);
+    }
+
+    qCell.appendChild(metaRow);
+
+    const stemEl = document.createElement("div");
+    stemEl.className = "wisdom-q-stem";
+    stemEl.dir = "auto";
+    appendHighlightedText(stemEl, q.stem, wisdomState.search);
+    qCell.appendChild(stemEl);
+
+    if (Array.isArray(q.images) && q.images.length > 0) {
+      const imgsWrap = document.createElement("div");
+      imgsWrap.className = "wisdom-q-images";
+      q.images.forEach((src, idx) => {
+        const box = document.createElement("div");
+        box.className = "q-image-wrap";
+        const img = document.createElement("img");
+        img.src = src;
+        img.loading = "lazy";
+        img.decoding = "async";
+        img.alt = `תמונה ${idx + 1} לשאלה ${q.num}`;
+        const hint = document.createElement("button");
+        hint.type = "button";
+        hint.className = "q-image-hint";
+        hint.textContent = "🔍 לחץ לזום";
+        const imgLabel = `${q.exam} · שאלה ${q.num}`;
+        box.append(img, hint);
+        box.onclick = () => {
+          hint.focus({ preventScroll: true });
+          openLightbox(src, imgLabel);
+        };
+        imgsWrap.appendChild(box);
+      });
+      qCell.appendChild(imgsWrap);
+    }
+
+    const optionsWrap = document.createElement("div");
+    optionsWrap.className = "wisdom-q-options";
+    const opts = Array.isArray(q.options) ? q.options : [];
+    const hasDefinedCorrect = Boolean(q.allAccepted || (Array.isArray(q.correct) && q.correct.length > 0));
+    opts.forEach((opt, idx) => {
+      const isCorrect = Boolean(q.allAccepted || (Array.isArray(q.correct) && q.correct.includes(idx)));
+      if (wisdomState.correctOnly && hasDefinedCorrect && !isCorrect) return;
+
+      const optEl = document.createElement("div");
+      optEl.className = "wisdom-option" + (isCorrect ? " is-correct" : "");
+
+      const letterSpan = document.createElement("span");
+      letterSpan.className = "wisdom-option-letter";
+      letterSpan.textContent = `${HEBREW_LETTERS[idx] || String(idx + 1)}.`;
+
+      const textSpan = document.createElement("span");
+      textSpan.className = "wisdom-option-text";
+      textSpan.dir = "auto";
+      appendHighlightedText(textSpan, opt?.text || "", wisdomState.search);
+
+      optEl.append(letterSpan, textSpan);
+
+      if (isCorrect) {
+        const pill = document.createElement("span");
+        pill.className = "wisdom-correct-pill";
+        pill.textContent = "✓ נכונה";
+        optEl.appendChild(pill);
+      }
+
+      optionsWrap.appendChild(optEl);
+    });
+    qCell.appendChild(optionsWrap);
+
+    if (q.allAccepted) {
+      const appealBox = document.createElement("div");
+      appealBox.className = "appeal-note";
+      appealBox.textContent = "⚖️ הערת ערעור: כל התשובות התקבלו בשאלה זו.";
+      qCell.appendChild(appealBox);
+    } else if (q.appealNote) {
+      const appealBox = document.createElement("div");
+      appealBox.className = "appeal-note";
+      appendHighlightedText(appealBox, `⚖️ הערת ערעור: ${q.appealNote}`, wisdomState.search);
+      qCell.appendChild(appealBox);
+    }
+
+    // Left column (Community Notes + Replies)
+    const notesCell = document.createElement("div");
+    notesCell.className = "wisdom-cell-notes";
+    renderWisdomNotesCellInto(notesCell, q);
+
+    row.append(qCell, notesCell);
+    return row;
+  }
+
+  function updateWisdomStatsText(matching) {
+    const metaEl = el("wisdomStatsMeta");
+    if (!metaEl) return;
+    let totalNotes = 0;
+    let totalReplies = 0;
+    for (const q of matching) {
+      totalNotes += getQuestionCommunityNotesList(q.id).length;
+      totalReplies += getQuestionRepliesCount(q.id);
+    }
+    metaEl.textContent = totalReplies > 0
+      ? `מציג ${matching.length} שאלות · ${totalNotes} הערות · ${totalReplies} תגובות`
+      : `מציג ${matching.length} שאלות · ${totalNotes} הערות`;
+  }
+
+  function renderWisdomFilterChips(notedPool) {
+    const examCounts = new Map();
+    const subjCounts = new Map();
+    for (const q of notedPool) {
+      examCounts.set(q.exam, (examCounts.get(q.exam) || 0) + 1);
+      const s = getWisdomSubject(q, wisdomState.mergePathology);
+      subjCounts.set(s, (subjCounts.get(s) || 0) + 1);
+    }
+
+    const examWrap = el("wisdomExamChips");
+    if (examWrap) {
+      examWrap.innerHTML = "";
+      EXAMS.forEach((ex) => {
+        const count = examCounts.get(ex.name) || 0;
+        const isSelected = wisdomState.exams.has(ex.name);
+        if (count === 0 && !isSelected) return;
+        const isPractice = ex.name === PRACTICE_EXAM_NAME;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className =
+          "chip" +
+          (isPractice ? " chip-practice" : "") +
+          (isSelected ? " active" : "") +
+          (count === 0 ? " chip-empty" : "");
+        btn.textContent = `${ex.name} (${count})`;
+        btn.onclick = () => {
+          if (wisdomState.exams.has(ex.name)) wisdomState.exams.delete(ex.name);
+          else wisdomState.exams.add(ex.name);
+          wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+          renderWisdomView();
+        };
+        examWrap.appendChild(btn);
+      });
+    }
+
+    const subjWrap = el("wisdomSubjectChips");
+    if (subjWrap) {
+      subjWrap.innerHTML = "";
+      const subjKeys = new Set([...subjCounts.keys(), ...wisdomState.subjects]);
+      const sortedSubjs = Array.from(subjKeys).sort((a, b) => String(a).localeCompare(String(b), "he"));
+      sortedSubjs.forEach((subj) => {
+        const count = subjCounts.get(subj) || 0;
+        const isSelected = wisdomState.subjects.has(subj);
+        if (count === 0 && !isSelected) return;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chip" + (isSelected ? " active" : "") + (count === 0 ? " chip-empty" : "");
+        btn.textContent = `${formatSubject(subj)} (${count})`;
+        btn.onclick = () => {
+          if (wisdomState.subjects.has(subj)) wisdomState.subjects.delete(subj);
+          else wisdomState.subjects.add(subj);
+          wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+          renderWisdomView();
+        };
+        subjWrap.appendChild(btn);
+      });
+    }
+
+    const hasAnyFilter =
+      wisdomState.exams.size > 0 ||
+      wisdomState.subjects.size > 0 ||
+      Boolean(wisdomState.search.trim());
+    el("btnWisdomResetFilters")?.classList.toggle("hidden", !hasAnyFilter);
+  }
+
+  function refreshWisdomNotesUI(qId = null, preserveFocus = true) {
+    if (currentMode !== "wisdom") return;
+    const mountEl = el("wisdomSectionsMount");
+    if (!mountEl) return;
+
+    if (qId) {
+      const notesList = getQuestionCommunityNotesList(qId);
+      const row = Array.from(mountEl.querySelectorAll(".wisdom-row")).find(
+        (r) => r.dataset.wisdomQid === qId
+      );
+      const q = Q_MAP.get(qId);
+      if (row && q && notesList.length > 0) {
+        const notesCell = row.querySelector(".wisdom-cell-notes");
+        if (notesCell) {
+          renderWisdomNotesCellInto(notesCell, q);
+          updateWisdomStatsText(getWisdomMatchingQuestions());
+          return;
+        }
+      }
+      renderWisdomView({ preserveScroll: true });
+      return;
+    }
+
+    const active = document.activeElement;
+    if (
+      preserveFocus &&
+      active &&
+      el("wisdomView")?.contains(active) &&
+      (active.classList.contains("note-reply-textarea") || active.classList.contains("wisdom-note-textarea"))
+    ) {
+      return;
+    }
+    renderWisdomView({ preserveScroll: true });
+  }
+
+  function renderWisdomView({ preserveScroll = false } = {}) {
+    const viewEl = el("wisdomView");
+    if (!viewEl) return;
+
+    const prevScrollY = preserveScroll ? window.scrollY : null;
+
+    const searchEl = el("wisdomSearchInput");
+    if (searchEl && searchEl.value !== wisdomState.search) {
+      searchEl.value = wisdomState.search;
+    }
+    el("btnClearWisdomSearch")?.classList.toggle("hidden", !wisdomState.search);
+
+    const isSubjectFirst = wisdomState.groupOrder === "subject_year";
+    const btnYS = el("btnWisdomOrderYearSubject");
+    const btnSY = el("btnWisdomOrderSubjectYear");
+    if (btnYS) {
+      btnYS.classList.toggle("active", !isSubjectFirst);
+      btnYS.setAttribute("aria-selected", isSubjectFirst ? "false" : "true");
+    }
+    if (btnSY) {
+      btnSY.classList.toggle("active", isSubjectFirst);
+      btnSY.setAttribute("aria-selected", isSubjectFirst ? "true" : "false");
+    }
+
+    const correctToggle = el("wisdomCorrectOnlyToggle");
+    if (correctToggle) correctToggle.checked = Boolean(wisdomState.correctOnly);
+
+    const mergeToggle = el("wisdomMergePathologyToggle");
+    if (mergeToggle) mergeToggle.checked = Boolean(wisdomState.mergePathology);
+
+    const refreshBtn = el("btnRefreshWisdom");
+    if (refreshBtn) {
+      refreshBtn.classList.toggle("is-spinning", Boolean(wisdomState.refreshing));
+      refreshBtn.disabled = Boolean(wisdomState.refreshing);
+    }
+
+    const notedPool = getWisdomNotedQuestionsPool();
+    renderWisdomFilterChips(notedPool);
+
+    const matching = getWisdomMatchingQuestions(notedPool);
+    updateWisdomStatsText(matching);
+
+    const groups = groupWisdomQuestions(matching, wisdomState.groupOrder, wisdomState.mergePathology);
+    const jumpNav = el("wisdomJumpNav");
+    const mountEl = el("wisdomSectionsMount");
+    if (!mountEl) return;
+
+    if (jumpNav) {
+      jumpNav.innerHTML = "";
+      if (groups.length > 1) {
+        jumpNav.classList.remove("hidden");
+        const lbl = document.createElement("span");
+        lbl.className = "wisdom-jump-label";
+        lbl.textContent = isSubjectFirst ? "קפיצה לנושא:" : "קפיצה לשנה:";
+        jumpNav.appendChild(lbl);
+
+        let cumulativeEnd = 0;
+        groups.forEach((grp, idx) => {
+          cumulativeEnd += grp.totalQuestions;
+          const targetLimit = cumulativeEnd;
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className =
+            "chip wisdom-jump-chip" +
+            (grp.kind === "exam" && grp.key === PRACTICE_EXAM_NAME ? " chip-practice" : "");
+          chip.textContent = `${grp.label} (${grp.totalQuestions})`;
+          chip.onclick = () => {
+            if (wisdomState.renderLimit < targetLimit) {
+              wisdomState.renderLimit = targetLimit;
+              renderWisdomView({ preserveScroll: false });
+            }
+            const targetEl = document.getElementById(`wisdom-group-${idx}`);
+            targetEl?.scrollIntoView({ behavior: "smooth", block: "start" });
+          };
+          jumpNav.appendChild(chip);
+        });
+      } else {
+        jumpNav.classList.add("hidden");
+      }
+    }
+
+    mountEl.innerHTML = "";
+
+    if (matching.length === 0) {
+      const emptyCard = document.createElement("div");
+      emptyCard.className = "card wisdom-empty-card";
+      const h3 = document.createElement("h3");
+      const p = document.createElement("p");
+      p.className = "muted";
+
+      if (notedPool.length === 0) {
+        h3.textContent = "עדיין אין שאלות עם הערות קהילה";
+        p.textContent = "ברגע שסטודנטים ישתפו הערות בשאלות, הן יופיעו כאן בצורה מרוכזת.";
+        emptyCard.append(h3, p);
+      } else {
+        h3.textContent = "לא נמצאו שאלות עם הערות התואמות לסינון";
+        p.textContent = "נסה לנקות חלק מהמסננים או לשנות את מילת החיפוש.";
+        const resetBtn = document.createElement("button");
+        resetBtn.type = "button";
+        resetBtn.className = "btn-primary btn-sm";
+        resetBtn.textContent = "🔄 הצג את כל השאלות עם הערות";
+        resetBtn.onclick = () => {
+          wisdomState.exams.clear();
+          wisdomState.subjects.clear();
+          wisdomState.search = "";
+          wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+          renderWisdomView();
+        };
+        emptyCard.append(h3, p, resetBtn);
+      }
+      mountEl.appendChild(emptyCard);
+      return;
+    }
+
+    const limit = Math.max(WISDOM_RENDER_CHUNK, Number(wisdomState.renderLimit) || WISDOM_RENDER_CHUNK);
+    let renderedCount = 0;
+
+    for (let gIdx = 0; gIdx < groups.length; gIdx++) {
+      if (renderedCount >= limit) break;
+      const grp = groups[gIdx];
+
+      const groupSection = document.createElement("section");
+      groupSection.className = "wisdom-group";
+      groupSection.id = `wisdom-group-${gIdx}`;
+
+      const groupHeader = document.createElement("div");
+      groupHeader.className = "wisdom-group-header";
+
+      const groupTitle = document.createElement("h3");
+      groupTitle.className =
+        "wisdom-group-title" +
+        (grp.kind === "exam" && grp.key === PRACTICE_EXAM_NAME ? " is-practice" : "");
+      groupTitle.textContent = grp.label;
+
+      const groupMeta = document.createElement("span");
+      groupMeta.className = "wisdom-group-meta tabular-text";
+      groupMeta.textContent = `${grp.totalQuestions} שאלות · ${grp.totalNotes} הערות`;
+
+      groupHeader.append(groupTitle, groupMeta);
+      groupSection.appendChild(groupHeader);
+
+      for (const sub of grp.subgroups) {
+        if (renderedCount >= limit) break;
+        const remaining = limit - renderedCount;
+        const slice = sub.questions.slice(0, remaining);
+        if (slice.length === 0) continue;
+
+        const subCard = document.createElement("div");
+        subCard.className = "card wisdom-subgroup";
+
+        const subHead = document.createElement("div");
+        subHead.className = "wisdom-subgroup-header";
+
+        const subTitle = document.createElement("h4");
+        subTitle.className = "wisdom-subgroup-title";
+        subTitle.textContent = sub.label;
+
+        const subMeta = document.createElement("span");
+        subMeta.className = "wisdom-subgroup-meta tabular-text";
+        subMeta.textContent =
+          slice.length < sub.questions.length
+            ? `מוצגות ${slice.length} מתוך ${sub.questions.length} שאלות`
+            : `${sub.questions.length} שאלות · ${sub.totalNotes} הערות`;
+
+        subHead.append(subTitle, subMeta);
+
+        const tableEl = document.createElement("div");
+        tableEl.className = "wisdom-table";
+
+        const tableHead = document.createElement("div");
+        tableHead.className = "wisdom-table-head";
+        const thQ = document.createElement("div");
+        thQ.className = "wisdom-th wisdom-th-question";
+        thQ.textContent = "השאלה והתשובה";
+        const thN = document.createElement("div");
+        thN.className = "wisdom-th wisdom-th-notes";
+        thN.textContent = "הערות הקהילה ותגובות";
+        tableHead.append(thQ, thN);
+        tableEl.appendChild(tableHead);
+
+        for (const q of slice) {
+          tableEl.appendChild(createWisdomRowElement(q));
+          renderedCount++;
+        }
+
+        subCard.append(subHead, tableEl);
+        groupSection.appendChild(subCard);
+      }
+
+      mountEl.appendChild(groupSection);
+    }
+
+    if (renderedCount < matching.length) {
+      const remainingTotal = matching.length - renderedCount;
+      const loadMoreBar = document.createElement("div");
+      loadMoreBar.className = "card wisdom-load-more-bar";
+
+      const infoSpan = document.createElement("span");
+      infoSpan.className = "muted tabular-text";
+      infoSpan.textContent = `מוצגות ${renderedCount} מתוך ${matching.length} שאלות`;
+
+      const btnsWrap = document.createElement("div");
+      btnsWrap.className = "wisdom-load-more-actions";
+
+      const nextStep = Math.min(WISDOM_RENDER_CHUNK, remainingTotal);
+      const btnMore = document.createElement("button");
+      btnMore.type = "button";
+      btnMore.className = "btn-primary btn-sm";
+      btnMore.textContent = `הצג עוד ${nextStep} שאלות`;
+      btnMore.onclick = () => {
+        wisdomState.renderLimit = renderedCount + WISDOM_RENDER_CHUNK;
+        renderWisdomView({ preserveScroll: true });
+      };
+
+      const btnAll = document.createElement("button");
+      btnAll.type = "button";
+      btnAll.className = "btn-secondary btn-sm";
+      btnAll.textContent = `הצג הכל (${matching.length})`;
+      btnAll.onclick = () => {
+        wisdomState.renderLimit = matching.length;
+        renderWisdomView({ preserveScroll: true });
+      };
+
+      btnsWrap.append(btnMore, btnAll);
+      loadMoreBar.append(infoSpan, btnsWrap);
+      mountEl.appendChild(loadMoreBar);
+    }
+
+    if (prevScrollY !== null) {
+      window.scrollTo(0, prevScrollY);
+    }
+  }
+
+  function openWisdomView() {
+    wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+    renderWisdomView();
+  }
+
   // Export Questions & Notes Modal
   const exportState = {
     initialized: false,
@@ -8440,6 +9426,7 @@
     el("examView").classList.toggle("hidden", mode !== "exam");
     el("analyticsView").classList.toggle("hidden", mode !== "analytics");
     el("leaderboardView")?.classList.toggle("hidden", mode !== "leaderboard");
+    el("wisdomView")?.classList.toggle("hidden", mode !== "wisdom");
 
     if (isStudy) {
       const activeFilters = getActiveFilters();
@@ -8461,6 +9448,8 @@
       renderAnalytics();
     } else if (mode === "leaderboard") {
       openLeaderboardView();
+    } else if (mode === "wisdom") {
+      openWisdomView();
     }
 
     if (persist && !isRestoringSession) {
@@ -8472,6 +9461,7 @@
   function renderCurrentView() {
     if (currentMode === "analytics") renderAnalytics();
     else if (currentMode === "leaderboard") renderLeaderboard();
+    else if (currentMode === "wisdom") renderWisdomView({ preserveScroll: true });
     else if (currentMode === "exam") {
       if (!simState.active) {
         if (simReviewState.active && simReviewState.entry) {
@@ -8535,6 +9525,85 @@
       myRow.classList.remove("lb-row-flash");
       void myRow.offsetWidth;
       myRow.classList.add("lb-row-flash");
+    });
+
+    // Crowd Wisdom bindings
+    el("wisdomSearchInput")?.addEventListener("input", (e) => {
+      wisdomState.search = e.target.value;
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      renderWisdomView();
+    });
+    el("btnClearWisdomSearch")?.addEventListener("click", () => {
+      wisdomState.search = "";
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      renderWisdomView();
+      el("wisdomSearchInput")?.focus();
+    });
+    el("btnWisdomOrderYearSubject")?.addEventListener("click", () => {
+      if (wisdomState.groupOrder === "year_subject") return;
+      wisdomState.groupOrder = "year_subject";
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      saveWisdomPrefs();
+      renderWisdomView();
+    });
+    el("btnWisdomOrderSubjectYear")?.addEventListener("click", () => {
+      if (wisdomState.groupOrder === "subject_year") return;
+      wisdomState.groupOrder = "subject_year";
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      saveWisdomPrefs();
+      renderWisdomView();
+    });
+    el("wisdomCorrectOnlyToggle")?.addEventListener("change", (e) => {
+      wisdomState.correctOnly = Boolean(e.target.checked);
+      saveWisdomPrefs();
+      renderWisdomView({ preserveScroll: true });
+    });
+    el("wisdomMergePathologyToggle")?.addEventListener("change", (e) => {
+      wisdomState.mergePathology = Boolean(e.target.checked);
+      wisdomState.subjects.clear();
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      saveWisdomPrefs();
+      renderWisdomView();
+    });
+    el("btnWisdomAllYears")?.addEventListener("click", () => {
+      const notedPool = getWisdomNotedQuestionsPool();
+      wisdomState.exams = new Set(notedPool.map((q) => q.exam));
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      renderWisdomView();
+    });
+    el("btnWisdomClearYears")?.addEventListener("click", () => {
+      wisdomState.exams.clear();
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      renderWisdomView();
+    });
+    el("btnWisdomAllSubjects")?.addEventListener("click", () => {
+      const notedPool = getWisdomNotedQuestionsPool();
+      wisdomState.subjects = new Set(notedPool.map((q) => getWisdomSubject(q, wisdomState.mergePathology)));
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      renderWisdomView();
+    });
+    el("btnWisdomClearSubjects")?.addEventListener("click", () => {
+      wisdomState.subjects.clear();
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      renderWisdomView();
+    });
+    el("btnWisdomResetFilters")?.addEventListener("click", () => {
+      wisdomState.exams.clear();
+      wisdomState.subjects.clear();
+      wisdomState.search = "";
+      wisdomState.renderLimit = WISDOM_RENDER_CHUNK;
+      renderWisdomView();
+    });
+    el("btnRefreshWisdom")?.addEventListener("click", async () => {
+      if (wisdomState.refreshing) return;
+      wisdomState.refreshing = true;
+      renderWisdomView({ preserveScroll: true });
+      try {
+        await bootstrapCloudState(true);
+      } finally {
+        wisdomState.refreshing = false;
+        if (currentMode === "wisdom") renderWisdomView({ preserveScroll: true });
+      }
     });
 
     el("btnTheme").onclick = toggleTheme;
@@ -9255,6 +10324,7 @@
         renderResumeSimBanner();
         if (currentMode === "analytics") renderAnalytics();
         else if (currentMode === "leaderboard") renderLeaderboard();
+        else if (currentMode === "wisdom") renderWisdomView();
         else if (currentMode === "exam") showExamSetupHome();
         else applyFilters();
         el("backupModal").classList.add("hidden");
@@ -9535,7 +10605,7 @@
         }
         return;
       }
-      if (currentMode === "analytics" || currentMode === "leaderboard") return;
+      if (currentMode === "analytics" || currentMode === "leaderboard" || currentMode === "wisdom") return;
       if (filteredList.length === 0) return;
 
       const q = filteredList[currentIndex];
@@ -9654,7 +10724,7 @@
     if (panelLabel) panelLabel.textContent = supOnly ? "דאשבורד למפקח" : "מנהל";
 
     el("adminQuestionActions")?.classList.toggle("hidden", !hasPanel);
-    if (currentMode !== "exam" && currentMode !== "analytics" && currentMode !== "leaderboard" && filteredList.length > 0) {
+    if (isStudyMode(currentMode) && filteredList.length > 0) {
       const q = filteredList[currentIndex];
       if (q) {
         renderProblemBanner(el("qProblemBanner"), q);
@@ -9669,6 +10739,8 @@
         renderProblemBanner(el("simReviewProblemBanner"), revItem.q);
         renderSimReviewNotesSection(true);
       }
+    } else if (currentMode === "wisdom") {
+      renderWisdomView({ preserveScroll: true });
     }
   }
 
@@ -12481,11 +13553,16 @@
       const isTypingNoteOrReply =
         activeTag === "qNoteInput" ||
         activeTag === "simReviewNoteInput" ||
-        Boolean(document.activeElement?.classList?.contains("note-reply-textarea"));
+        Boolean(document.activeElement?.classList?.contains("note-reply-textarea")) ||
+        Boolean(document.activeElement?.classList?.contains("wisdom-note-textarea"));
       if (currentMode === "analytics") {
         renderAnalytics();
       } else if (currentMode === "leaderboard") {
         renderLeaderboard();
+      } else if (currentMode === "wisdom") {
+        if (!isTypingNoteOrReply) {
+          renderWisdomView({ preserveScroll: true });
+        }
       } else if (currentMode === "exam") {
         if (!isTypingNoteOrReply) {
           renderCurrentView();
