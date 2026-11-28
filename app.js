@@ -5091,6 +5091,11 @@
     renderNotesSection(q, true);
   }
 
+  function getAiAnswerNoticeHtml(q) {
+    if (!q?.aiAnswers) return "";
+    return ' <span class="ai-answer-note">(תשובות מבחן זה נקבעו על ידי AI)</span>';
+  }
+
   function showFeedbackBox(q, isCorrect) {
     const fb = el("qFeedback");
     fb.classList.remove("hidden", "correct", "wrong", "info");
@@ -5106,11 +5111,12 @@
       })
       .join("<br/>");
 
+    const aiNoticeHtml = getAiAnswerNoticeHtml(q);
     let html = isCorrect === true
-      ? "✅ <strong>תשובה נכונה!</strong>"
+      ? `✅ <strong>תשובה נכונה!</strong>${aiNoticeHtml}`
       : isCorrect === false
-      ? `❌ <strong>טעות.</strong> התשובה הנכונה:<br/>${correctLabels}`
-      : `💡 <strong>התשובה הנכונה:</strong><br/>${correctLabels}`;
+      ? `❌ <strong>טעות.</strong> התשובה הנכונה${aiNoticeHtml}:<br/>${correctLabels}`
+      : `💡 <strong>התשובה הנכונה</strong>${aiNoticeHtml}:<br/>${correctLabels}`;
 
     if (q.allAccepted) {
       html += `<div class="appeal-note">⚖️ הערת ערעור: כל התשובות התקבלו בשאלה זו.</div>`;
@@ -7313,15 +7319,16 @@
       .map((origIdx) => `<strong>${HEBREW_LETTERS[origIdx] || origIdx + 1}.</strong> ${escapeHtml(q.options[origIdx]?.text || "")}`)
       .join("<br/>");
 
+    const aiNoticeHtml = getAiAnswerNoticeHtml(q);
     let feedbackCls = "correct";
-    let feedbackLead = "✅ <strong>ענית נכון בסימולציה!</strong>";
+    let feedbackLead = `✅ <strong>ענית נכון בסימולציה!</strong>${aiNoticeHtml}`;
     if (item.isWrong) {
       feedbackCls = "wrong";
       const chosenLetter = HEBREW_LETTERS[item.chosen] || item.chosen + 1;
-      feedbackLead = `❌ <strong>טעית בסימולציה</strong> (בחרת <strong>${chosenLetter}.</strong>) — התשובה הנכונה:<br/>${correctLabels}`;
+      feedbackLead = `❌ <strong>טעית בסימולציה</strong> (בחרת <strong>${chosenLetter}.</strong>) — התשובה הנכונה${aiNoticeHtml}:<br/>${correctLabels}`;
     } else if (item.isSkipped) {
       feedbackCls = "info";
-      feedbackLead = `⏭️ <strong>דילגת על שאלה זו בסימולציה</strong> — התשובה הנכונה:<br/>${correctLabels}`;
+      feedbackLead = `⏭️ <strong>דילגת על שאלה זו בסימולציה</strong> — התשובה הנכונה${aiNoticeHtml}:<br/>${correctLabels}`;
     }
 
     let appealHtml = "";
@@ -8627,7 +8634,7 @@
       if (isCorrect) {
         const pill = document.createElement("span");
         pill.className = "wisdom-correct-pill";
-        pill.textContent = "✓ נכונה";
+        pill.textContent = q.aiAnswers ? "✓ נכונה (נקבעה ע״י AI)" : "✓ נכונה";
         optEl.appendChild(pill);
       }
 

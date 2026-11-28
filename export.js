@@ -429,6 +429,7 @@
     lines.push(`${hashes} ${q.exam} · שאלה ${q.num} · ${effSubj} (${tags.join(" | ")})`);
 
     const corrText = (q.correct || []).map((i) => formatOptionLabel(q, i)).filter(Boolean).join(" / ");
+    const aiTag = q.aiAnswers ? " *(תשובות מבחן זה נקבעו על ידי AI)*" : "";
     const myWrongText =
       att && !att.isCorrect && Number.isInteger(att.selected) && q.options?.[att.selected]
         ? formatOptionLabel(q, att.selected)
@@ -441,7 +442,7 @@
         lines.push(`> ${snippet}`);
       }
       if (corrText) {
-        lines.push(`- **תשובה נכונה:** ${corrText}`);
+        lines.push(`- **תשובה נכונה:** ${corrText}${aiTag}`);
       }
       if (myWrongText) {
         lines.push(`- **הבחירה שלי (שגויה):** ${myWrongText}`);
@@ -471,7 +472,7 @@
     }
 
     if (corrText) {
-      lines.push(`- **תשובה נכונה:** ${corrText}`);
+      lines.push(`- **תשובה נכונה:** ${corrText}${aiTag}`);
     }
     if (myWrongText) {
       lines.push(`- **הבחירה שלי (שגויה):** ${myWrongText}`);
@@ -778,6 +779,9 @@
       obj.allAccepted = Boolean(q.allAccepted);
       obj.appealNote = q.appealNote || "";
       obj.explanation = q.explanation || "";
+    }
+    if (q.aiAnswers) {
+      obj.aiAnswers = true;
     }
     if ((config.notesScope || "all") !== "none") {
       obj.notes = exportedNotes.map((n) => ({

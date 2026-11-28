@@ -1698,6 +1698,12 @@ button,
   color: var(--primary-ink);
 }
 
+.ai-answer-note {
+  font-size: 0.84em;
+  font-weight: 500;
+  opacity: 0.88;
+}
+
 .appeal-note {
   margin-top: 8px;
   font-size: 0.86rem;

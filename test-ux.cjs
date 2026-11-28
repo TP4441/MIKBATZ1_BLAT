@@ -675,3 +675,60 @@ console.log("PASS custom simulation single and multi-year filtering");
   assert.equal(bySubjectMerged[1].subgroups[0].key, "2025");
   console.log("PASS Crowd Wisdom filtering, communityProblems exclusion, search, and grouping");
 }
+
+// Verify 2020 exam data and AI-answer notice in UI feedback + export
+{
+  const dataCtx = vm.createContext({ window: {} });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "questions_data.js"), "utf8"), dataCtx);
+  const examData = dataCtx.window.EXAM_DATA;
+  const exam2020 = examData.exams.find((e) => e.name === "2020");
+  assert.ok(exam2020, "2020 exam exists in EXAM_DATA");
+  assert.equal(exam2020.expectedCount, 113);
+  const qs2020 = examData.questions.filter((q) => q.exam === "2020");
+  assert.equal(qs2020.length, 113);
+  assert.ok(qs2020.every((q) => q.aiAnswers === true), "All 2020 questions flagged aiAnswers");
+  assert.equal(qs2020.find((q) => q.num === 9).options.length, 4);
+  assert.deepEqual(Array.from(qs2020.find((q) => q.num === 88).correct), [2, 3]);
+
+  const fbNode = {
+    innerHTML: "",
+    classList: {
+      _set: new Set(),
+      add(...cls) { cls.forEach((c) => this._set.add(c)); },
+      remove(...cls) { cls.forEach((c) => this._set.delete(c)); },
+    },
+  };
+  const aiCtx = vm.createContext({
+    HEBREW_LETTERS: ["א", "ב", "ג", "ד", "ה", "ו"],
+    el: (id) => (id === "qFeedback" ? fbNode : null),
+    getOptionOrder: (q) => q.options.map((_, i) => i),
+    escapeHtml: (s) => String(s),
+  });
+  vm.runInContext(functionSource("getAiAnswerNoticeHtml"), aiCtx);
+  vm.runInContext(functionSource("showFeedbackBox"), aiCtx);
+  aiCtx.qAi = {
+    options: [{ text: "אופציה א" }, { text: "אופציה ב" }],
+    correct: [0],
+    aiAnswers: true,
+    explanation: "",
+  };
+  aiCtx.qHuman = {
+    options: [{ text: "אופציה א" }, { text: "אופציה ב" }],
+    correct: [0],
+  };
+
+  for (const flag of [true, false, null]) {
+    vm.runInContext(`showFeedbackBox(qAi, ${JSON.stringify(flag)})`, aiCtx);
+    assert.match(fbNode.innerHTML, /\(תשובות מבחן זה נקבעו על ידי AI\)/);
+    vm.runInContext(`showFeedbackBox(qHuman, ${JSON.stringify(flag)})`, aiCtx);
+    assert.doesNotMatch(fbNode.innerHTML, /נקבעו על ידי AI/);
+  }
+
+  const mdAi = exporter.buildMarkdownDocument(
+    [{ q: { id: "2020_q001", exam: "2020", examIndex: 5, num: 1, subject: "מבואות", stem: "שאלה", options: [{ letter: "א", text: "תשובה" }], correct: [0], aiAnswers: true, images: [] }, effSubj: "מבואות", att: null, attemptStatus: "unsolved", fl: {}, streak: 0, qProblems: [], exportedNotes: [] }],
+    { groupBy: "none", detailLevel: "full", notesScope: "none" },
+    { cloudCommunityLoaded: true, problemTypes: {} }
+  );
+  assert.match(mdAi, /\*\(תשובות מבחן זה נקבעו על ידי AI\)\*/);
+  console.log("PASS 2020 exam data and AI-answer notice in UI feedback + export");
+}
